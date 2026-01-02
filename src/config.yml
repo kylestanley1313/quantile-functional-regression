@@ -1,0 +1,3 @@
+python:
+  path: /opt/homebrew/Caskroom/miniconda/base/envs/sandbox-1/bin/python
+  module_path: python

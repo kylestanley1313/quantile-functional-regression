@@ -1,0 +1,6 @@
+.Rproj.user
+renv/*
+renv.lock
+*.pyc
+src/config/*
+data/*
