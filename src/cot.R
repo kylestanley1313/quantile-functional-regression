@@ -18,14 +18,16 @@ if '{config$python$module_path}' not in sys.path:
 py_flow <- import("flow", convert = TRUE)
 
 
-## TODO: 
-##  - Better logging
-##  - Don't forget to add "switches" 
-##      * Balanced grids
-##      * Continuous RV
-
 
 ## ========== Utilities ==========
+
+new_context <- function(payload, cache = NULL, meta = NULL) {
+  list(
+    payload = payload,
+    cache = cache,
+    meta = meta
+  )
+}
 
 gen_seed <- function() {
   sample.int(.Machine$integer.max, 1)
@@ -98,12 +100,89 @@ integrate <- function(G, p_grid, p_star, Q_star) {  ## via trapezoidal rule
   Q
 }
 
-compute_quantlets <- function(G_list, K) {
+# compute_quantlets_old <- function(G_list, K) {
+# compute_quantlets <- function(G_list, Q_list, p_grid, p_star, K) {
+#   G_mat <- do.call(rbind, G_list)
+#   G_center <- colMeans(G_mat)
+#   G_mat <- scale(G_mat, center = G_center, scale = FALSE)
+#   E <- irlba(G_mat, nv = K, nu = 0)$v
+#   list(E = E, G_center = G_center)
+# }
+
+jacobian_inv_lqd <- function(G_center, p_grid, p_star) {
+
+  J <- length(G_center)
+  stopifnot(length(p_grid) == J)
+
+  p_star_idx <- which.min(abs(p_grid - p_star))
+  dQ <- exp(G_center)
+
+  ## Allocate Jacobian
+  Jmat <- matrix(0, nrow = J, ncol = J)
+
+  ## Forward direction: j > p_star_idx
+  if (p_star_idx < J) {
+    for (j in (p_star_idx + 1):J) {
+      for (k in p_star_idx:(j - 1)) {
+        dp <- p_grid[k + 1] - p_grid[k]
+        w <- if (k == p_star_idx || k == j - 1) 0.5 else 1
+        Jmat[j, k] <- Jmat[j, k] + w * dp * dQ[k]
+        Jmat[j, k + 1] <- Jmat[j, k + 1] + w * dp * dQ[k + 1]
+      }
+    }
+  }
+
+  ## Backward direction: j < p_star_idx
+  if (p_star_idx > 1) {
+    for (j in 1:(p_star_idx - 1)) {
+      for (k in j:(p_star_idx - 1)) {
+        dp <- p_grid[k + 1] - p_grid[k]
+        w <- if (k == j || k == p_star_idx - 1) 0.5 else 1
+        Jmat[j, k] <- Jmat[j, k] - w * dp * dQ[k]
+        Jmat[j, k + 1] <- Jmat[j, k + 1] - w * dp * dQ[k + 1]
+      }
+    }
+  }
+
+  Jmat
+}
+
+compute_quantlets <- function(G_list, Q_list, p_grid, p_star, K) {
+
+  ## Stack G and Q
   G_mat <- do.call(rbind, G_list)
+  Q_mat <- do.call(rbind, Q_list)
+
+  ## Centers
   G_center <- colMeans(G_mat)
-  G_mat <- scale(G_mat, center = G_center, scale = FALSE)
-  E <- irlba(G_mat, nv = K, nu = 0)$v
-  list(E = E, G_center = G_center)
+  Q_center <- colMeans(Q_mat)
+
+  ## Center G
+  Gc <- scale(G_mat, center = G_center, scale = FALSE)
+
+  ## --- 1. Jacobian of inverse LQD at mean ---
+  J <- jacobian_inv_lqd(
+    G_center = G_center,
+    p_grid = p_grid,
+    p_star = p_star
+  )
+  # J is (length(p_grid) x length(p_grid))
+
+  ## --- 2. Pull back Q-metric to G-space ---
+  # Equivalent to PCA under metric J^T J
+  G_tilde <- Gc %*% t(J)
+
+  ## --- 3. PCA in pulled-back space ---
+  svd_out <- irlba(G_tilde, nv = K, nu = 0)
+
+  ## --- 4. Map basis back to original G-space ---
+  E <- svd_out$v
+  # Columns of E are G-space basis vectors optimized for Q-loss
+
+  list(
+    E = E,
+    G_center = G_center
+  )
 }
 
 inv_eqf_cgrid <- function(Q, p_grid, pi_grid, supp_TY = NULL) {
@@ -253,7 +332,13 @@ choose_near_lossless_K <- function(
       idx_valid <- which(folds == v)
       
       ## Compute quantlets E from training data
-      out <- compute_quantlets(G_list[idx_train], K)
+      out <- compute_quantlets(
+        G_list[idx_train], 
+        Q_list[idx_train], 
+        p_grid, 
+        p_star, 
+        K
+      )
       E <- out$E
       G_center <- out$G_center
       
@@ -395,18 +480,25 @@ new_pipeline <- function(stages) {
   )
 }
 
-fit.cot_pipeline <- function(pipeline, data, ...) {
-  context <- list(data = data, cache = pipeline$cache_init)
+fit.cot_pipeline <- function(pipeline, data, ...) { 
+  context <- list(
+    payload = data,
+    cache = pipeline$cache_init,
+    meta = list()
+  )
   
-  for (i in seq_len(pipeline$n_stages)) {
-    stage <- pipeline$stages[[i]]
-    if (stage$requires_fit && !stage$fitted) {
-      stage <- fit(stage, context, ...)
-      pipeline$stages[[i]] <- stage
-    }
-    context <- encode(stage, context, ...)
-  }
-  pipeline
+  for (i in seq_len(pipeline$n_stages)) { 
+    stage <- pipeline$stages[[i]] 
+    if (stage$requires_fit && !stage$fitted) { 
+      stage <- fit(stage, context, ...) 
+      pipeline$stages[[i]] <- stage 
+    } 
+    context <- encode(stage, context, ...) 
+  } 
+  
+  pipeline$state <- pipeline$state
+  pipeline$training <- context$meta
+  pipeline 
 }
 
 encode.cot_pipeline <- function(pipeline, context, from = 0, to = pipeline$n_stages, ...) {
@@ -438,16 +530,16 @@ decode.cot_pipeline <- function(pipeline, context, from = pipeline$n_stages, to 
 ## ---------- Transform: Y-Axis
 
 encode_fun_y_axis <- function(context, state) {
-  y_list <- context$data
+  y_list <- context$payload
   Ty_list <- lapply(y_list, context$cache$y_trans)
-  context$data <- Ty_list
+  context$payload <- Ty_list
   context
 }
 
 decode_fun_y_axis <- function(context, state) {
-  Ty_list <- context$data
+  Ty_list <- context$payload
   y_list <- lapply(Ty_list, function(Ty) context$cache$y_trans(Ty, inverse = TRUE))
-  context$data <- y_list
+  context$payload <- y_list
   context
 }
 
@@ -455,18 +547,18 @@ decode_fun_y_axis <- function(context, state) {
 ## ---------- Transform: EQF on Subject Grid
 
 encode_fun_eqf_sgrid <- function(context, state) {
-  Ty_list <- context$data
+  Ty_list <- context$payload
   Qi_list <- lapply(Ty_list, function(Ty) sort(Ty))
-  context$data <- Qi_list
-  context$cache$Qi_list <- Qi_list
-  context$cache$Ji_vec <- lengths(Qi_list)
+  context$payload <- Qi_list
+  context$meta$Qi_list <- Qi_list
+  context$meta$Ji_vec <- lengths(Qi_list)
   context
 }
 
 decode_fun_eqf_sgrid <- function(context, state) {
-  Qi_list <- context$data
+  Qi_list <- context$payload
   Ty_list <- Qi_list  ## recovers input up to rearrangement
-  context$data <- Ty_list
+  context$payload <- Ty_list
   context
 }
 
@@ -474,9 +566,9 @@ decode_fun_eqf_sgrid <- function(context, state) {
 ## ---------- Transform: Smooth EQF on Dense Common Grid
 
 encode_fun_eqf_cgrid <- function(context, state) {
-  Qi_list <- context$data
-  Ji_vec <- context$cache$Ji_vec
-  J <- context$cache$J
+  Qi_list <- context$payload
+  Ji_vec <- context$meta$Ji_vec
+  J <- length(context$cache$p_grid)
   p_grid <- context$cache$p_grid
   y_trans <- context$cache$y_trans
   ratio_trans <- context$cache$ratio_trans
@@ -498,7 +590,10 @@ encode_fun_eqf_cgrid <- function(context, state) {
   
   ## Set parameters
   N <- length(Qi_list)
-  Q_min <- ifelse(is.null(y_min), NULL, y_trans(y_min))
+  Q_min <- NULL
+  if (!is.null(y_min)) {
+    Q_min <- y_trans(y_min)
+  }
   Q_mat <- matrix(nrow = N, ncol = J)
   ratio_trans <- ratio_trans
   
@@ -509,7 +604,7 @@ encode_fun_eqf_cgrid <- function(context, state) {
     Qi <- Qi_list[[i]]
     
     ## Get subject grid
-    pi_grid <- get_uniform_p_grid(Ji_vec[[i]])
+    pi_grid <- get_uniform_p_grid(Ji_vec[i])
     
     ## Get interior mask
     interior_mask <- rep(TRUE, J)
@@ -563,27 +658,29 @@ encode_fun_eqf_cgrid <- function(context, state) {
   }
   
   Q_list <- asplit(Q_mat, MARGIN = 1)
-  context$data <- Q_list
-  context$cache$Q_list <- Q_list
+  context$payload <- Q_list
+  context$meta$Q_list <- Q_list
   context
 }
 
 decode_fun_eqf_cgrid <- function(context, state) {
-  Q_list <- context$data
-  Ji_vec <- context$cache$Ji_vec
-  J <- context$cache$J
+  Q_list <- context$payload
+  Ji_vec <- context$meta$Ji_vec
+  if (is.null(Ji_vec))
+    stop("decode_fun_eqf_cgrid requires Ji_vec in context$meta")
   p_grid <- context$cache$p_grid
+  J <- length(p_grid)
   supp_TY <- context$cache$supp_TY
   
   ## Linearly interpolate through p_grid onto pi_grid
   N <- length(Q_list)
   Qi_list <- vector(mode = "list", length = N)
   for (i in 1:N) {
-    pi_grid <- get_uniform_p_grid(Ji_vec[[i]])
+    pi_grid <- get_uniform_p_grid(Ji_vec[i])
     Qi_list[[i]] <- inv_eqf_cgrid(Q_list[[i]], p_grid, pi_grid, supp_TY)
   }
   
-  context$data <- Qi_list
+  context$payload <- Qi_list
   context
 }
 
@@ -591,7 +688,7 @@ decode_fun_eqf_cgrid <- function(context, state) {
 ## ---------- Transform: LQD
 
 encode_fun_lqd <- function(context, state) {
-  Q_list <- context$data
+  Q_list <- context$payload
   p_star_idx <- context$cache$p_star_idx
   
   ## Set parameters
@@ -610,12 +707,12 @@ encode_fun_lqd <- function(context, state) {
     G_list[[i]] <- log(dQ)
   }
   
-  context$data <- list(G_list = G_list, Q_star_list = Q_star_list)
+  context$payload <- list(G_list = G_list, Q_star_list = Q_star_list)
   context
 }
 
 decode_fun_lqd <- function(context, state) {
-  G_Q_star_list <- context$data
+  G_Q_star_list <- context$payload
   p_grid <- context$cache$p_grid
   p_star <- context$cache$p_star
   
@@ -633,7 +730,7 @@ decode_fun_lqd <- function(context, state) {
     Q_list[[i]] <- inv_lqd(G_list[[i]], p_grid,  p_star, Q_star_list[[i]])
   }
   
-  context$data <- Q_list
+  context$payload <- Q_list
   context
 }
 
@@ -641,11 +738,11 @@ decode_fun_lqd <- function(context, state) {
 ## ---------- Transform: Q-G PCA
 
 fit_fun_qg_pca <- function(context, state, ...) {
-  G_list <- context$data$G_list
-  Q_list <- context$cache$Q_list
-  Qi_list <- context$cache$Qi_list
+  G_list <- context$payload$G_list
+  Q_list <- context$meta$Q_list
+  Qi_list <- context$meta$Qi_list
   p_grid <- context$cache$p_grid
-  Ji_vec <- context$cache$Ji_vec
+  Ji_vec <- context$meta$Ji_vec
   p_star <- context$cache$p_star
   supp_TY <- context$cache$supp_TY
   sqrt_w <- context$cache$sqrt_w
@@ -653,6 +750,7 @@ fit_fun_qg_pca <- function(context, state, ...) {
   
   ## Choose qualifying dimension K
   if (is.null(state$K)) {
+    print(state$epsilon)
     state$K <- choose_near_lossless_K(
       epsilon = state$epsilon, alpha = state$alpha, 
       V = state$V, K_max = state$K_max, loss_fun = loss_fun,
@@ -665,7 +763,7 @@ fit_fun_qg_pca <- function(context, state, ...) {
   } 
   
   ## Compute E
-  out <- compute_quantlets(G_list, state$K)
+  out <- compute_quantlets(G_list, Q_list, p_grid, p_star, state$K)
   
   state$G_center <- out$G_center
   state$E <- out$E
@@ -673,7 +771,7 @@ fit_fun_qg_pca <- function(context, state, ...) {
 }
 
 encode_fun_qg_pca <- function(context, state) {
-  Q_list <- context$cache$Q_list
+  Q_list <- context$meta$Q_list
   p_grid <- context$cache$p_grid
   p_star <- context$cache$p_star
   sqrt_w <- context$cache$sqrt_w
@@ -696,15 +794,15 @@ encode_fun_qg_pca <- function(context, state) {
   }
   message(str_glue("converged = {sum(converged)} of {N}"))
   
-  context$data <- c_list
+  context$payload <- c_list
   context
 }
 
 decode_fun_qg_pca <- function(context, state) {
-  c_list <- context$data
+  c_list <- context$payload
   G_list <- lapply(c_list, function(c) state$G_center + rowSums(state$E %*% c[1:state$K]))
   Q_star_list <- lapply(c_list, function(c) c[state$K + 1])
-  context$data <- list(G_list = G_list, Q_star_list = Q_star_list)
+  context$payload <- list(G_list = G_list, Q_star_list = Q_star_list)
   context
 }
 
@@ -712,7 +810,7 @@ decode_fun_qg_pca <- function(context, state) {
 ## ---------- Transform: Normalizing Flow
 
 fit_fun_flow <- function(context, state, ...) {
-  C_list <- context$data
+  C_list <- context$payload
   C_mat <- do.call(rbind, C_list)
   
   ## Train flow (in Python via reticulate)
@@ -729,7 +827,7 @@ fit_fun_flow <- function(context, state, ...) {
 }
 
 encode_fun_flow <- function(context, state) {
-  C_list <- context$data
+  C_list <- context$payload
   C_mat <- do.call(rbind, C_list)
   
   ## Load flow
@@ -743,12 +841,12 @@ encode_fun_flow <- function(context, state) {
   Z_mat <- py_flow$flow_encode(C_mat, flow)
   Z_list <- split(Z_mat, seq_len(nrow(Z_mat)))
   
-  context$data <- Z_list
+  context$payload <- Z_list
   context
 }
 
 decode_fun_flow <- function(context, state) {
-  Z_list <- context$data
+  Z_list <- context$payload
   Z_mat <- do.call(rbind, Z_list)
   
   ## Load flow
@@ -762,7 +860,7 @@ decode_fun_flow <- function(context, state) {
   C_mat <- py_flow$flow_decode(Z_mat, flow)
   C_list <- split(C_mat, seq_len(nrow(C_mat)))
   
-  context$data <- C_list
+  context$payload <- C_list
   context
 }
 
@@ -791,12 +889,18 @@ construct_pipeline <- function(
 ) {
   
   ## Storage Locations
-  ##    cache --> what representation of the data am I currently holding?
-  ##          --> things that define the mathematical object being modeled
-  ##          --> returned by encode/decode functions
-  ##    state --> what representation have I learned?
-  ##          --> things that define how the algorithm is being run
-  ##          --> returned by fit functions
+  ##    state   --> returned by fit functions
+  ##            --> property of stages that tells you how to encode/decode
+  ##            --> Ex: (Q-G PCA) K, epsilon, alpha, V, etc.
+  ##    context --> returned by encode/decode functions
+  ##            --> contains payload/cache/meta
+  ##                  * payload --> transformed by encode/decode
+  ##                      Ex: y_list, Ty_list, Qi_list, etc.
+  ##                  * cache --> data-agnostic quantities used across stages
+  ##                      Ex: p_grid, p_star, loss_fun, etc.
+  ##                  * meta --> data-aware quantities used across stages
+  ##                      Ex: Qi_list, Q_list, etc.
+  
   
   ## ---------- Parameter Validation
   
@@ -821,6 +925,11 @@ construct_pipeline <- function(
   w[J] <- 0.5 * dp[J - 1]
   w[2:(J-1)] <- 0.5 * (dp[1:(J-2)] + dp[2:(J-1)])
   
+  ## Get default y_trans
+  if (is.null(y_trans)) {
+    y_trans <- function(x, inverse) x
+  }
+  
   ## Derive transformed support
   if (!is.null(supp_Y)) {
     supp_TY <- y_trans(supp_Y)
@@ -831,7 +940,6 @@ construct_pipeline <- function(
   ## Initialize cache
   cache_init <- list(
     p_grid = p_grid,
-    J = length(p_grid),
     dp = diff(p_grid),
     w = w,
     sqrt_w = sqrt(w),
