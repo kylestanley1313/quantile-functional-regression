@@ -5,6 +5,15 @@ import torch.nn as nn
 import torch.optim as optim
 
 
+__all__ = [
+    'train_flow',
+    'flow_encode',
+    'flow_decode',
+    'save_flow',
+    'load_flow'
+]
+
+
 # ----- Define scale/shift nets -----
 
 class MLP(nn.Module):
@@ -20,9 +29,10 @@ class MLP(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-    
+
 
 # ----- RealNVP coupling layer -----
+
 class RealNVPLayer(nn.Module):
     def __init__(self, dim, mask):
         super().__init__()
@@ -54,7 +64,7 @@ class NormalizingFlow(nn.Module):
     def __init__(self, dim, n_layers=16):
         super().__init__()
         self.layers = nn.ModuleList()
-        for i in range(n_layers):
+        for i in range(n_layers):  # TODO: Why alternate between even and odd partitions?
             mask = torch.tensor([i % 2] * (dim // 2) + [(i+1) % 2] * (dim - dim // 2),
                                 dtype=torch.float32)
             self.layers.append(RealNVPLayer(dim, mask))
@@ -74,7 +84,7 @@ class NormalizingFlow(nn.Module):
 
 # ----- Training -----
 
-def train_flow(C, n_layers, epochs=200, lr=1e-3, seed=12345):
+def train_flow(C, n_layers, max_epochs=200, lr=1e-3, seed=12345, print_epoch=None):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -89,18 +99,41 @@ def train_flow(C, n_layers, epochs=200, lr=1e-3, seed=12345):
     )
     C = torch.tensor(C, dtype=torch.float32)
 
-    for epoch in range(epochs):
+    for epoch in range(1, max_epochs + 1):
         optimizer.zero_grad()
         z, logdet = flow(C)
         log_prob = base.log_prob(z) + logdet
-        loss = -log_prob.mean()
+
+        # TODO: Do you need this Jacobian regularization?
+        # Jacobian regularization on s
+        reg = 0.0
+        for layer in flow.layers:
+            # get s-net weights
+            for p in layer.s_net.parameters():
+                reg = reg + p.pow(2).sum()
+
+        # loss = -log_prob.mean()
+        loss = -log_prob.mean() + 1e-2 * reg
         loss.backward()
         optimizer.step()
 
-        if epoch % 50 == 0:
-            print(f"Epoch {epoch}, loss={loss.item():.4f}")
+        if print_epoch is not None and ((epoch + 1) % print_epoch == 0 or (epoch + 1) == max_epochs):
+            print(f"Epoch {epoch + 1}, loss={loss.item():.4f}")
 
     return flow
+
+
+# ----- Flow Encode/Decode -----
+
+@torch.no_grad()
+def flow_encode(C, flow):
+    Z, _ = flow(torch.tensor(C, dtype=torch.float32))
+    return Z.numpy()
+
+@torch.no_grad()
+def flow_decode(Z, flow):
+    C = flow.inverse(torch.tensor(Z, dtype=torch.float32))
+    return C.numpy()
 
 
 # ----- Flow File Management -----
@@ -113,16 +146,3 @@ def load_flow(dim, n_layers, path):
     flow.load_state_dict(torch.load(path, map_location="cpu"))
     flow.eval()
     return flow
-
-
-# ----- Flow Encode/Decode -----
-
-def flow_encode(c, flow):
-    with torch.no_grad():
-        z, _ = flow(torch.tensor(c, dtype=torch.float32))
-    return z.numpy()
-
-def flow_decode(z, flow):
-    with torch.no_grad():
-        c = flow.inverse(torch.tensor(z, dtype=torch.float32))
-    return c.numpy()

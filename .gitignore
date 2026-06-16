@@ -4,3 +4,7 @@ renv.lock
 *.pyc
 src/config/*
 data/*
+scratch/*
+simulations/*
+artifacts/*
+scripts/archive/*

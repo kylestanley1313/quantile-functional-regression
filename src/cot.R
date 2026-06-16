@@ -1,54 +1,27 @@
 library(glue)
 library(irlba)
+library(MASS)
 library(minpack.lm)
 library(pracma)
 library(purrr)
 library(stringr)
 library(yaml)
 
-## Prepare Python
-library(reticulate)
-config <- read_yaml(file.path("src", "config.yml"))
-use_python(config$python$path, required = TRUE)
-py_run_string(str_glue("
-import sys
-if '{config$python$module_path}' not in sys.path:
-    sys.path.insert(0, 'config$python$module_path')
-"))
-py_flow <- import("flow", convert = TRUE)
+source('src/utils.R')
 
+init_python()
+py_pkg <- reload_py_pkg()
 
-## TODO: 
-##  - Better logging
-##  - Don't forget to add "switches" 
-##      * Balanced grids
-##      * Continuous RV
 
 
 ## ========== Utilities ==========
 
-gen_seed <- function() {
-  sample.int(.Machine$integer.max, 1)
-}
-
-get_uniform_p_grid <- function(J) {
-  1:J / (1 + J)
-}
-
-log_transform <- function(x, inverse = FALSE) {
-  if (inverse) {
-    exp(x) - 1
-  } else {
-    log(x + 1)
-  }
-}
-
-one_minus_sqcor <- function(vec_obs, vec_est) {
-  1 - cor(vec_obs, vec_est)^2
-}
-
-normalized_mse <- function(vec_obs, vec_est) {
-  sum((vec_obs - vec_est)^2) / sum(vec_obs^2)
+new_context <- function(payload, cache = NULL, meta = NULL) {
+  list(
+    payload = payload,
+    cache = cache,
+    meta = meta
+  )
 }
 
 differentiate <- function(Q, p_grid) {  ## via central differences
@@ -98,27 +71,95 @@ integrate <- function(G, p_grid, p_star, Q_star) {  ## via trapezoidal rule
   Q
 }
 
-compute_quantlets <- function(G_list, K) {
+compute_quantlets <- function(
+    G_list, K, sqrt_w,
+    Q_list = NULL, p_grid = NULL, min_dQ = 1e-8,
+    construction = c("pca", "q_mean_residual")
+) {
+  construction <- match.arg(construction)
   G_mat <- do.call(rbind, G_list)
-  G_center <- colMeans(G_mat)
-  G_mat <- scale(G_mat, center = G_center, scale = FALSE)
-  E <- irlba(G_mat, nv = K, nu = 0)$v
-  list(E = E, G_center = G_center)
+
+  if (construction == "pca") {
+    ## Legacy: K weighted PCs of G centered by colMeans(G).
+    G_center <- colMeans(G_mat)
+    G_mat_c  <- scale(G_mat, center = G_center, scale = FALSE)
+    svd_res  <- irlba(sweep(G_mat_c, 2, sqrt_w, '*'), nv = K, nu = 0)
+    E        <- svd_res$v / sqrt_w
+    sd_k     <- svd_res$d[1:K] / sqrt(nrow(G_mat) - 1)
+    return(list(E = E, G_center = G_center, sd_k = sd_k))
+  }
+
+  ## Q-mean-anchored: quantlet 1 = LQD(Q_mean), quantlets 2..K = first
+  ## K-1 weighted PCs of (G_i - LQD(Q_mean)). Reconstruction model
+  ##   G_i ~ E %*% c  with c[1] ~ 1 for typical subjects.
+  ## G_center is the zero vector so the qg_pca solver consumes E directly.
+  if (is.null(Q_list) || is.null(p_grid)) {
+    stop("construction = 'q_mean_residual' requires Q_list and p_grid.")
+  }
+  Q_mat   <- do.call(rbind, Q_list)
+  Q_mean  <- colMeans(Q_mat)
+  dQ_mean <- differentiate(Q_mean, p_grid)
+  dQ_mean[dQ_mean < min_dQ] <- min_dQ
+  G_anchor <- log(dQ_mean)                       # length J
+
+  G_resid <- sweep(G_mat, 2, G_anchor, '-')       # N x J
+
+  if (K >= 2) {
+    svd_res <- irlba(sweep(G_resid, 2, sqrt_w, '*'),
+                     nv = K - 1, nu = 0)
+    E_pc    <- svd_res$v / sqrt_w                 # J x (K-1)
+    sd_pc   <- svd_res$d[1:(K - 1)] / sqrt(nrow(G_mat) - 1)
+    E       <- cbind(G_anchor, E_pc)
+  } else {
+    ## K = 1: only the anchor.
+    E     <- matrix(G_anchor, ncol = 1)
+    sd_pc <- numeric(0)
+  }
+
+  ## sd_k[1]: stdev of the anchor coefficient c[1] across subjects, computed
+  ## post-hoc by projecting each G_i onto E in the weighted inner product.
+  ## (For typical subjects c[1] ~ 1 with small scatter; this lets downstream
+  ## plotting / normalization code treat all K coefficients uniformly.)
+  W       <- sqrt_w^2
+  EtWE    <- crossprod(E, sweep(E, 1, W, '*'))
+  EtWG    <- crossprod(E, sweep(t(G_mat), 1, W, '*'))   # K x N
+  c_mat   <- t(solve(EtWE, EtWG))                       # N x K
+  sd_k1   <- sd(c_mat[, 1])
+  sd_k    <- c(sd_k1, sd_pc)
+
+  list(E = E, G_center = numeric(ncol(G_mat)), sd_k = sd_k)
 }
 
+compute_q_pcs <- function(Q_list, K, sqrt_w) {
+  Q_mat <- do.call(rbind, Q_list)
+  Q_center <- colMeans(Q_mat)
+  Q_mat <- scale(Q_mat, center = Q_center, scale = FALSE)
+  svd_res <- irlba(sweep(Q_mat, 2, sqrt_w, '*'), nv = K, nu = 0)
+  E <- svd_res$v / sqrt_w
+  sd_k <- svd_res$d[1:K] / sqrt(nrow(Q_mat) - 1)
+  list(E = E, Q_center = Q_center, sd_k = sd_k)
+}
+
+
+get_step_fun <- function(Q, supp_TY) {
+  idx <- findInterval(Q, supp_TY, rightmost.closed = FALSE)
+  idx <- pmax(idx, 1)
+  idx <- pmin(idx, length(supp_TY))
+  Q <- supp_TY[idx]
+  Q
+}
+
+
 inv_eqf_cgrid <- function(Q, p_grid, pi_grid, supp_TY = NULL) {
-  
-  ## Linearly interpolate onto common grid
+
+  ## Linearly interpolate onto subject grid
   ## NOTE: `rule = 2` indicates that the value at the closest data extreme 
   ## is used for extrapolation
   Qi <- approx(x = p_grid, y = Q, xout = pi_grid, rule = 2)$y
   
   ## Get step function
   if (!is.null(supp_TY)) {
-    idx <- findInterval(Qi, supp_TY, rightmost.closed = FALSE)
-    idx <- pmax(idx, 1)
-    idx <- pmin(idx, length(supp_TY))
-    Qi <- supp_TY[idx]
+    Qi <- get_step_fun(Qi, supp_TY)
   }
   
   Qi
@@ -132,109 +173,163 @@ inv_lqd <- function(G, p_grid, p_star, Q_star) {
 
 qg_pca <- function(
     Q_obs, E, G_center, p_grid, p_star, 
+    Q_star = NULL,
     sqrt_w = NULL,
     c_init = NULL, 
     Q_star_init = NULL,
+    lambda = NULL,
     control = nls.lm.control(maxiter = 200, ftol = 1e-10)
 ) {
   
-  ## Set parameters
   K <- ncol(E)
   J <- nrow(E)
   w <- sqrt_w^2
+  lambda <- lambda %||% 0
   
-  ## Set p_star_idx
   p_star_idx <- which.min(abs(p_grid - p_star))
   
-  ## Set initial values for c and Q_star
   if (is.null(c_init)) c_init <- rep(0, K)
-  if (is.null(Q_star_init)) {
-    ## Compute Q_hat for c_init to find Q_star that matches pth quantile
-    G_0 <- G_center + as.vector(E %*% c_init)
-    Q_hat_0 <- inv_lqd(G_0, p_grid, p_star = p_star, Q_star = 0)
-    Q_star_init <- sum(w * (Q_obs - Q_hat_0)) / sum(w)
+  
+  if (is.null(Q_star)) {
+    if (is.null(Q_star_init)) {
+      G_0 <- G_center + as.vector(E %*% c_init)
+      Q_hat_0 <- inv_lqd(G_0, p_grid, p_star = p_star, Q_star = 0)
+      Q_star_init <- sum(w * (Q_obs - Q_hat_0)) / sum(w)
+    }
   }
   
-  ## Residual function (return vector of length Ji)
+  ## ---- Residual function ----
   resid_fun <- function(par) {
-    c <- par[1:K]
-    Q_star <- par[K+1]
+    if (is.null(Q_star)) {
+      c <- par[1:K]
+      Q_star_ <- par[K + 1]
+    } else {
+      c <- par[1:K]
+      Q_star_ <- Q_star
+    }
+    
     G_hat <- G_center + as.vector(E %*% c)
-    Q_hat <- inv_lqd(G_hat, p_grid, p_star, Q_star)
+    Q_hat <- inv_lqd(G_hat, p_grid, p_star, Q_star_)
+    
     r <- Q_obs - Q_hat
     if (!is.null(sqrt_w)) r <- sqrt_w * r
+    
+    ## L2 penalty as extra residuals
+    if (lambda > 0) {
+      r_pen <- sqrt(lambda) * c
+      r <- c(r, r_pen)
+    }
+    
     r
   }
   
-  ## Jacobian function
+  ## ---- Jacobian function ----
   jac_fun <- function(par) {
+    if (is.null(Q_star)) {
+      c <- par[1:K]
+      Pdim <- K + 1
+    } else {
+      c <- par[1:K]
+      Pdim <- K
+    }
     
-    ## Parameters
-    c <- par[1:K]
-    
-    ## Recompute G and exp(G)
     G_hat <- G_center + as.vector(E %*% c)
     dQ <- exp(G_hat)
+    F  <- dQ * E
+    dp <- diff(p_grid)
     
-    ## Precompute f_jk = exp(G_j) * E_jk
-    F  <- dQ * E                     # J x K
-    dp <- diff(p_grid)               # length J-1
-    
-    ## Trapezoidal increments: interval (j-1, j)
     trap <- 0.5 * (F[-1, , drop = FALSE] +
-                     F[-J, , drop = FALSE]) *
-      dp                       # (J-1) x K
+                     F[-J, , drop = FALSE]) * dp
     
-    ## Allocate Jacobian
-    J_mat <- matrix(0, nrow = J, ncol = K + 1)
+    J_mat <- matrix(0, nrow = J, ncol = Pdim)
     
-    ## ---- Forward part: j > p_star_idx ----
+    ## Forward
     if (p_star_idx < J) {
       cs_fwd <- apply(
         trap[p_star_idx:(J - 1), , drop = FALSE],
-        2,
-        cumsum
+        2, cumsum
       )
       J_mat[(p_star_idx + 1):J, 1:K] <- -cs_fwd
     }
     
-    ## ---- Backward part: j < p_star_idx ----
+    ## Backward
     if (p_star_idx > 1) {
       idx <- 1:(p_star_idx - 1)
-      
       cs_bwd <- apply(
         trap[idx, , drop = FALSE][length(idx):1, , drop = FALSE],
-        2,
-        cumsum
+        2, cumsum
       )
-      
       J_mat[idx, 1:K] <- cs_bwd[length(idx):1, , drop = FALSE]
     }
     
-    ## ---- Derivative w.r.t Q_star ----
-    J_mat[, K + 1] <- -1
+    if (is.null(Q_star)) {
+      J_mat[, K + 1] <- -1
+    }
     
-    if (!is.null(sqrt_w)) J_mat <- diag(sqrt_w) %*% J_mat
+    if (!is.null(sqrt_w)) {
+      J_mat <- diag(sqrt_w) %*% J_mat
+    }
+    
+    ## Jacobian rows for L2 penalty
+    if (lambda > 0) {
+      J_pen <- matrix(0, nrow = K, ncol = Pdim)
+      J_pen[, 1:K] <- sqrt(lambda) * diag(K)
+      J_mat <- rbind(J_mat, J_pen)
+    }
+    
     J_mat
   }
   
-  par_init <- c(c_init, Q_star_init)
-  fit <- nls.lm(par = par_init, fn = resid_fun, jac = jac_fun, control = control)
-  list(par = fit$par, fit = fit, converged = (fit$info %in% c(1,2)))
+  if (is.null(Q_star)) {
+    par_init <- c(c_init, Q_star_init)
+  } else {
+    par_init <- c(c_init)
+  }
+  
+  fit <- nls.lm(
+    par = par_init,
+    fn = resid_fun,
+    jac = jac_fun,
+    control = control
+  )
+  
+  list(
+    c = fit$par[1:K],
+    Q_star = if (is.null(Q_star)) fit$par[K + 1] else Q_star,
+    converged = (fit$info %in% c(1, 2)),
+    Q_star_fixed = !is.null(Q_star)
+  )
 }
 
-choose_near_lossless_K <- function(
-    epsilon, alpha, V, K_max, loss_fun,
-    G_list, Q_list, Qi_list, 
-    p_grid, Ji_vec, p_star, 
+q_pca <- function(Q_obs, E, Q_center, sqrt_w) {
+  Q_centered <- (Q_obs - Q_center) * sqrt_w
+  c_i <- drop(t(E*sqrt_w) %*% Q_centered)
+  c_i
+}
+
+g_pca <- function(G_obs, E, G_center, sqrt_w) {
+  G_centered <- (G_obs - G_center) * sqrt_w
+  c_i <- drop(t(E * sqrt_w) %*% G_centered)
+  c_i
+}
+
+choose_near_lossless_K_qg_pca <- function(
+    epsilon, alpha, V, K_max,
+    loss_fun, loss_scale,
+    G_list, Q_list, Qi_list,
+    p_grid, Ji_vec, p_star,
+    Q_star = NULL,
     sqrt_w = NULL,
     supp_TY = NULL,
+    lambda = 0,
+    min_dQ = 1e-8,
+    construction = c("pca", "q_mean_residual"),
     seed = 12345
 ) {
+  construction <- match.arg(construction)
   
   ## Set parameters
   N <- length(G_list)
-  w <- sqrt_w^2
   
   ## Assign folds
   set.seed(seed)
@@ -253,7 +348,11 @@ choose_near_lossless_K <- function(
       idx_valid <- which(folds == v)
       
       ## Compute quantlets E from training data
-      out <- compute_quantlets(G_list[idx_train], K)
+      out <- compute_quantlets(
+        G_list[idx_train], K, sqrt_w,
+        Q_list = Q_list[idx_train], p_grid = p_grid, min_dQ = min_dQ,
+        construction = construction
+      )
       E <- out$E
       G_center <- out$G_center
       
@@ -266,33 +365,36 @@ choose_near_lossless_K <- function(
           G_center = G_center, 
           p_grid = p_grid,
           p_star = p_star,
-          sqrt_w = sqrt_w
+          Q_star  = Q_star,
+          sqrt_w = sqrt_w,
+          lambda = lambda
         )
         converged[i] <- out$converged
-        c <- out$par
         
         ## Map c --> G --> Q
-        G <- G_center + rowSums(E %*% c[1:K])
+        G <- G_center + rowSums(E %*% out$c)
         Q <- inv_lqd(
           G = G, 
           p_grid = p_grid, 
           p_star = p_star, 
-          Q_star = c[K+1]
+          Q_star = out$Q_star
         )
         Qi <- inv_eqf_cgrid(
           Q = Q,
           p_grid = p_grid,
-          pi_grid = get_uniform_p_grid(Ji_vec[i]),
+          pi_grid = pi_grid_fun(Ji_vec[i]),
           supp_TY = supp_TY
         )
         
         ## Compute loss
-        losses[i] <- loss_fun(Qi_list[[i]], Qi)
+        dp <- 1 / (Ji_vec[i] + 1)
+        losses[i] <- loss_fun(Qi_list[[i]], Qi, dp) / loss_scale
         
       }
     }
     
     ## CV result reporting
+    idx_outliers <- which(losses >= epsilon)
     prop_tol <- mean(losses < epsilon)
     msg <- glue(
       "converged = {sum(converged)} of {N}\n",
@@ -305,18 +407,253 @@ choose_near_lossless_K <- function(
     ## Stopping
     if (prop_tol >= 1 - alpha) {
       message(str_glue("Qualifying dimension found. Setting K = {K}."))
-      return(K)
+      break
     }
     
     K <- K + 1
   }
   
-  warning(glue(
-    "Qualifying dimension not found. Candidates exhausted. ",
-    "Setting K = {K_max} = K_max."
-  ))
-  return(K)
+  if (K == K_max + 1) {
+    warning(glue(
+      "Qualifying dimension not found. Candidates exhausted. ",
+      "Setting K = {K_max} = K_max."
+    ))
+    K = K_max
+  }
+  return(list(K = K, idx_outliers = idx_outliers))
 }
+
+
+choose_near_lossless_K_q_pca <- function(
+    epsilon, alpha, V, K_max,
+    loss_fun, loss_scale,
+    Q_list, Qi_list,
+    p_grid, Ji_vec,
+    sqrt_w = NULL,
+    supp_TY = NULL,
+    seed = 12345
+) {
+  
+  ## Set parameters
+  N <- length(Q_list)
+  
+  ## Assign folds
+  set.seed(seed)
+  folds <- sample(rep(1:V, length.out = N))
+  
+  K <- 1
+  while (K <= K_max) {
+    message(str_glue("---------- K = {K} ----------"))
+    
+    losses <- vector(mode = "numeric", length = N)
+    for (v in 1:V) {
+      
+      ## Get train/valid indices
+      idx_train <- which(folds != v)
+      idx_valid <- which(folds == v)
+      
+      ## Compute weighted PCA basis from training data
+      out      <- compute_q_pcs(Q_list[idx_train], K, sqrt_w)
+      E        <- out$E
+      Q_center <- out$Q_center
+      
+      for (i in idx_valid) {
+        
+        ## Project onto basis: c = E^T W (Q - Q_center)
+        c_i <- q_pca(Q_list[[i]], E, Q_center, sqrt_w)
+        
+        ## Reconstruct: Q_hat = Q_center + E c
+        Q_hat <- Q_center + drop(E %*% c_i)
+        
+        ## Map Q_hat back to subject-specific grid
+        Qi_hat <- inv_eqf_cgrid(
+          Q      = Q_hat,
+          p_grid = p_grid,
+          pi_grid = pi_grid_fun(Ji_vec[i]),
+          supp_TY = supp_TY
+        )
+        
+        ## Compute loss
+        dp        <- 1 / (Ji_vec[i] + 1)
+        losses[i] <- loss_fun(Qi_list[[i]], Qi_hat, dp) / loss_scale
+        
+      }
+    }
+    
+    ## CV result reporting
+    idx_outliers <- which(losses >= epsilon)
+    prop_tol     <- mean(losses < epsilon)
+    msg <- glue(
+      "mean loss = {mean(losses)}\n",
+      "max loss  = {max(losses)}\n",
+      "prop tol  = {prop_tol}"
+    )
+    message(msg)
+    
+    ## Stopping
+    if (prop_tol >= 1 - alpha) {
+      message(str_glue("Qualifying dimension found. Setting K = {K}."))
+      break
+    }
+    
+    K <- K + 1
+  }
+  
+  if (K == K_max + 1) {
+    warning(glue(
+      "Qualifying dimension not found. Candidates exhausted. ",
+      "Setting K = {K_max} = K_max."
+    ))
+    K = K_max
+  }
+  return(list(K = K, idx_outliers = idx_outliers))
+}
+
+
+choose_near_lossless_K_g_pca <- function(
+    epsilon, alpha, V, K_max,
+    loss_fun, loss_scale,
+    G_list, Qi_list,
+    p_grid, Ji_vec, p_star,
+    Q_star_list,
+    sqrt_w = NULL,
+    supp_TY = NULL,
+    seed = 12345
+) {
+
+  ## Set parameters
+  N <- length(G_list)
+
+  ## Assign folds
+  set.seed(seed)
+  folds <- sample(rep(1:V, length.out = N))
+
+  K <- 1
+  while (K <= K_max) {
+    message(str_glue("---------- K = {K} ----------"))
+
+    losses <- vector(mode = "numeric", length = N)
+    for (v in 1:V) {
+
+      ## Get train/valid indices
+      idx_train <- which(folds != v)
+      idx_valid <- which(folds == v)
+
+      ## Compute weighted PCA basis in G-space from training data
+      out      <- compute_quantlets(G_list[idx_train], K, sqrt_w)
+      E        <- out$E
+      G_center <- out$G_center
+
+      for (i in idx_valid) {
+
+        ## Project onto basis
+        c_i <- g_pca(G_list[[i]], E, G_center, sqrt_w)
+
+        ## Reconstruct: G_hat -> Q_hat -> Qi_hat
+        G_hat <- G_center + drop(E %*% c_i)
+        Q_hat <- inv_lqd(G_hat, p_grid, p_star, Q_star_list[[i]])
+        Qi_hat <- inv_eqf_cgrid(
+          Q      = Q_hat,
+          p_grid = p_grid,
+          pi_grid = pi_grid_fun(Ji_vec[i]),
+          supp_TY = supp_TY
+        )
+
+        ## Compute loss
+        dp        <- 1 / (Ji_vec[i] + 1)
+        losses[i] <- loss_fun(Qi_list[[i]], Qi_hat, dp) / loss_scale
+
+      }
+    }
+
+    ## CV result reporting
+    idx_outliers <- which(losses >= epsilon)
+    prop_tol     <- mean(losses < epsilon)
+    msg <- glue(
+      "mean loss = {mean(losses)}\n",
+      "max loss  = {max(losses)}\n",
+      "prop tol  = {prop_tol}"
+    )
+    message(msg)
+
+    ## Stopping
+    if (prop_tol >= 1 - alpha) {
+      message(str_glue("Qualifying dimension found. Setting K = {K}."))
+      break
+    }
+
+    K <- K + 1
+  }
+
+  if (K == K_max + 1) {
+    warning(glue(
+      "Qualifying dimension not found. Candidates exhausted. ",
+      "Setting K = {K_max} = K_max."
+    ))
+    K = K_max
+  }
+  return(list(K = K, idx_outliers = idx_outliers))
+}
+
+
+
+## ========== Y-Axis Transforms ==========
+
+identity_transform <- function(x, shift = 0, inverse = FALSE) {
+  if (inverse) {
+    x - shift
+  } else {
+    x + shift
+  }
+}
+
+log_transform <- function(x, shift = 0, inverse = FALSE) {
+  if (inverse) {
+    exp(x) - shift
+  } else {
+    log(x + shift)
+  }
+}
+
+loglog_transform <- function(x, shift = 0, inverse = FALSE) {
+  if (inverse) {
+    log_transform(log_transform(x, shift, TRUE), shift, TRUE)
+  } else {
+    log_transform(log_transform(x, shift), shift)
+  }
+}
+
+sqrt_transform <- function(x, shift = 0, inverse = FALSE) {
+  if (inverse) {
+    x^2 - shift
+  } else {
+    sqrt(x + shift)
+  }
+}
+
+boxcox_transform <- function(x, shift = 0, lambda = 0, inverse = FALSE) {
+  if (inverse) {
+    if (abs(lambda) < 1e-8) {
+      exp(x) - shift
+    } else {
+      (lambda*x + 1)^(1/lambda) - shift
+    }
+  } else {
+    if (abs(lambda) < 1e-8) {
+      log(x + shift)
+    } else {
+      ((x + shift)^lambda - 1) / lambda
+    }
+  }
+}
+
+y_trans_to_fun <- list(
+  'identity' = identity_transform,
+  'log' = log_transform,
+  'loglog' = loglog_transform,
+  'sqrt' = sqrt_transform,
+  'boxcox' = boxcox_transform
+)
 
 
 ## ========== Pipeline Architecture ==========
@@ -395,18 +732,27 @@ new_pipeline <- function(stages) {
   )
 }
 
-fit.cot_pipeline <- function(pipeline, data, ...) {
-  context <- list(data = data, cache = pipeline$cache_init)
+fit.cot_pipeline <- function(pipeline, data, ...) { 
+  context <- list(
+    payload = data,
+    cache = pipeline$cache_init,
+    meta = pipeline$meta_init
+  )
   
-  for (i in seq_len(pipeline$n_stages)) {
-    stage <- pipeline$stages[[i]]
-    if (stage$requires_fit && !stage$fitted) {
-      stage <- fit(stage, context, ...)
-      pipeline$stages[[i]] <- stage
-    }
-    context <- encode(stage, context, ...)
-  }
-  pipeline
+  for (i in seq_len(pipeline$n_stages)) { 
+    stage <- pipeline$stages[[i]] 
+    if (stage$requires_fit && !stage$fitted) { 
+      stage <- fit(stage, context, ...) 
+      pipeline$stages[[i]] <- stage 
+    } 
+    context <- encode(stage, context, ...) 
+  } 
+  
+  pipeline$training <- list(
+    cache = context$cache,
+    meta = context$meta
+  )
+  pipeline 
 }
 
 encode.cot_pipeline <- function(pipeline, context, from = 0, to = pipeline$n_stages, ...) {
@@ -437,103 +783,275 @@ decode.cot_pipeline <- function(pipeline, context, from = pipeline$n_stages, to 
 
 ## ---------- Transform: Y-Axis
 
+fit_fun_y_axis <- function(context, state, ...) {
+  y_list <- context$payload
+  
+  ## Set y_trans_fun
+  if (state$y_trans == 'boxcox') {
+    y <- unlist(y_list)
+    y <- sample(y, size = round(state$boxcox_samp_rate*length(y)))
+    bc <- boxcox(
+      y + state$y_shift ~ 1, 
+      lambda = state$boxcox_lambdas, 
+      plotit = FALSE
+    )
+    state$boxcox_lambda_hat <- bc$x[which.max(bc$y)]
+    state$y_trans_fun <- partial(
+      boxcox_transform, 
+      lambda = state$boxcox_lambda_hat,
+      shift = state$y_shift
+    )
+  } else {
+    state$y_trans_fun <- partial(y_trans_to_fun[[state$y_trans]], shift = state$y_shift)
+  }
+  
+  state
+}
+
 encode_fun_y_axis <- function(context, state) {
-  y_list <- context$data
-  Ty_list <- lapply(y_list, context$cache$y_trans)
-  context$data <- Ty_list
+  y_list <- context$payload
+  supp_Y <- context$cache$supp_Y
+  y_min <- context$cache$y_min
+  y_star <- context$cache$y_star
+  
+  ## Use y_trans to compute Ty_list
+  Ty_list <- lapply(y_list, state$y_trans_fun)
+  
+  ## Use y_trans to compute supp_TY
+  supp_TY <- NULL
+  if (!is.null(supp_Y)) {
+    supp_TY <- state$y_trans_fun(supp_Y)
+  }
+  context$cache$supp_TY <- supp_TY
+  
+  ## Use y_trans to compute Q_min  
+  Q_min <- NULL
+  if (!is.null(y_min)) {
+    Q_min <- state$y_trans_fun(y_min)
+  }
+  context$cache$Q_min <- Q_min
+  
+  ## Use y_trans to compute Q_star 
+  Q_star <- NULL
+  if (!is.null(y_star)) {
+    Q_star <- state$y_trans_fun(y_star)
+  }
+  context$cache$Q_star <- Q_star
+  
+  context$payload <- Ty_list
   context
 }
 
 decode_fun_y_axis <- function(context, state) {
-  Ty_list <- context$data
-  y_list <- lapply(Ty_list, function(Ty) context$cache$y_trans(Ty, inverse = TRUE))
-  context$data <- y_list
+  Ty_list <- context$payload
+  y_list <- lapply(Ty_list, function(Ty) state$y_trans_fun(Ty, inverse = TRUE))
+  context$payload <- y_list
   context
+}
+
+stage_y_axis <- function(
+    y_trans = "identity",
+    y_shift = 0,
+    boxcox_lambdas = seq(-5,5,0.1),
+    boxcox_samp_rate = 0.01
+) {
+  new_stage(
+    name = "y_axis",
+    input_space = "Y",
+    output_space = "TY",
+    requires_fit = TRUE,
+    init_state = list(
+      y_trans = y_trans,
+      y_shift = y_shift,
+      boxcox_lambdas = boxcox_lambdas,
+      boxcox_samp_rate = boxcox_samp_rate
+    ),
+    fit_fun = fit_fun_y_axis,
+    encode_fun = encode_fun_y_axis,
+    decode_fun = decode_fun_y_axis
+  )
 }
 
 
 ## ---------- Transform: EQF on Subject Grid
 
 encode_fun_eqf_sgrid <- function(context, state) {
-  Ty_list <- context$data
+  Ty_list <- context$payload
   Qi_list <- lapply(Ty_list, function(Ty) sort(Ty))
-  context$data <- Qi_list
-  context$cache$Qi_list <- Qi_list
-  context$cache$Ji_vec <- lengths(Qi_list)
+  context$payload <- Qi_list
+  context$meta$Qi_list <- Qi_list
+  context$meta$Ji_vec <- lengths(Qi_list)
   context
 }
 
 decode_fun_eqf_sgrid <- function(context, state) {
-  Qi_list <- context$data
+  Qi_list <- context$payload
   Ty_list <- Qi_list  ## recovers input up to rearrangement
-  context$data <- Ty_list
+  context$payload <- Ty_list
   context
+}
+
+stage_eqf_sgrid <- function() {
+  new_stage(
+    name = "eqf_sgrid",
+    input_space = "TY",
+    output_space = "Qi",
+    requires_fit = FALSE,
+    encode_fun = encode_fun_eqf_sgrid,
+    decode_fun = decode_fun_eqf_sgrid
+  )
 }
 
 
 ## ---------- Transform: Smooth EQF on Dense Common Grid
 
-encode_fun_eqf_cgrid <- function(context, state) {
-  Qi_list <- context$data
-  Ji_vec <- context$cache$Ji_vec
-  J <- context$cache$J
-  p_grid <- context$cache$p_grid
-  y_trans <- context$cache$y_trans
+interpolate_onto_interior <- function(Qi, p_grid, Q_min = NULL) {
+  Ji <- length(Qi)
+  J <- length(p_grid)
+  
+  ## Get subject grid
+  pi_grid <- pi_grid_fun(Ji)
+  
+  ## Get interior mask
+  interior_mask <- rep(TRUE, J)
+  interior_mask[p_grid < min(pi_grid)] <- FALSE
+  interior_mask[p_grid > max(pi_grid)] <- FALSE
+  
+  ## Get anchor points
+  anchors <- which(!duplicated(Qi))
+  a <- pi_grid[anchors]
+  v <- Qi[anchors]
+  
+  ## Update anchor points with theoretical min/max
+  if (!is.null(Q_min)) {
+    if (v[1] == Q_min) {  ## remove the leftmost anchor point
+      a <- a[2:length(a)]
+      v <- v[2:length(v)]
+    } 
+    a <- c(0, a)
+    v <- c(Q_min, v)
+    interior_mask[p_grid < min(pi_grid)] <- TRUE
+  }
+  
+  ## Interpolate onto interior through anchors (leaving exterior NA)
+  out <- rep(NA, J)
+  out[interior_mask] <- spinterp(x = a, y = v, xp = p_grid[interior_mask])
+  out
+}
+
+
+fit_fun_eqf_cgrid <- function(context, state, ...) {
+  Qi_list <- context$payload
+  Ji_vec <- context$meta$Ji_vec
+  Q_min <- context$cache$Q_min
   ratio_trans <- context$cache$ratio_trans
-  y_min <- context$cache$y_min
+  p_star <- context$cache$p_star
+  p_grid <- state$p_grid
   
   ## Check p_grid
-  max_Ji <- max(Ji_vec)
-  min_Qi <- 1 / (1 + max_Ji)
-  max_Qi <- max_Ji / (1 + max_Ji)
+  J <- length(p_grid)
+  Ji_max <- max(Ji_vec)
+  min_Qi <- 1 / (1 + Ji_max)
+  max_Qi <- Ji_max / (1 + Ji_max)
   if (p_grid[1] < min_Qi || p_grid[J] > max_Qi) {
-    stop("Can't evaluate EQFs on tails of p_grid!")
+    warning("Can't evaluate EQFs on tails of p_grid. Trimming as needed.")
+    p_grid <- p_grid[p_grid >= min_Qi & p_grid <= max_Qi]
+    p_grid <- unique(c(min_Qi, p_grid, max_Qi))
+    J <- length(p_grid)
+    state$p_grid <- p_grid
+  }
+  if (!(
+    all(diff(p_grid) > 0) &&  ## strictly increasing
+    J >= 3 &&
+    p_grid[1] > 0 &&
+    p_grid[J] < 1
+  )) {
+    stop("Invalid p-grid!")
   }
   if (p_grid[1] > min_Qi || p_grid[J] < max_Qi) {
     warning(glue(
       "Add points to the left and/or right tail of p_grid ",
-      "to preserve tail information!"
+      "to maximally preserve tail information."
     ))
   }
+
+  ## Compute weights that will later be used to account for unbalanced grid
+  w <- get_quadrature_weights(p_grid)
+  # state$dp <- dp
+  state$w <- w
+  state$sqrt_w <- sqrt(w)
   
-  ## Set parameters
-  N <- length(Qi_list)
-  Q_min <- ifelse(is.null(y_min), NULL, y_trans(y_min))
-  Q_mat <- matrix(nrow = N, ncol = J)
-  ratio_trans <- ratio_trans
+  ## Set p_star_idx
+  p_star_idx <- which.min(abs(p_grid - p_star))
+  state$p_star_idx <- p_star_idx
   
   ## Interpolate onto interior points
+  N <- length(Qi_list)
+  Q_mat <- matrix(nrow = N, ncol = J)
   for (i in 1:N) {
-    
-    ## Get Qi for this subject
-    Qi <- Qi_list[[i]]
-    
-    ## Get subject grid
-    pi_grid <- get_uniform_p_grid(Ji_vec[[i]])
-    
-    ## Get interior mask
-    interior_mask <- rep(TRUE, J)
-    interior_mask[p_grid < min(pi_grid)] <- FALSE
-    interior_mask[p_grid > max(pi_grid)] <- FALSE
-    
-    ## Get anchor points
-    anchors <- which(!duplicated(Qi))
-    a <- pi_grid[anchors]
-    v <- Qi[anchors]
-    
-    ## Update anchor points with theoretical min/max
-    if (!is.null(Q_min)) {
-      if (v[1] == Q_min) {  ## remove the leftmost anchor point
-        a <- a[2:length(a)]
-        v <- v[2:length(v)]
-      } 
-      a <- c(0, a)
-      v <- c(Q_min, v)
-    }
-    
-    ## Interpolate onto interior through anchors
-    Q_mat[i,interior_mask] <- spinterp(x = a, y = v, xp = p_grid[interior_mask])
-    
+    Q_mat[i,] <- interpolate_onto_interior(Qi_list[[i]], p_grid, Q_min)
+  }
+  
+  ## Get common grid points for which to compute ratios
+  pi_max <- state$Ji_min / (1 + state$Ji_min)
+  exterior_cols <- which(p_grid > pi_max)
+  # if (!is.null(Q_min)) {
+  if (is.null(Q_min)) {
+    pi_min <- 1 / (1 + state$Ji_min)
+    exterior_cols <- c(exterior_cols, which(p_grid < pi_min))
+  }
+  
+  ## Get interior sets for those common grid points
+  interior_sets <- lapply(
+    exterior_cols,
+    function(j) which(!is.na(Q_mat[,j]))
+  )
+  names(interior_sets) <- exterior_cols
+  
+  ## Handle NULL ratio_trans
+  if (is.null(ratio_trans)) {
+    ratio_trans <- function(x, ...) x
+  }
+  
+  ## Compute ratios for tail extrapolation
+  exterior_scales <- vector('list', length(exterior_cols))
+  names(exterior_scales) <- exterior_cols
+  p_mid <- which.min(abs(p_grid - 0.5))
+  ext_cols_left <- sort(exterior_cols[exterior_cols < p_mid], decreasing = TRUE)
+  ext_cols_right <- sort(exterior_cols[exterior_cols > p_mid])
+  for (j in c(ext_cols_left, ext_cols_right)) {
+    j_ <- ifelse(j < p_mid, j + 1, j - 1)
+    I_j <- interior_sets[[as.character(j)]]  ## interior indices
+    E_j <- which(is.na(Q_mat[,j]))           ## exterior indices
+    exterior_scales[[as.character(j)]] <- ratio_trans(
+      mean(ratio_trans(Q_mat[I_j,j] / Q_mat[I_j,j_])),
+      inverse = TRUE
+    )
+  }
+  # for (j in c(ext_cols_left, ext_cols_right)) {
+  #   j_1 <- ifelse(j < p_mid, j + 1, j - 1)
+  #   j_2 <- ifelse(j < p_mid, j + 2, j - 2)
+  #   I_j <- interior_sets[[as.character(j)]]  ## interior indices
+  #   E_j <- which(is.na(Q_mat[,j]))           ## exterior indices
+  #   ratio_vec <- (Q_mat[I_j,j] - Q_mat[I_j,j_1]) / (Q_mat[I_j,j_1] - Q_mat[I_j,j_2])
+  #   exterior_scales[[as.character(j)]] <- ratio_trans(mean(ratio_trans(ratio_vec)), inverse = TRUE)
+  # } 
+  
+  state$exterior_scales <- exterior_scales
+  state
+}
+
+encode_fun_eqf_cgrid <- function(context, state) {
+  Qi_list <- context$payload
+  p_grid <- state$p_grid
+  Q_min <- context$cache$Q_min
+  
+  ## Interpolate onto interior points
+  N <- length(Qi_list)
+  J <- length(p_grid)
+  Q_mat <- matrix(nrow = N, ncol = J)
+  for (i in 1:N) {
+    Q_mat[i,] <- interpolate_onto_interior(Qi_list[[i]], p_grid, Q_min)
   }
   
   ## Get interior sets
@@ -544,55 +1062,295 @@ encode_fun_eqf_cgrid <- function(context, state) {
   )
   names(interior_sets) <- exterior_cols
   
-  ## Ratio-based extrapolation in left and right tails
-  p_mid <- J / 2
+  ## Use pre-computed exterior scales to extrapolate in left and right tails
+  p_mid <- which.min(abs(p_grid - 0.5))
   ext_cols_left <- sort(exterior_cols[exterior_cols < p_mid], decreasing = TRUE)
   ext_cols_right <- sort(exterior_cols[exterior_cols > p_mid])
   for (j in c(ext_cols_left, ext_cols_right)) {
     j_ <- ifelse(j < p_mid, j + 1, j - 1)
     I_j <- interior_sets[[as.character(j)]]  ## interior indices
     E_j <- which(is.na(Q_mat[,j]))           ## exterior indices
-    if (is.null(ratio_trans)) {
-      ratio_trans <- function(x, ...) x
-    }
-    scale_j <- ratio_trans(
-      mean(ratio_trans(Q_mat[I_j,j] / Q_mat[I_j,j_])), 
-      inverse = TRUE
-    )
-    Q_mat[E_j,j] <- scale_j * Q_mat[E_j,j_]
+    Q_mat[E_j,j] <- state$exterior_scales[[as.character(j)]] * Q_mat[E_j,j_]
   }
+  # for (j in c(ext_cols_left, ext_cols_right)) {
+  #   j_1 <- ifelse(j < p_mid, j + 1, j - 1)
+  #   j_2 <- ifelse(j < p_mid, j + 2, j - 2)
+  #   I_j <- interior_sets[[as.character(j)]]  ## interior indices
+  #   E_j <- which(is.na(Q_mat[,j]))           ## exterior indices
+  #   Q_mat[E_j,j] <- Q_mat[E_j,j_1] + 
+  #     (Q_mat[E_j,j_1] - Q_mat[E_j,j_2]) * 
+  #     state$exterior_scales[[as.character(j)]]
+  # }
   
   Q_list <- asplit(Q_mat, MARGIN = 1)
-  context$data <- Q_list
-  context$cache$Q_list <- Q_list
+  context$payload <- Q_list
+  context$meta$Q_list <- Q_list
+  context$cache$p_grid <- p_grid
+  context$cache$dp <- state$dp
+  context$cache$w <- state$w
+  context$cache$sqrt_w <- state$sqrt_w
+  context$cache$p_star_idx <- state$p_star_idx
   context
 }
 
+
 decode_fun_eqf_cgrid <- function(context, state) {
-  Q_list <- context$data
-  Ji_vec <- context$cache$Ji_vec
-  J <- context$cache$J
+  Q_list <- context$payload
+  Ji_vec <- context$meta$Ji_vec
+  if (is.null(Ji_vec))
+    stop("decode_fun_eqf_cgrid requires Ji_vec in context$meta")
   p_grid <- context$cache$p_grid
+  J <- length(p_grid)
   supp_TY <- context$cache$supp_TY
   
   ## Linearly interpolate through p_grid onto pi_grid
   N <- length(Q_list)
   Qi_list <- vector(mode = "list", length = N)
   for (i in 1:N) {
-    pi_grid <- get_uniform_p_grid(Ji_vec[[i]])
+    pi_grid <- pi_grid_fun(Ji_vec[i])
     Qi_list[[i]] <- inv_eqf_cgrid(Q_list[[i]], p_grid, pi_grid, supp_TY)
   }
   
-  context$data <- Qi_list
+  context$payload <- Qi_list
   context
+}
+
+stage_eqf_cgrid <- function(p_grid = seq(0.01, 0.99, by = 0.01), Ji_min = 100) {
+  new_stage(
+    name = "eqf_cgrid",
+    input_space = "Qi",
+    output_space = "Q",
+    requires_fit = TRUE,
+    init_state = list(p_grid = p_grid, Ji_min = Ji_min),
+    fit_fun = fit_fun_eqf_cgrid,
+    encode_fun = encode_fun_eqf_cgrid,
+    decode_fun = decode_fun_eqf_cgrid
+  )
+}
+
+
+## ---------- Transform: Q-PCA
+
+fit_fun_q_pca <- function(context, state, ...) {
+  Q_list <- context$meta$Q_list
+  Qi_list <- context$meta$Qi_list
+  p_grid <- context$cache$p_grid
+  Ji_vec <- context$meta$Ji_vec
+  supp_TY <- context$cache$supp_TY
+  sqrt_w <- context$cache$sqrt_w
+  loss_fun <- context$cache$loss_fun
+  loss_scale_fun <- context$cache$loss_scale_fun
+  loss_scale_samp_rate <- context$cache$loss_scale_samp_rate
+  p_scale <- context$cache$p_scale
+  
+  ## Set loss scale via a sample of the Qi on an augmented p-grid
+  set.seed(state$seed)
+  N <- length(Qi_list)
+  idx <- sample(1:N, size = floor(loss_scale_samp_rate * N), replace = FALSE)
+  Qi_samp <- Qi_list[idx]
+  pi_grid_samp <- lapply(Ji_vec[idx], pi_grid_fun)
+  p_grid_aug <- c(p_grid, pi_grid_fun(state$J_aug - length(p_grid)))
+  p_grid_aug <- sort(unique(p_grid_aug))
+  loss_scale <- loss_scale_fun(Qi_samp, loss_fun, pi_grid_samp, p_grid_aug, p_scale, supp_TY)
+  state$loss_scale <- loss_scale
+  
+  ## Choose qualifying dimension K
+  if (is.null(state$K)) {
+    out <- choose_near_lossless_K_q_pca(
+      epsilon = state$epsilon, alpha = state$alpha, 
+      V = state$V, K_max = state$K_max, 
+      loss_fun = loss_fun, loss_scale = loss_scale,
+      Q_list = Q_list, Qi_list = Qi_list, 
+      p_grid = p_grid, Ji_vec = Ji_vec, 
+      sqrt_w = sqrt_w,
+      supp_TY = supp_TY,
+      seed = state$seed
+    )
+    state$K <- out$K
+    state$idx_outliers <- out$idx_outliers
+  } 
+  
+  ## Compute E
+  out <- compute_q_pcs(Q_list, state$K, sqrt_w)
+  
+  state$Q_center <- out$Q_center
+  state$E <- out$E
+  state$sd_k <- out$sd_k
+  state
+}
+
+encode_fun_q_pca <- function(context, state) {
+  Q_list <- context$meta$Q_list
+  p_grid <- context$cache$p_grid
+  sqrt_w <- context$cache$sqrt_w
+  
+  ## Set parameters
+  N <- length(Q_list)
+  converged <- vector(length = N)
+  c_list <- vector('list', N)
+  for (i in 1:N) {
+    c_list[[i]] <- q_pca(Q_list[[i]], state$E, state$Q_center, sqrt_w)
+  }
+  
+  context$meta$loss_scale <- state$loss_scale
+  context$meta$idx_outliers <- state$idx_outliers
+  context$payload = c_list
+  context
+}
+
+decode_fun_q_pca <- function(context, state) {
+  c_list <- context$payload
+  Q_list <- lapply(c_list, function(c) state$Q_center + rowSums(state$E %*% c))
+  context$payload <- Q_list
+  context
+}
+
+stage_q_pca <- function(
+    K = NULL,
+    K_max = 20,
+    epsilon = 0.01,
+    alpha = 0.05,
+    V = 5,
+    J_aug = 500,
+    seed = gen_seed()
+) {
+  new_stage(
+    name = "q_pca",
+    input_space = "Q",
+    output_space = "C",
+    requires_fit = TRUE,
+    init_state = list(
+      K = K,
+      K_max = K_max,
+      epsilon = epsilon,
+      alpha = alpha,
+      V = V,
+      J_aug = J_aug,
+      seed = seed
+    ),
+    fit_fun = fit_fun_q_pca,
+    encode_fun = encode_fun_q_pca,
+    decode_fun = decode_fun_q_pca
+  )
+}
+
+
+## ---------- Transform: G-PCA
+
+fit_fun_g_pca <- function(context, state, ...) {
+  G_list <- context$payload$G_list
+  Q_star_list <- context$payload$Q_star_list
+  Qi_list <- context$meta$Qi_list
+  p_grid <- context$cache$p_grid
+  Ji_vec <- context$meta$Ji_vec
+  p_star <- context$cache$p_star
+  supp_TY <- context$cache$supp_TY
+  sqrt_w <- context$cache$sqrt_w
+  loss_fun <- context$cache$loss_fun
+  loss_scale_fun <- context$cache$loss_scale_fun
+  loss_scale_samp_rate <- context$cache$loss_scale_samp_rate
+  p_scale <- context$cache$p_scale
+
+  ## Set loss scale via a sample of the Qi on an augmented p-grid
+  set.seed(state$seed)
+  N <- length(Qi_list)
+  idx <- sample(1:N, size = floor(loss_scale_samp_rate * N), replace = FALSE)
+  Qi_samp <- Qi_list[idx]
+  pi_grid_samp <- lapply(Ji_vec[idx], pi_grid_fun)
+  p_grid_aug <- c(p_grid, pi_grid_fun(state$J_aug - length(p_grid)))
+  p_grid_aug <- sort(unique(p_grid_aug))
+  loss_scale <- loss_scale_fun(Qi_samp, loss_fun, pi_grid_samp, p_grid_aug, p_scale, supp_TY)
+  state$loss_scale <- loss_scale
+
+  ## Choose qualifying dimension K
+  if (is.null(state$K)) {
+    out <- choose_near_lossless_K_g_pca(
+      epsilon = state$epsilon, alpha = state$alpha,
+      V = state$V, K_max = state$K_max,
+      loss_fun = loss_fun, loss_scale = loss_scale,
+      G_list = G_list, Qi_list = Qi_list,
+      p_grid = p_grid, Ji_vec = Ji_vec,
+      p_star = p_star, Q_star_list = Q_star_list,
+      sqrt_w = sqrt_w,
+      supp_TY = supp_TY,
+      seed = state$seed
+    )
+    state$K <- out$K
+    state$idx_outliers <- out$idx_outliers
+  }
+
+  ## Compute E
+  out <- compute_quantlets(G_list, state$K, sqrt_w)
+
+  state$G_center <- out$G_center
+  state$E <- out$E
+  state$sd_k <- out$sd_k
+  state
+}
+
+encode_fun_g_pca <- function(context, state) {
+  G_list <- context$payload$G_list
+  Q_star_list <- context$payload$Q_star_list
+  sqrt_w <- context$cache$sqrt_w
+
+  ## Set parameters
+  N <- length(G_list)
+  c_list <- vector('list', N)
+  for (i in 1:N) {
+    c_list[[i]] <- g_pca(G_list[[i]], state$E, state$G_center, sqrt_w)
+  }
+
+  context$meta$loss_scale <- state$loss_scale
+  context$meta$idx_outliers <- state$idx_outliers
+  context$payload <- list(c_list = c_list, Q_star_list = Q_star_list)
+  context
+}
+
+decode_fun_g_pca <- function(context, state) {
+  c_list <- context$payload$c_list
+  Q_star_list <- context$payload$Q_star_list
+
+  G_list <- lapply(c_list, function(c) state$G_center + rowSums(state$E %*% c))
+  context$payload <- list(G_list = G_list, Q_star_list = Q_star_list)
+  context
+}
+
+stage_g_pca <- function(
+    K = NULL,
+    K_max = 20,
+    epsilon = 0.01,
+    alpha = 0.05,
+    V = 5,
+    J_aug = 500,
+    seed = gen_seed()
+) {
+  new_stage(
+    name = "g_pca",
+    input_space = "G",
+    output_space = "C",
+    requires_fit = TRUE,
+    init_state = list(
+      K = K,
+      K_max = K_max,
+      epsilon = epsilon,
+      alpha = alpha,
+      V = V,
+      J_aug = J_aug,
+      seed = seed
+    ),
+    fit_fun = fit_fun_g_pca,
+    encode_fun = encode_fun_g_pca,
+    decode_fun = decode_fun_g_pca
+  )
 }
 
 
 ## ---------- Transform: LQD
 
 encode_fun_lqd <- function(context, state) {
-  Q_list <- context$data
+  Q_list <- context$payload
   p_star_idx <- context$cache$p_star_idx
+  Q_star <- context$cache$Q_star
   
   ## Set parameters
   N <- length(Q_list)
@@ -600,7 +1358,11 @@ encode_fun_lqd <- function(context, state) {
   p_grid <- context$cache$p_grid
   
   ## Get integration constants
-  Q_star_list <- lapply(Q_list, function(Q) Q[[p_star_idx]])
+  if (is.null(Q_star)) {
+    Q_star_list <- lapply(Q_list, function(Q) Q[[p_star_idx]])
+  } else {
+    Q_star_list <- rep(list(Q_star), N)
+  }
   
   ## LQD transform Q_list
   G_list <- vector("list", N)
@@ -610,18 +1372,18 @@ encode_fun_lqd <- function(context, state) {
     G_list[[i]] <- log(dQ)
   }
   
-  context$data <- list(G_list = G_list, Q_star_list = Q_star_list)
+  context$payload <- list(
+    G_list = G_list, 
+    Q_star_list = Q_star_list
+  )
   context
 }
 
 decode_fun_lqd <- function(context, state) {
-  G_Q_star_list <- context$data
+  G_list <- context$payload$G_list
+  Q_star_list <- context$payload$Q_star_list
   p_grid <- context$cache$p_grid
   p_star <- context$cache$p_star
-  
-  ## Extract lists
-  G_list <- G_Q_star_list$G_list
-  Q_star_list <- G_Q_star_list$Q_star_list
   
   ## Set parameters
   N <- length(G_list)
@@ -630,252 +1392,15 @@ decode_fun_lqd <- function(context, state) {
   ## Inverse LQD transform G_list 
   Q_list <- vector("list", N)
   for (i in 1:N) {
-    Q_list[[i]] <- inv_lqd(G_list[[i]], p_grid,  p_star, Q_star_list[[i]])
+    Q_list[[i]] <- inv_lqd(G_list[[i]], p_grid, p_star, Q_star_list[[i]])
   }
   
-  context$data <- Q_list
+  context$payload <- Q_list
   context
 }
 
-
-## ---------- Transform: Q-G PCA
-
-fit_fun_qg_pca <- function(context, state, ...) {
-  G_list <- context$data$G_list
-  Q_list <- context$cache$Q_list
-  Qi_list <- context$cache$Qi_list
-  p_grid <- context$cache$p_grid
-  Ji_vec <- context$cache$Ji_vec
-  p_star <- context$cache$p_star
-  supp_TY <- context$cache$supp_TY
-  sqrt_w <- context$cache$sqrt_w
-  loss_fun <- context$cache$loss_fun
-  
-  ## Choose qualifying dimension K
-  if (is.null(state$K)) {
-    state$K <- choose_near_lossless_K(
-      epsilon = state$epsilon, alpha = state$alpha, 
-      V = state$V, K_max = state$K_max, loss_fun = loss_fun,
-      G_list = G_list, Q_list = Q_list, Qi_list = Qi_list, 
-      p_grid = p_grid, Ji_vec = Ji_vec, p_star = p_star,
-      sqrt_w = sqrt_w,
-      supp_TY = supp_TY,
-      seed = state$seed
-    )
-  } 
-  
-  ## Compute E
-  out <- compute_quantlets(G_list, state$K)
-  
-  state$G_center <- out$G_center
-  state$E <- out$E
-  state
-}
-
-encode_fun_qg_pca <- function(context, state) {
-  Q_list <- context$cache$Q_list
-  p_grid <- context$cache$p_grid
-  p_star <- context$cache$p_star
-  sqrt_w <- context$cache$sqrt_w
-  
-  ## Set parameters
-  N <- length(Q_list)
-  converged <- vector(length = N)
-  c_list <- vector('list', N)
-  for (i in 1:N) {
-    out <- qg_pca(
-      Q_obs = Q_list[[i]], 
-      E = state$E, 
-      G_center = state$G_center, 
-      p_grid = p_grid,
-      p_star = p_star,
-      sqrt_w = sqrt_w
-    )
-    converged[i] <- out$converged
-    c_list[[i]] <- out$par
-  }
-  message(str_glue("converged = {sum(converged)} of {N}"))
-  
-  context$data <- c_list
-  context
-}
-
-decode_fun_qg_pca <- function(context, state) {
-  c_list <- context$data
-  G_list <- lapply(c_list, function(c) state$G_center + rowSums(state$E %*% c[1:state$K]))
-  Q_star_list <- lapply(c_list, function(c) c[state$K + 1])
-  context$data <- list(G_list = G_list, Q_star_list = Q_star_list)
-  context
-}
-
-
-## ---------- Transform: Normalizing Flow
-
-fit_fun_flow <- function(context, state, ...) {
-  C_list <- context$data
-  C_mat <- do.call(rbind, C_list)
-  
-  ## Train flow (in Python via reticulate)
-  flow <- py_flow$train_flow(
-    C = C_mat,
-    n_layers = state$n_layers,
-    epochs = state$epochs,
-    lr = state$lr
-  )
-  py_flow$save_flow(flow, state$flow_path)
-  
-  state$C_dim <- ncol(C_mat)
-  state
-}
-
-encode_fun_flow <- function(context, state) {
-  C_list <- context$data
-  C_mat <- do.call(rbind, C_list)
-  
-  ## Load flow
-  flow <- py_flow$load_flow(
-    dim = state$C_dim,
-    n_layers = state$n_layers,
-    path = state$flow_path
-  )
-  
-  ## Pass C through flow
-  Z_mat <- py_flow$flow_encode(C_mat, flow)
-  Z_list <- split(Z_mat, seq_len(nrow(Z_mat)))
-  
-  context$data <- Z_list
-  context
-}
-
-decode_fun_flow <- function(context, state) {
-  Z_list <- context$data
-  Z_mat <- do.call(rbind, Z_list)
-  
-  ## Load flow
-  flow <- py_flow$load_flow(
-    dim = state$C_dim,
-    n_layers = state$n_layers,
-    path = state$flow_path
-  )
-  
-  ## Pass Z_mat through inverse flow
-  C_mat <- py_flow$flow_decode(Z_mat, flow)
-  C_list <- split(C_mat, seq_len(nrow(C_mat)))
-  
-  context$data <- C_list
-  context
-}
-
-
-## ========== Pipeline ==========
-
-construct_pipeline <- function(
-    p_grid,
-    supp_Y,   
-    y_trans, 
-    K,
-    epsilon,
-    alpha,
-    K_max,
-    loss_fun,
-    V,
-    p_star = 0.5,
-    ratio_trans = NULL,
-    y_min = NULL, 
-    min_dQ = 1e-8, 
-    flow_n_layers = 16,
-    flow_epochs = 200,
-    flow_lr = 1e-3,
-    flow_path = "flow.pth",
-    seed = 12345
-) {
-  
-  ## Storage Locations
-  ##    cache --> what representation of the data am I currently holding?
-  ##          --> things that define the mathematical object being modeled
-  ##          --> returned by encode/decode functions
-  ##    state --> what representation have I learned?
-  ##          --> things that define how the algorithm is being run
-  ##          --> returned by fit functions
-  
-  ## ---------- Parameter Validation
-  
-  ## Validate user-specified p_grid
-  J <- length(p_grid)
-  if (!(
-    all(diff(p_grid) > 0) &&  ## strictly increasing
-    J >= 3 &&
-    p_grid[1] > 0 &&
-    p_grid[J] < 1
-  )) {
-    stop("Invalid p-grid!")
-  }
-  
-  
-  ## ---------- Cache Initialization
-  
-  ## Compute weights that will later be used to account for unbalanced grid
-  dp <- diff(p_grid)
-  w <- numeric(J)
-  w[1] <- 0.5 * dp[1]
-  w[J] <- 0.5 * dp[J - 1]
-  w[2:(J-1)] <- 0.5 * (dp[1:(J-2)] + dp[2:(J-1)])
-  
-  ## Derive transformed support
-  if (!is.null(supp_Y)) {
-    supp_TY <- y_trans(supp_Y)
-  } else {
-    supp_TY <- NULL
-  }
-  
-  ## Initialize cache
-  cache_init <- list(
-    p_grid = p_grid,
-    J = length(p_grid),
-    dp = diff(p_grid),
-    w = w,
-    sqrt_w = sqrt(w),
-    p_star = p_star,
-    p_star_idx = which.min(abs(p_grid - p_star)),
-    supp_TY = supp_TY,
-    y_trans = y_trans,
-    ratio_trans = ratio_trans,
-    y_min = y_min,
-    loss_fun = loss_fun
-  )
-  
-  
-  ## ---------- Stages
-  set.seed(seed)
-  
-  y_axis_stage <- new_stage(
-    name = "y_axis",
-    input_space = "Y",
-    output_space = "TY",
-    requires_fit = FALSE,
-    encode_fun = encode_fun_y_axis,
-    decode_fun = decode_fun_y_axis
-  )
-  
-  eqf_sgrid_stage <- new_stage(
-    name = "eqf_sgrid",
-    input_space = "TY",
-    output_space = "Qi",
-    requires_fit = FALSE,
-    encode_fun = encode_fun_eqf_sgrid,
-    decode_fun = decode_fun_eqf_sgrid
-  )
-  
-  eqf_cgrid_stage <- new_stage(
-    name = "eqf_cgrid",
-    input_space = "Qi",
-    output_space = "Q",
-    requires_fit = FALSE,
-    encode_fun = encode_fun_eqf_cgrid,
-    decode_fun = decode_fun_eqf_cgrid
-  )
-  
-  lqd_stage <- new_stage(
+stage_lqd <- function(min_dQ = 1e-8) {
+  new_stage(
     name = "lqd",
     input_space = "Q",
     output_space = "G",
@@ -884,53 +1409,451 @@ construct_pipeline <- function(
     encode_fun = encode_fun_lqd,
     decode_fun = decode_fun_lqd
   )
+}
+
+
+
+## ---------- Transform: Q-G PCA
+
+fit_fun_qg_pca <- function(context, state, ...) {
+  G_list <- context$payload$G_list
+  Q_list <- context$meta$Q_list
+  Qi_list <- context$meta$Qi_list
+  p_grid <- context$cache$p_grid
+  Ji_vec <- context$meta$Ji_vec
+  p_star <- context$cache$p_star
+  Q_star <- context$cache$Q_star
+  supp_TY <- context$cache$supp_TY
+  sqrt_w <- context$cache$sqrt_w
+  loss_fun <- context$cache$loss_fun
+  loss_scale_fun <- context$cache$loss_scale_fun
+  loss_scale_samp_rate <- context$cache$loss_scale_samp_rate
+  p_scale <- context$cache$p_scale
   
-  qg_pca_stage <- new_stage(
+  ## Set loss scale via a sample of the Qi on an augmented p-grid
+  set.seed(state$seed)
+  N <- length(Qi_list)
+  idx <- sample(1:N, size = floor(loss_scale_samp_rate * N), replace = FALSE)
+  Qi_samp <- Qi_list[idx]
+  pi_grid_samp <- lapply(Ji_vec[idx], pi_grid_fun)
+  p_grid_aug <- c(p_grid, pi_grid_fun(state$J_aug - length(p_grid)))
+  p_grid_aug <- sort(unique(p_grid_aug))
+  loss_scale <- loss_scale_fun(Qi_samp, loss_fun, pi_grid_samp, p_grid_aug, p_scale, supp_TY)
+  state$loss_scale <- loss_scale
+  
+  ## Choose qualifying dimension K
+  if (is.null(state$K)) {
+    out <- choose_near_lossless_K_qg_pca(
+      epsilon = state$epsilon, alpha = state$alpha,
+      V = state$V, K_max = state$K_max,
+      loss_fun = loss_fun, loss_scale = loss_scale,
+      G_list = G_list, Q_list = Q_list, Qi_list = Qi_list,
+      p_grid = p_grid, Ji_vec = Ji_vec,
+      p_star = p_star, Q_star = Q_star,
+      sqrt_w = sqrt_w,
+      supp_TY = supp_TY,
+      lambda = state$lambda,
+      min_dQ = state$min_dQ,
+      construction = state$quantlet_construction,
+      seed = state$seed
+    )
+    state$K <- out$K
+    state$idx_outliers <- out$idx_outliers
+  }
+
+  ## Compute E (Q-mean-anchored by default; see stage_qg_pca docs)
+  out <- compute_quantlets(
+    G_list, state$K, sqrt_w,
+    Q_list = Q_list, p_grid = p_grid, min_dQ = state$min_dQ,
+    construction = state$quantlet_construction
+  )
+
+  state$G_center <- out$G_center
+  state$E <- out$E
+  state$sd_k <- out$sd_k
+  state
+}
+
+encode_fun_qg_pca <- function(context, state) {
+  Q_list <- context$meta$Q_list
+  p_grid <- context$cache$p_grid
+  p_star <- context$cache$p_star
+  Q_star <- context$cache$Q_star
+  sqrt_w <- context$cache$sqrt_w
+  
+  ## Set parameters
+  N <- length(Q_list)
+  converged <- vector(length = N)
+  c_list <- vector('list', N)
+  Q_star_list <- vector('list', N)
+  for (i in 1:N) {
+    out <- qg_pca(
+      Q_obs = Q_list[[i]], 
+      E = state$E, 
+      G_center = state$G_center, 
+      p_grid = p_grid,
+      p_star = p_star,
+      Q_star = Q_star,
+      sqrt_w = sqrt_w,
+      lambda = state$lambda
+    )
+    converged[i] <- out$converged
+    c_list[[i]] <- out$c
+    Q_star_list[[i]] <- out$Q_star
+  }
+  message(str_glue("converged = {sum(converged)} of {N}"))
+  
+  context$meta$loss_scale <- state$loss_scale
+  context$meta$idx_outliers <- state$idx_outliers
+  context$payload = list(
+    c_list = c_list,
+    Q_star_list = Q_star_list
+  )
+  context
+}
+
+decode_fun_qg_pca <- function(context, state) {
+  c_list <- context$payload$c_list
+  Q_star_list <- context$payload$Q_star_list
+  
+  G_list <- lapply(c_list, function(c) state$G_center + rowSums(state$E %*% c))
+  context$payload <- list(G_list = G_list, Q_star_list = Q_star_list)
+  context
+}
+
+stage_qg_pca <- function(
+    K = NULL,
+    K_max = 20,
+    epsilon = 0.01,
+    alpha = 0.05,
+    V = 5,
+    lambda = 0,
+    J_aug = 500,
+    min_dQ = 1e-8,
+    quantlet_construction = c("q_mean_residual", "pca"),
+    seed = gen_seed()
+) {
+  quantlet_construction <- match.arg(quantlet_construction)
+  new_stage(
     name = "qg_pca",
     input_space = "G",
     output_space = "C",
     requires_fit = TRUE,
     init_state = list(
       K = K,
+      K_max = K_max,
       epsilon = epsilon,
       alpha = alpha,
-      K_max = K_max,
       V = V,
-      seed = gen_seed()
+      lambda = lambda,
+      J_aug = J_aug,
+      min_dQ = min_dQ,
+      quantlet_construction = quantlet_construction,
+      seed = seed
     ),
     fit_fun = fit_fun_qg_pca,
     encode_fun = encode_fun_qg_pca,
     decode_fun = decode_fun_qg_pca
   )
+}
+
+
+## ---------- Transform: WAME (Wasserstein-Aware Monotone Embeddings)
+##
+## Composite stage that fuses LQD (Q -> G) and QG-PCA (G -> C) into a single
+## stage. Internally holds a `stage_lqd` and a `stage_qg_pca` instance and
+## chains their fit / encode / decode methods, so a pipeline of
+##   Y-axis -> Smooth -> WAME -> Flow
+## is numerically equivalent to
+##   Y-axis -> Smooth -> LQD -> QG-PCA -> Flow
+## with the same seeds and parameters.
+
+fit_fun_wame <- function(context, state, ...) {
+  ctx_lqd <- encode(state$child_lqd, context, ...)
+  state$child_qg_pca <- fit(state$child_qg_pca, ctx_lqd, ...)
+  state
+}
+
+encode_fun_wame <- function(context, state, ...) {
+  ctx_lqd <- encode(state$child_lqd, context, ...)
+  encode(state$child_qg_pca, ctx_lqd, ...)
+}
+
+decode_fun_wame <- function(context, state, ...) {
+  ctx_qg <- decode(state$child_qg_pca, context, ...)
+  decode(state$child_lqd, ctx_qg, ...)
+}
+
+stage_wame <- function(
+    min_dQ = 1e-8,
+    K = NULL,
+    K_max = 20,
+    epsilon = 0.01,
+    alpha = 0.05,
+    V = 5,
+    lambda = 0,
+    J_aug = 500,
+    quantlet_construction = c("q_mean_residual", "pca"),
+    seed = gen_seed()
+) {
+  quantlet_construction <- match.arg(quantlet_construction)
+  child_lqd    <- stage_lqd(min_dQ = min_dQ)
+  child_qg_pca <- stage_qg_pca(
+    K = K, K_max = K_max,
+    epsilon = epsilon, alpha = alpha, V = V,
+    lambda = lambda, J_aug = J_aug,
+    min_dQ = min_dQ,
+    quantlet_construction = quantlet_construction,
+    seed = seed
+  )
+  new_stage(
+    name         = "wame",
+    input_space  = "Q",
+    output_space = "C",
+    requires_fit = TRUE,
+    init_state   = list(
+      child_lqd    = child_lqd,
+      child_qg_pca = child_qg_pca
+    ),
+    fit_fun      = fit_fun_wame,
+    encode_fun   = encode_fun_wame,
+    decode_fun   = decode_fun_wame
+  )
+}
+
+
+## ---------- Transform: Normalizing Flow
+
+fit_fun_flow <- function(context, state, ...) {
+  c_list <- context$payload$c_list
+  Q_star_list <- context$payload$Q_star_list
   
-  flow_stage <- new_stage(
+  ## Get c-embeddings
+  c_mat <- do.call(rbind, c_list)
+  Q_star <- context$cache$Q_star
+  if (is.null(Q_star)) {  ## append Q_star to c-embeddings
+    c_mat <- cbind(c_mat, unlist(Q_star_list))
+  }
+  
+  ## Train flow (in Python via reticulate)
+  flow <- py_pkg$train_flow(
+    C = c_mat,
+    n_layers = state$n_layers,
+    max_epochs = state$max_epochs,
+    lr = state$lr,
+    print_epoch = 50
+  )
+  py_pkg$save_flow(flow, state$path)
+  
+  state
+}
+
+encode_fun_flow <- function(context, state) {
+  c_list <- context$payload$c_list
+  Q_star_list <- context$payload$Q_star_list
+  
+  ## Get c-embeddings
+  c_mat <- do.call(rbind, c_list)
+  Q_star <- context$cache$Q_star
+  if (is.null(Q_star)) {  ## append Q_star to c-embeddings
+    c_mat <- cbind(c_mat, unlist(Q_star_list))
+  }
+  
+  ## Load flow
+  flow <- py_pkg$load_flow(
+    dim = ncol(c_mat),
+    n_layers = state$n_layers,
+    path = state$path
+  )
+  
+  ## Pass C through flow
+  z_mat <- py_pkg$flow_encode(c_mat, flow)
+  z_list <- split(z_mat, seq_len(nrow(z_mat)))
+  
+  context$payload <- z_list
+  context
+}
+
+
+decode_fun_flow <- function(context, state) {
+  z_list <- context$payload
+  
+  ## Get z-embeddings
+  z_mat <- do.call(rbind, z_list)
+  Q_star <- context$cache$Q_star
+  K <- ifelse(is.null(Q_star), ncol(z_mat) - 1, ncol(z_mat))
+  
+  ## Load flow
+  flow <- py_pkg$load_flow(
+    dim = ncol(z_mat),
+    n_layers = state$n_layers,
+    path = state$path
+  )
+  
+  ## Pass z_mat through inverse flow
+  c_mat <- py_pkg$flow_decode(z_mat, flow)
+  if (K > 1) {
+    if (nrow(c_mat) == 1) {
+      c_list <- list(c_mat[1, 1:K])
+    } else {
+      c_list <- asplit(c_mat[, 1:K], MARGIN = 1)
+    }
+  } else {
+    if (nrow(c_mat) == 1) {
+      c_list <- list(c_mat[1, 1])
+    } else {
+      c_list <- as.list(c_mat[, 1])
+    }
+  }
+  if (is.null(Q_star)) {
+    if (nrow(c_mat) == 1) {
+      Q_star_list <- list(c_mat[1, K+1])
+    } else {
+      Q_star_list <- as.list(c_mat[, K+1])
+    }
+  } else {
+    Q_star_list <- rep(list(Q_star), length(c_list))
+  }
+  
+  context$payload <- list(
+    c_list = c_list,
+    Q_star_list = Q_star_list
+  )
+  context
+}
+
+stage_flow <- function(
+  n_layers = 16,
+  max_epochs = 200,
+  lr = 1e-3,
+  path = "flow.pth",
+  seed = gen_seed()
+) {
+  new_stage(
     name = "flow",
     input_space = "C",
     output_space = "Z",
     requires_fit = TRUE,
     init_state = list(
-      n_layers = as.integer(flow_n_layers),
-      epochs = as.integer(flow_epochs),
-      lr = flow_lr,
-      flow_path = flow_path,
-      seed = gen_seed()
+      n_layers = as.integer(n_layers),
+      max_epochs = as.integer(max_epochs),
+      lr = lr,
+      path = path,
+      seed = seed
     ),
     fit_fun = fit_fun_flow,
     encode_fun = encode_fun_flow,
     decode_fun = decode_fun_flow
   )
-  
-  pipeline <- new_pipeline(
-    stages = list(
-      y_axis_stage,
-      eqf_sgrid_stage,
-      eqf_cgrid_stage,
-      lqd_stage,
-      qg_pca_stage,
-      flow_stage
-    )
+}
+
+
+## ---------- Transform: PCA Rotation
+
+fit_fun_pca_rotation <- function(context, state, ...) {
+  z_list <- context$payload
+
+  Z_mat <- do.call(rbind, z_list)
+  state$z_center <- colMeans(Z_mat)
+  Z_c <- scale(Z_mat, center = state$z_center, scale = FALSE)
+
+  s <- svd(Z_c, nu = 0)
+  state$R <- s$v
+  state$sd_k <- s$d / sqrt(nrow(Z_mat) - 1)
+
+  state
+}
+
+encode_fun_pca_rotation <- function(context, state) {
+  z_list <- context$payload
+
+  Z_mat <- do.call(rbind, z_list)
+  Z_rot <- sweep(Z_mat, 2, state$z_center, '-') %*% state$R
+
+  if (nrow(Z_rot) == 1) {
+    z_rot_list <- list(Z_rot[1, ])
+  } else {
+    z_rot_list <- asplit(Z_rot, MARGIN = 1)
+  }
+
+  context$payload <- z_rot_list
+  context
+}
+
+decode_fun_pca_rotation <- function(context, state) {
+  z_rot_list <- context$payload
+
+  Z_rot <- do.call(rbind, z_rot_list)
+  Z_mat <- sweep(Z_rot %*% t(state$R), 2, state$z_center, '+')
+
+  if (nrow(Z_mat) == 1) {
+    z_list <- list(Z_mat[1, ])
+  } else {
+    z_list <- asplit(Z_mat, MARGIN = 1)
+  }
+
+  context$payload <- z_list
+  context
+}
+
+stage_pca_rotation <- function(seed = gen_seed()) {
+  new_stage(
+    name = "pca_rotation",
+    input_space = "Z",
+    output_space = "Z",
+    requires_fit = TRUE,
+    init_state = list(seed = seed),
+    fit_fun = fit_fun_pca_rotation,
+    encode_fun = encode_fun_pca_rotation,
+    decode_fun = decode_fun_pca_rotation
   )
+}
+
+
+
+## ========== Pipeline ==========
+
+construct_pipeline <- function(
+    stages,
+    supp_Y = NULL,
+    p_star = 0.5,
+    y_star = NULL,
+    y_min = NULL,
+    loss = "wasserstein", # TODO: Move to qg_pca state
+    loss_scale = "none",
+    loss_scale_samp_rate = 1.0,
+    p_scale = 0.5,
+    ratio_trans = NULL, # TODO: Move to eqf_cgrid state
+    cache_init = NULL,
+    meta_init = NULL,
+    seed = 12345
+) {
   
-  pipeline$cache_init <- cache_init
-  pipeline
+  ## ---------- Parameter Validation
+  
+  ## TODO: Validate stage sequence using input/output spaces
+  
+  ## ---------- Cache Initialization
+  
+  ## Initialize cache
+  if (is.null(cache_init)) {
+    cache_init <- list(
+      supp_Y = supp_Y,
+      p_star = p_star,
+      y_star = y_star,
+      y_min = y_min,
+      loss_fun = loss_to_fun[[loss]],
+      loss_scale_fun = loss_scale_to_fun[[loss_scale]],
+      loss_scale_samp_rate = loss_scale_samp_rate,
+      p_scale = p_scale,
+      ratio_trans = ratio_trans,
+      seed = seed
+    ) 
+  }
+  
+  set.seed(seed)
+  pipe <- new_pipeline(stages = stages)
+  pipe$cache_init <- cache_init
+  pipe$meta_init <- meta_init
+  pipe
 }
