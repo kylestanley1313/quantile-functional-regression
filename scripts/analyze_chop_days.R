@@ -65,10 +65,8 @@ if (dataset == 'chop-mims-day') {
     ),
     supp_Y = c(0, 0.6, seq(0.601, 30000, by = 0.001)),
     p_star = 0,
-    Q_star = 0,
+    y_star = 0,
     y_min = 0,
-    # loss = 'one_minus_concordance',
-    loss = 'wasserstein',
     seed = 12345
   )
 

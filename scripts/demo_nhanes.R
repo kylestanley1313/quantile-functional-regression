@@ -51,7 +51,6 @@ pipeline <- construct_pipeline(
       epsilon = 1.25, # 0.25,
       alpha = 0.05,
       V = 5,
-      quantlet_construction = 'pca',
       lambda = 0.1
     ),
     stage_flow(
@@ -64,9 +63,8 @@ pipeline <- construct_pipeline(
   ),
   supp_Y = c(0, seq(0.006, 500, by = 0.001)),
   p_star = 0,
-  Q_star = 0,
+  y_star = 0,
   y_min = 0,
-  loss = 'wasserstein',
   seed = 12345
 )
 

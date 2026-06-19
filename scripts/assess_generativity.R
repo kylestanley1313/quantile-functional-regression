@@ -56,9 +56,8 @@ for (lambda in lambdas) {
     ),
     supp_Y = c(0, seq(0.006, 400, by = 0.001)),
     p_star = 0,
-    Q_star = 0,
+    y_star = 0,
     y_min = 0,
-    loss = 'wasserstein',
     seed = gen_seed()
   )
 

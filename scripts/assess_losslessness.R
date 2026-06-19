@@ -62,7 +62,7 @@ assess_losslessness <- function(
       ## Fit pipeline
       pipeline <- fit_pipeline(y_list[idx_train], K)
       stage_to <- stage_to %||% pipeline$n_stages
-      loss_fun <- pipeline$training$cache$loss_fun
+      loss_fun <- loss_to_fun[[pipeline$stages[[pipeline$n_stages]]$state$loss]]
 
       ## Fast forward to stage_from data (get data_list)
       ctx <- new_context(
@@ -377,7 +377,7 @@ fit_pipeline_qg_pca <- function(
     p_grid = NULL,
     supp_Y = NULL,
     p_star = 0,
-    Q_star = NULL,
+    y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
     seed = 12345,
@@ -389,13 +389,12 @@ fit_pipeline_qg_pca <- function(
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
       stage_lqd(),
-      stage_qg_pca(K = K, lambda = lambda)
+      stage_qg_pca(K = K, lambda = lambda, loss = loss)
     ),
     supp_Y = supp_Y,
     p_star = p_star,
-    Q_star = Q_star,
+    y_star = y_star,
     y_min = y_min,
-    loss = loss,
     seed = seed
   )
   pipeline <- fit(pipeline, y_list)
@@ -408,7 +407,7 @@ fit_pipeline_q_pca <- function(
     y_list, K,
     p_grid = NULL,
     supp_Y = NULL,
-    Q_star = NULL,
+    y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
     seed = 12345
@@ -418,12 +417,11 @@ fit_pipeline_q_pca <- function(
     stages = list(
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
-      stage_q_pca(K = K)
+      stage_q_pca(K = K, loss = loss)
     ),
     supp_Y = supp_Y,
-    Q_star = Q_star,
+    y_star = y_star,
     y_min = y_min,
-    loss = loss,
     seed = seed
   )
   pipeline <- fit(pipeline, y_list)
@@ -437,7 +435,7 @@ fit_pipeline_g_pca <- function(
     p_grid = NULL,
     supp_Y = NULL,
     p_star = 0,
-    Q_star = NULL,
+    y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
     seed = 12345
@@ -448,13 +446,12 @@ fit_pipeline_g_pca <- function(
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
       stage_lqd(),
-      stage_g_pca(K = K)
+      stage_g_pca(K = K, loss = loss)
     ),
     supp_Y = supp_Y,
     p_star = p_star,
-    Q_star = Q_star,
+    y_star = y_star,
     y_min = y_min,
-    loss = loss,
     seed = seed
   )
   pipeline <- fit(pipeline, y_list)
@@ -622,7 +619,7 @@ datasets <- list(
       interval_counts = c(51, 50)
     ),
     supp_Y = c(0, seq(0.006, 400, by = 0.001)),
-    Q_star = 0,
+    y_star = 0,
     y_min = 0,
     pairwise_samp_rate = 1.0, # 0.05,
     lambda = 0.1 # 0
@@ -672,7 +669,7 @@ for (i in 1:n_configs) {
       fit_pipeline_qg_pca,
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
-      Q_star = datasets[[config$dataset]]$Q_star,
+      y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min,
       lambda = datasets[[config$dataset]]$lambda,
       loss = 'wasserstein'
@@ -682,7 +679,7 @@ for (i in 1:n_configs) {
       fit_pipeline_q_pca,
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
-      Q_star = datasets[[config$dataset]]$Q_star,
+      y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min
     )
   } else if (config$model_type == 'g_pca') {
@@ -690,7 +687,7 @@ for (i in 1:n_configs) {
       fit_pipeline_g_pca,
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
-      Q_star = datasets[[config$dataset]]$Q_star,
+      y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min
     )
   } else {
@@ -716,7 +713,7 @@ for (i in 1:n_configs) {
   pipe       <- fit_pipeline(y_list, K = 1)
   Qi_list_p  <- pipe$training$meta$Qi_list
   Ji_vec_p   <- pipe$training$meta$Ji_vec
-  loss_fun_p <- pipe$training$cache$loss_fun
+  loss_fun_p <- loss_to_fun[[pipe$stages[[pipe$n_stages]]$state$loss]]
   p_grid_p   <- pipe$training$cache$p_grid
   supp_Y_p  <- pipe$training$cache$supp_Y
   samp_rate  <- datasets[[config$dataset]]$pairwise_samp_rate
@@ -767,7 +764,7 @@ for (i in 1:n_configs) {
       fit_pipeline_qg_pca,
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
-      Q_star = datasets[[config$dataset]]$Q_star,
+      y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min,
       lambda = datasets[[config$dataset]]$lambda,
       loss = 'wasserstein'
@@ -777,7 +774,7 @@ for (i in 1:n_configs) {
       fit_pipeline_q_pca,
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
-      Q_star = datasets[[config$dataset]]$Q_star,
+      y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min
     )
   } else if (config$model_type == 'g_pca') {
@@ -785,7 +782,7 @@ for (i in 1:n_configs) {
       fit_pipeline_g_pca,
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
-      Q_star = datasets[[config$dataset]]$Q_star,
+      y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min
     )
   } else {

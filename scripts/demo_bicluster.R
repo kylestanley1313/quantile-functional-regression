@@ -60,9 +60,8 @@ pipeline <- construct_pipeline(
   ),
   supp_Y = NULL,
   p_star = 0.5,
-  Q_star = NULL,
+  y_star = NULL,
   y_min = NULL,
-  loss = 'wasserstein',
   seed = gen_seed()
 )
 
