@@ -206,10 +206,6 @@ wasserstein <- function(Q1, Q2, w) {
   sqrt(sum(w * (Q1 - Q2)^2))
 }
 
-return_one <- function(...) {
-  1
-}
-
 pairwise_distance <- function(
     Qi_list,
     loss_fun,
@@ -245,29 +241,11 @@ pairwise_distance <- function(
   distances
 }
 
-quantile_pairwise_distance <- function(
-    Qi_list,
-    loss_fun,
-    pi_grid_list,
-    p_grid_aug,
-    p_scale = 0.5,
-    supp_Y = NULL
-) {
-  d <- pairwise_distance(Qi_list, loss_fun, pi_grid_list, p_grid_aug, supp_Y)
-  unname(quantile(d, c(p_scale)))
-}
-
 
 loss_to_fun <- list(
   'one_minus_sqcor' = one_minus_sqcor,
   'one_minus_sqconc' = one_minus_sqconc,
   'wasserstein' = wasserstein
-)
-
-
-loss_scale_to_fun <- list(
-  'none' = return_one,
-  'quantile_pairwise_distance' = quantile_pairwise_distance
 )
 
 

@@ -67,9 +67,6 @@ pipeline <- construct_pipeline(
   Q_star = 0,
   y_min = 0,
   loss = 'wasserstein',
-  loss_scale = 'none',
-  loss_scale_samp_rate = 1.0,
-  p_scale = NULL, # 0.025
   seed = 12345
 )
 

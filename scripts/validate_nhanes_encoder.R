@@ -33,11 +33,10 @@ compute_recon_loss <- function(pipeline, y_list) {
   Qi_list      <- encode(pipeline, y_ctx, from = 0, to = 1)$payload
   ctx_top      <- encode(pipeline, y_ctx)   # default to = n_stages
   Qi_reco_list <- decode(pipeline, ctx_top, from = pipeline$n_stages, to = 1)$payload
-  loss_scale   <- pipeline$training$meta$loss_scale
   losses       <- numeric(length(Qi_list))
   for (i in seq_along(Qi_list)) {
     dp         <- 1 / (length(Qi_list[[i]]) + 1)
-    losses[i]  <- wasserstein(Qi_list[[i]], Qi_reco_list[[i]], dp) / loss_scale
+    losses[i]  <- wasserstein(Qi_list[[i]], Qi_reco_list[[i]], dp)
   }
   losses
 }

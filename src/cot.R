@@ -315,7 +315,7 @@ g_pca <- function(G_obs, E, G_center, sqrt_w) {
 
 choose_near_lossless_K_qg_pca <- function(
     epsilon, alpha, V, K_max,
-    loss_fun, loss_scale,
+    loss_fun,
     G_list, Q_list, Qi_list,
     p_grid, Ji_vec, p_star,
     Q_star = NULL,
@@ -388,7 +388,7 @@ choose_near_lossless_K_qg_pca <- function(
         
         ## Compute loss
         dp <- 1 / (Ji_vec[i] + 1)
-        losses[i] <- loss_fun(Qi_list[[i]], Qi, dp) / loss_scale
+        losses[i] <- loss_fun(Qi_list[[i]], Qi, dp)
         
       }
     }
@@ -426,7 +426,7 @@ choose_near_lossless_K_qg_pca <- function(
 
 choose_near_lossless_K_q_pca <- function(
     epsilon, alpha, V, K_max,
-    loss_fun, loss_scale,
+    loss_fun,
     Q_list, Qi_list,
     p_grid, Ji_vec,
     sqrt_w = NULL,
@@ -475,7 +475,7 @@ choose_near_lossless_K_q_pca <- function(
         
         ## Compute loss
         dp        <- 1 / (Ji_vec[i] + 1)
-        losses[i] <- loss_fun(Qi_list[[i]], Qi_hat, dp) / loss_scale
+        losses[i] <- loss_fun(Qi_list[[i]], Qi_hat, dp)
         
       }
     }
@@ -512,7 +512,7 @@ choose_near_lossless_K_q_pca <- function(
 
 choose_near_lossless_K_g_pca <- function(
     epsilon, alpha, V, K_max,
-    loss_fun, loss_scale,
+    loss_fun,
     G_list, Qi_list,
     p_grid, Ji_vec, p_star,
     Q_star_list,
@@ -561,7 +561,7 @@ choose_near_lossless_K_g_pca <- function(
 
         ## Compute loss
         dp        <- 1 / (Ji_vec[i] + 1)
-        losses[i] <- loss_fun(Qi_list[[i]], Qi_hat, dp) / loss_scale
+        losses[i] <- loss_fun(Qi_list[[i]], Qi_hat, dp)
 
       }
     }
@@ -988,27 +988,13 @@ fit_fun_q_pca <- function(context, state, ...) {
   supp_Y <- context$cache$supp_Y
   sqrt_w <- context$cache$sqrt_w
   loss_fun <- context$cache$loss_fun
-  loss_scale_fun <- context$cache$loss_scale_fun
-  loss_scale_samp_rate <- context$cache$loss_scale_samp_rate
-  p_scale <- context$cache$p_scale
-  
-  ## Set loss scale via a sample of the Qi on an augmented p-grid
-  set.seed(state$seed)
-  N <- length(Qi_list)
-  idx <- sample(1:N, size = floor(loss_scale_samp_rate * N), replace = FALSE)
-  Qi_samp <- Qi_list[idx]
-  pi_grid_samp <- lapply(Ji_vec[idx], pi_grid_fun)
-  p_grid_aug <- c(p_grid, pi_grid_fun(state$J_aug - length(p_grid)))
-  p_grid_aug <- sort(unique(p_grid_aug))
-  loss_scale <- loss_scale_fun(Qi_samp, loss_fun, pi_grid_samp, p_grid_aug, p_scale, supp_Y)
-  state$loss_scale <- loss_scale
-  
+
   ## Choose qualifying dimension K
   if (is.null(state$K)) {
     out <- choose_near_lossless_K_q_pca(
-      epsilon = state$epsilon, alpha = state$alpha, 
-      V = state$V, K_max = state$K_max, 
-      loss_fun = loss_fun, loss_scale = loss_scale,
+      epsilon = state$epsilon, alpha = state$alpha,
+      V = state$V, K_max = state$K_max,
+      loss_fun = loss_fun,
       Q_list = Q_list, Qi_list = Qi_list, 
       p_grid = p_grid, Ji_vec = Ji_vec, 
       sqrt_w = sqrt_w,
@@ -1041,7 +1027,6 @@ encode_fun_q_pca <- function(context, state) {
     c_list[[i]] <- q_pca(Q_list[[i]], state$E, state$Q_center, sqrt_w)
   }
   
-  context$meta$loss_scale <- state$loss_scale
   context$meta$idx_outliers <- state$idx_outliers
   context$payload = c_list
   context
@@ -1060,7 +1045,6 @@ stage_q_pca <- function(
     epsilon = 0.01,
     alpha = 0.05,
     V = 5,
-    J_aug = 500,
     seed = gen_seed()
 ) {
   new_stage(
@@ -1074,7 +1058,6 @@ stage_q_pca <- function(
       epsilon = epsilon,
       alpha = alpha,
       V = V,
-      J_aug = J_aug,
       seed = seed
     ),
     fit_fun = fit_fun_q_pca,
@@ -1096,27 +1079,13 @@ fit_fun_g_pca <- function(context, state, ...) {
   supp_Y <- context$cache$supp_Y
   sqrt_w <- context$cache$sqrt_w
   loss_fun <- context$cache$loss_fun
-  loss_scale_fun <- context$cache$loss_scale_fun
-  loss_scale_samp_rate <- context$cache$loss_scale_samp_rate
-  p_scale <- context$cache$p_scale
-
-  ## Set loss scale via a sample of the Qi on an augmented p-grid
-  set.seed(state$seed)
-  N <- length(Qi_list)
-  idx <- sample(1:N, size = floor(loss_scale_samp_rate * N), replace = FALSE)
-  Qi_samp <- Qi_list[idx]
-  pi_grid_samp <- lapply(Ji_vec[idx], pi_grid_fun)
-  p_grid_aug <- c(p_grid, pi_grid_fun(state$J_aug - length(p_grid)))
-  p_grid_aug <- sort(unique(p_grid_aug))
-  loss_scale <- loss_scale_fun(Qi_samp, loss_fun, pi_grid_samp, p_grid_aug, p_scale, supp_Y)
-  state$loss_scale <- loss_scale
 
   ## Choose qualifying dimension K
   if (is.null(state$K)) {
     out <- choose_near_lossless_K_g_pca(
       epsilon = state$epsilon, alpha = state$alpha,
       V = state$V, K_max = state$K_max,
-      loss_fun = loss_fun, loss_scale = loss_scale,
+      loss_fun = loss_fun,
       G_list = G_list, Qi_list = Qi_list,
       p_grid = p_grid, Ji_vec = Ji_vec,
       p_star = p_star, Q_star_list = Q_star_list,
@@ -1149,7 +1118,6 @@ encode_fun_g_pca <- function(context, state) {
     c_list[[i]] <- g_pca(G_list[[i]], state$E, state$G_center, sqrt_w)
   }
 
-  context$meta$loss_scale <- state$loss_scale
   context$meta$idx_outliers <- state$idx_outliers
   context$payload <- list(c_list = c_list, Q_star_list = Q_star_list)
   context
@@ -1170,7 +1138,6 @@ stage_g_pca <- function(
     epsilon = 0.01,
     alpha = 0.05,
     V = 5,
-    J_aug = 500,
     seed = gen_seed()
 ) {
   new_stage(
@@ -1184,7 +1151,6 @@ stage_g_pca <- function(
       epsilon = epsilon,
       alpha = alpha,
       V = V,
-      J_aug = J_aug,
       seed = seed
     ),
     fit_fun = fit_fun_g_pca,
@@ -1275,27 +1241,13 @@ fit_fun_qg_pca <- function(context, state, ...) {
   supp_Y <- context$cache$supp_Y
   sqrt_w <- context$cache$sqrt_w
   loss_fun <- context$cache$loss_fun
-  loss_scale_fun <- context$cache$loss_scale_fun
-  loss_scale_samp_rate <- context$cache$loss_scale_samp_rate
-  p_scale <- context$cache$p_scale
-  
-  ## Set loss scale via a sample of the Qi on an augmented p-grid
-  set.seed(state$seed)
-  N <- length(Qi_list)
-  idx <- sample(1:N, size = floor(loss_scale_samp_rate * N), replace = FALSE)
-  Qi_samp <- Qi_list[idx]
-  pi_grid_samp <- lapply(Ji_vec[idx], pi_grid_fun)
-  p_grid_aug <- c(p_grid, pi_grid_fun(state$J_aug - length(p_grid)))
-  p_grid_aug <- sort(unique(p_grid_aug))
-  loss_scale <- loss_scale_fun(Qi_samp, loss_fun, pi_grid_samp, p_grid_aug, p_scale, supp_Y)
-  state$loss_scale <- loss_scale
-  
+
   ## Choose qualifying dimension K
   if (is.null(state$K)) {
     out <- choose_near_lossless_K_qg_pca(
       epsilon = state$epsilon, alpha = state$alpha,
       V = state$V, K_max = state$K_max,
-      loss_fun = loss_fun, loss_scale = loss_scale,
+      loss_fun = loss_fun,
       G_list = G_list, Q_list = Q_list, Qi_list = Qi_list,
       p_grid = p_grid, Ji_vec = Ji_vec,
       p_star = p_star, Q_star = Q_star,
@@ -1352,7 +1304,6 @@ encode_fun_qg_pca <- function(context, state) {
   }
   message(str_glue("converged = {sum(converged)} of {N}"))
   
-  context$meta$loss_scale <- state$loss_scale
   context$meta$idx_outliers <- state$idx_outliers
   context$payload = list(
     c_list = c_list,
@@ -1377,7 +1328,6 @@ stage_qg_pca <- function(
     alpha = 0.05,
     V = 5,
     lambda = 0,
-    J_aug = 500,
     min_dQ = 1e-8,
     quantlet_construction = c("q_mean_residual", "pca"),
     seed = gen_seed()
@@ -1395,7 +1345,6 @@ stage_qg_pca <- function(
       alpha = alpha,
       V = V,
       lambda = lambda,
-      J_aug = J_aug,
       min_dQ = min_dQ,
       quantlet_construction = quantlet_construction,
       seed = seed
@@ -1441,7 +1390,6 @@ stage_wame <- function(
     alpha = 0.05,
     V = 5,
     lambda = 0,
-    J_aug = 500,
     quantlet_construction = c("q_mean_residual", "pca"),
     seed = gen_seed()
 ) {
@@ -1450,7 +1398,7 @@ stage_wame <- function(
   child_qg_pca <- stage_qg_pca(
     K = K, K_max = K_max,
     epsilon = epsilon, alpha = alpha, V = V,
-    lambda = lambda, J_aug = J_aug,
+    lambda = lambda,
     min_dQ = min_dQ,
     quantlet_construction = quantlet_construction,
     seed = seed
@@ -1669,9 +1617,6 @@ construct_pipeline <- function(
     Q_star = NULL,
     y_min = NULL,
     loss = "wasserstein", # TODO: Move to qg_pca state
-    loss_scale = "none",
-    loss_scale_samp_rate = 1.0,
-    p_scale = 0.5,
     ratio_trans = NULL, # TODO: Move to eqf_cgrid state
     cache_init = NULL,
     meta_init = NULL,
@@ -1692,9 +1637,6 @@ construct_pipeline <- function(
       Q_star = Q_star,
       Q_min = y_min,
       loss_fun = loss_to_fun[[loss]],
-      loss_scale_fun = loss_scale_to_fun[[loss_scale]],
-      loss_scale_samp_rate = loss_scale_samp_rate,
-      p_scale = p_scale,
       ratio_trans = ratio_trans,
       seed = seed
     ) 

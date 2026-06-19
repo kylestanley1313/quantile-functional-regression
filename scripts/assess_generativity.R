@@ -59,9 +59,6 @@ for (lambda in lambdas) {
     Q_star = 0,
     y_min = 0,
     loss = 'wasserstein',
-    loss_scale = 'none',
-    loss_scale_samp_rate = 0.05,
-    p_scale = 0.025,
     seed = gen_seed()
   )
 

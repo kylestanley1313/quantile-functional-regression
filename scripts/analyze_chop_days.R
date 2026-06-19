@@ -69,8 +69,6 @@ if (dataset == 'chop-mims-day') {
     y_min = 0,
     # loss = 'one_minus_concordance',
     loss = 'wasserstein',
-    loss_scale = 'median_pairwise_distance',
-    loss_scale_samp_rate = 0.1,
     seed = 12345
   )
 

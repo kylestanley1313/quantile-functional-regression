@@ -56,10 +56,6 @@ if (dataset == 'chop-mims-sub') {
     Q_star = 0,
     y_min = 0,
     loss = 'wasserstein',
-    loss_scale = 'quantile_pairwise_distance',
-    # loss = 'wasserstein',
-    # loss_scale = 'median_pairwise_wasserstein',
-    # loss_scale_samp_rate = 1.0,
     seed = 12345
   )
 
