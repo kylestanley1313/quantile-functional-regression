@@ -99,8 +99,7 @@ for (path_y in paths_in) {
   df_y_awake_wear <- df_y %>%
 
     ## Clamp negatives to zero and remove unreasonably high values
-    mutate(MIMS_UNIT = pmax(MIMS_UNIT, 0)) %>%
-    filter(MIMS_UNIT < 1000) %>%
+    filter(MIMS_UNIT != -0.01, MIMS_UNIT <= 500) %>%
     
     ## Remove sleep
     left_join(
@@ -158,7 +157,258 @@ for (sub_id in names(y_list)) {
 saveRDS(y_list_sub, path_out)
 
 
-## ---------- MIMS (for NHANES validation) ---------- ##
+## ---------- MIMS (for NHANES Validation; wear time) ---------- ##
+
+## Prepare day-level data
+path_out <- file.path('data', 'processed', 'chop-mims-day_v6.rds')
+y_list <- list()
+paths_in <- list.files(path = dir_mims, full.names = TRUE)
+i <- 1
+for (path_y in paths_in) {
+  print(str_glue("i = {i}"))
+
+  ## Extract sub_id
+  sub_id <- strsplit(tail(strsplit(path_y, "/")[[1]], n = 1), '_')[[1]][1]
+  
+  ## Set paths
+  # path_sleep <- file.path(
+  #   dir_sleep, get_data_file(
+  #     sub_id, 'sleep',
+  #     rewear = ifelse(sub_id %in% rewear_ids, TRUE, FALSE)
+  #   )
+  # )
+  # if (!file.exists(path_sleep)) {
+  #   print(str_glue("File does not exist: {path_sleep}"))
+  #   next
+  # }
+  path_nonwear <- file.path(
+    dir_nonwear, get_data_file(
+      sub_id, 'nonwear',
+      rewear = ifelse(sub_id %in% rewear_ids, TRUE, FALSE)
+    )
+  )
+  if (!file.exists(path_nonwear)) {
+    print(str_glue("File does not exist: {path_nonwear}"))
+    next
+  }
+  
+  ## Read dataframes
+  df_y <- read.csv(path_y, header = TRUE)
+  # df_sleep <- read.csv(path_sleep, header = TRUE)
+  df_nonwear <- read.csv(path_nonwear, header = TRUE)
+  
+  ## Parse timestamps
+  df_y <- df_y %>%
+    mutate(
+      ts = as.POSIXct(HEADER_TIME_STAMP, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+    )
+  # df_sleep <- df_sleep %>%
+  #   mutate(
+  #     sleeponset_ts = as.POSIXct(sleeponset_ts, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+  #     wakeup_ts     = as.POSIXct(wakeup_ts,     format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+  #   )
+  df_nonwear <- df_nonwear %>%
+    mutate(
+      ts_start = as.POSIXct(timestamp, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+      ts_end   = ts_start + 15 * 60   # 15-minute epochs
+    )
+  
+  ## Remove rows inside sleep intervals
+  df_nonwear_int <- df_nonwear %>%
+    filter(nonwear == 1)
+  df_y_wear <- df_y %>%
+
+    ## Clamp negatives to zero and remove unreasonably high values
+    filter(MIMS_UNIT != -0.01, MIMS_UNIT <= 500) %>%
+    
+    ## Remove sleep
+    # left_join(
+    #   df_sleep,
+    #   join_by(
+    #     ts >= sleeponset_ts,
+    #     ts <= wakeup_ts
+    #   )
+    # ) %>%
+    # filter(is.na(sleeponset_ts)) %>%
+    # dplyr::select(-sleeponset_ts, -wakeup_ts) %>%
+    
+    ## Remove nonwear
+    left_join(
+      df_nonwear_int,
+      join_by(
+        ts >= ts_start,
+        ts <  ts_end
+      )
+    ) %>%
+    filter(is.na(ts_start)) %>%
+    dplyr::select(-ts_start, -ts_end, -nonwear)
+
+  ## Define distributions (by day, using Eastern time)
+  df_y_wear <- df_y_wear %>%
+    mutate(date = as.character(as.Date(ts, tz = "America/New_York")))
+  day_list <- split(df_y_wear$MIMS_UNIT, df_y_wear$date)
+
+  ## Keep days with >= 480 minutes (8 hours) of valid wear time
+  day_list <- Filter(function(v) length(v) >= 480, day_list)
+
+  ## Keep weekdays
+  # is_weekday <- as.POSIXlt(names(day_list))$wday %in% 1:5
+  # day_list <- day_list[is_weekday]
+
+  ## If there are not more than 3 unique values, monotonic spline interpolation
+  ## will fail. Remove offending days.
+  day_n_unique <- sapply(day_list, function(y) length(unique(y)))
+  day_list <- day_list[day_n_unique > 3]
+
+  ## Require exactly 7 days: drop subjects with fewer than 7 qualifying days
+  ## and truncate subjects with more than 7 to the first 7 (chronological).
+  if (length(day_list) >= 7) {
+    day_list <- day_list[order(names(day_list))][1:7]
+    y_list[[sub_id]] <- day_list
+  }
+  i <- i + 1
+
+}
+saveRDS(y_list, path_out)
+
+## Aggregte across days
+path_out <- file.path('data', 'processed', 'chop-mims_v6.rds')
+y_list_sub <- list()
+for (sub_id in names(y_list)) {
+  y_list_sub[[sub_id]] <- unlist(y_list[[sub_id]])
+} 
+saveRDS(y_list_sub, path_out)
+
+
+## ---------- MIMS (for NHANES Validation; awake wear time) ---------- ##
+
+## Prepare day-level data
+path_out <- file.path('data', 'processed', 'chop-mims-day_v5.rds')
+y_list <- list()
+paths_in <- list.files(path = dir_mims, full.names = TRUE)
+i <- 1
+for (path_y in paths_in) {
+  print(str_glue("i = {i}"))
+
+  ## Extract sub_id
+  sub_id <- strsplit(tail(strsplit(path_y, "/")[[1]], n = 1), '_')[[1]][1]
+  
+  ## Set paths
+  path_sleep <- file.path(
+    dir_sleep, get_data_file(
+      sub_id, 'sleep',
+      rewear = ifelse(sub_id %in% rewear_ids, TRUE, FALSE)
+    )
+  )
+  if (!file.exists(path_sleep)) {
+    print(str_glue("File does not exist: {path_sleep}"))
+    next
+  }
+  path_nonwear <- file.path(
+    dir_nonwear, get_data_file(
+      sub_id, 'nonwear',
+      rewear = ifelse(sub_id %in% rewear_ids, TRUE, FALSE)
+    )
+  )
+  if (!file.exists(path_nonwear)) {
+    print(str_glue("File does not exist: {path_nonwear}"))
+    next
+  }
+  
+  ## Read dataframes
+  df_y <- read.csv(path_y, header = TRUE)
+  df_sleep <- read.csv(path_sleep, header = TRUE)
+  df_nonwear <- read.csv(path_nonwear, header = TRUE)
+  
+  ## Parse timestamps
+  df_y <- df_y %>%
+    mutate(
+      ts = as.POSIXct(HEADER_TIME_STAMP, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+    )
+  df_sleep <- df_sleep %>%
+    mutate(
+      sleeponset_ts = as.POSIXct(sleeponset_ts, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+      wakeup_ts     = as.POSIXct(wakeup_ts,     format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+    )
+  df_nonwear <- df_nonwear %>%
+    mutate(
+      ts_start = as.POSIXct(timestamp, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+      ts_end   = ts_start + 15 * 60   # 15-minute epochs
+    )
+  
+  ## Remove rows inside sleep intervals
+  df_nonwear_int <- df_nonwear %>%
+    filter(nonwear == 1)
+  df_y_awake_wear <- df_y %>%
+
+    ## Clamp negatives to zero and remove unreasonably high values
+    filter(MIMS_UNIT != -0.01, MIMS_UNIT <= 500) %>%
+    
+    ## Remove sleep
+    left_join(
+      df_sleep,
+      join_by(
+        ts >= sleeponset_ts,
+        ts <= wakeup_ts
+      )
+    ) %>%
+    filter(is.na(sleeponset_ts)) %>%
+    dplyr::select(-sleeponset_ts, -wakeup_ts) %>%
+    
+    ## Remove nonwear
+    left_join(
+      df_nonwear_int,
+      join_by(
+        ts >= ts_start,
+        ts <  ts_end
+      )
+    ) %>%
+    filter(is.na(ts_start)) %>%
+    dplyr::select(-ts_start, -ts_end, -nonwear)
+
+  ## Define distributions (by day, using Eastern time)
+  df_y_awake_wear <- df_y_awake_wear %>%
+    mutate(date = as.character(as.Date(ts, tz = "America/New_York")))
+  day_list <- split(df_y_awake_wear$MIMS_UNIT, df_y_awake_wear$date)
+
+  ## Keep days with >= 480 minutes (8 hours) of valid wear time
+  day_list <- Filter(function(v) length(v) >= 480, day_list)
+
+  ## Keep weekdays
+  # is_weekday <- as.POSIXlt(names(day_list))$wday %in% 1:5
+  # day_list <- day_list[is_weekday]
+
+  ## If there are not more than 3 unique values, monotonic spline interpolation
+  ## will fail. Remove offending days.
+  day_n_unique <- sapply(day_list, function(y) length(unique(y)))
+  day_list <- day_list[day_n_unique > 3]
+
+  ## Require exactly 7 days: drop subjects with fewer than 7 qualifying days
+  ## and truncate subjects with more than 7 to the first 7 (chronological).
+  if (length(day_list) >= 7) {
+    day_list <- day_list[order(names(day_list))][1:7]
+    y_list[[sub_id]] <- day_list
+  }
+  i <- i + 1
+
+}
+saveRDS(y_list, path_out)
+
+## Aggregte across days
+path_out <- file.path('data', 'processed', 'chop-mims_v5.rds')
+y_list_sub <- list()
+for (sub_id in names(y_list)) {
+  y_list_sub[[sub_id]] <- unlist(y_list[[sub_id]])
+} 
+saveRDS(y_list_sub, path_out)
+
+
+
+## ---------- MIMS (for NHANES validation; all time) ---------- ##
+
+## Processing
+##  - Remove -0.01 values
+##  - How many exceedingly large MIMS observations are there?
 
 ## Prepare day-level data (minimal processing)
 path_out <- file.path('data', 'processed', 'chop-mims-day_v3_nofilter.rds')
@@ -175,11 +425,10 @@ for (path_y in paths_in) {
   ## Read data
   df_y <- read.csv(path_y, header = TRUE) %>%
     mutate(
-      MIMS_UNIT = pmax(MIMS_UNIT, 0),
       ts = as.POSIXct(HEADER_TIME_STAMP, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
       date = as.character(as.Date(ts, tz = "America/New_York"))
     ) %>%
-    filter(MIMS_UNIT < 1000)
+    filter(MIMS_UNIT != -0.01, MIMS_UNIT <= 500)  ## Outside physiologically reasonable range (need citation)
 
   ## Split by day and keep days with >= 480 minutes (8 hours)
   day_list <- split(df_y$MIMS_UNIT, df_y$date)
@@ -201,7 +450,6 @@ for (sub_id in names(y_list)) {
 }
 saveRDS(y_list_sub, path_out)
 
-## Add Zero-Padded
 
 
 ## ---------- ENMO (awake wear time) ---------- ##

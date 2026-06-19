@@ -7,11 +7,12 @@ source('src/utils.R')
 
 
 ## Globals
+art_dir_nhanes <- 'demo_nhanes'
 art_dir <- 'validate_nhanes_3'
 epsilon <- 1.25
 
 ## Canonical pipeline (the one demo_nhanes.R chose). K_star follows.
-path_pipe_star <- file.path('artifacts', 'demo_nhanes', 'pipe_nhanes.rds')
+path_pipe_star <- file.path('artifacts', art_dir_nhanes, 'pipe_nhanes.rds')
 pipeline_star  <- readRDS(path_pipe_star)
 K_star         <- pipeline_star$stages[[5]]$state$K
 
@@ -71,12 +72,14 @@ plot_losslessness_groups(
 k_start   <- 1
 k_stop    <- 3
 col_train <- rgb(0, 0, 0, alpha = 0.25)
+col_flag <- rgb(1, 0, 0)
 
 y_ctx_chop <- new_context(
   payload = y_chop,
   cache   = pipeline_star$training$cache,
   meta    = list()
 )
+Qi_chop <- encode(pipeline_star, y_ctx_chop, from = 0, to = 2)$payload
 c_chop <- do.call(rbind,
   encode(pipeline_star, y_ctx_chop, from = 0, to = 5)$payload$c_list)
 z_chop <- do.call(rbind,
@@ -97,6 +100,38 @@ plot_embeddings(
   c_chop[, k_start:k_stop],
   stats  = FALSE,
   colors = rep(col_train, length(y_chop))
+)
+dev.off()
+
+idx <- c(34, 162)
+fun_list  <- c(Qi_chop[-idx], Qi_chop[idx])
+grid_list <- c(
+  lapply(lengths(fun_list), pi_grid_fun)
+)
+colors <- c(
+  rep(col_train, length(Qi_chop) - length(idx)), 
+  rep(col_flag, length(idx))
+)
+widths <- rep(0.25, length(fun_list))
+types  <- rep(1,    length(fun_list))
+cwt_lbl <- data.frame(
+  color = c(col_train, col_flag),
+  width = c(2.5, 2.5),
+  type  = c(1, 1),
+  label = c('no-flag', 'flag')
+)
+png(file.path('artifacts', art_dir,
+              str_glue('chop_qi_K-{K_star}.png')),
+    width = 960, height = 960, pointsize = 18)
+plot_funs(
+  fun_list  = fun_list,
+  grid_list = grid_list,
+  ylim      = ylim_shared,
+  colors    = colors,
+  widths    = widths,
+  types     = types,
+  color_width_type_labels = cwt_lbl,
+  main      = str_glue("Synthetic vs Real Val Qi ({toupper(label)}, K = {K_star})")
 )
 dev.off()
 

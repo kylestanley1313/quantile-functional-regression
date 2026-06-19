@@ -37,6 +37,9 @@ decode_z_rot_to_Qi <- function(z_rot_list, Ji) {
 
 ## ========== Representation Learning ========== ##
 
+## Globals
+dir_art <- 'demo_nhanes'
+
 ## Load data
 path <- file.path('data', 'processed', 'nhanes_v1_nofilter.rds')
 y_list <- readRDS(path)
@@ -76,11 +79,11 @@ pipeline <- construct_pipeline(
       n_layers = 16,
       max_epochs = 1000,
       lr = 1e-3,
-      path = 'artifacts/demo_nhanes/flow_nhanes.pth'
+      path = str_glue('artifacts/{dir_art}/flow_nhanes.pth')
     ),
     stage_pca_rotation()
   ),
-  supp_Y = c(0, seq(0.006, 400, by = 0.001)),
+  supp_Y = c(0, seq(0.006, 500, by = 0.001)),
   p_star = 0,
   y_star = 0,
   y_min = 0,
@@ -93,7 +96,7 @@ pipeline <- construct_pipeline(
 
 ## Fitting
 pipeline <- fit(pipeline, y_list)
-path <- 'artifacts/demo_nhanes/pipe_nhanes.rds'
+path <- str_glue('artifacts/{dir_art}/pipe_nhanes.rds')
 saveRDS(pipeline, path)
 
 ## New context
@@ -143,7 +146,7 @@ for (p in p_vec) {
   
   ## Plot reconstruction
   path_plot <- file.path(
-    'artifacts', 'demo_nhanes', 'plots', 
+    'artifacts', dir_art, 'plots', 
     str_glue('Qi-recon_p-{100*p}.png')
   )
   Qi <- Qi_ctx$payload[[idx_payload]]
@@ -189,7 +192,7 @@ plot_qi_recon_grid(
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
   log_x_plus_1  = log_scale,
-  path          = file.path('artifacts', 'demo_nhanes', 'plots',
+  path          = file.path('artifacts', dir_art, 'plots',
                             sprintf('Qi-recon_grid_3x5%s.png',
                                     if (log_scale) '_log' else ''))
 )
@@ -207,7 +210,7 @@ col_outlier <- rgb(1, 0.8, 0.5, alpha = 0.25)
 
 ## Plot z-rot-embeddings
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('data_z-rot.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -243,7 +246,7 @@ dev.off()
 
 ## Plot z-embeddings
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('data_z.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -279,7 +282,7 @@ dev.off()
 
 ## Plot c-embeddings
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('data_c.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -316,7 +319,7 @@ dev.off()
 
 ## Plot Q
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('data_q.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -352,7 +355,7 @@ dev.off()
 
 ## Plot Qi
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('data_qi.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -443,7 +446,7 @@ fmt_cors <- function(x, y) {
   )
 }
 
-png(file.path('artifacts', 'demo_nhanes', 'plots',
+png(file.path('artifacts', dir_art, 'plots',
               'pairwise_wass_vs_lqd.png'),
     width = 720, height = 720, pointsize = 14)
 plot(d_wass, d_lqd,
@@ -454,7 +457,7 @@ plot(d_wass, d_lqd,
 legend("topleft", legend = fmt_cors(d_wass, d_lqd), bty = "n")
 dev.off()
 
-png(file.path('artifacts', 'demo_nhanes', 'plots',
+png(file.path('artifacts', dir_art, 'plots',
               'pairwise_wass_vs_c.png'),
     width = 720, height = 720, pointsize = 14)
 plot(d_wass, d_c,
@@ -465,7 +468,7 @@ plot(d_wass, d_c,
 legend("topleft", legend = fmt_cors(d_wass, d_c), bty = "n")
 dev.off()
 
-png(file.path('artifacts', 'demo_nhanes', 'plots',
+png(file.path('artifacts', dir_art, 'plots',
               'pairwise_wass_vs_z.png'),
     width = 720, height = 720, pointsize = 14)
 plot(d_wass, d_z,
@@ -501,7 +504,7 @@ Qi_draws <- decode_z_draws(z_draws, pipeline, Ji = Ji)$Qi
 col_real  <- rgb(0, 0, 0, alpha = 0.25)
 col_synth <- rgb(1, 0, 0, alpha = 0.25)
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('synth_qi.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -566,7 +569,7 @@ mean_f <- approx(
 
 ## Plotting
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('frechet_nhanes.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -629,7 +632,7 @@ bin_pred <- 'old'
 ## Plot: QF
 set.seed(12345)
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('eda_Qi_{bin_pred}.png')
 )
 png(path_plot_tmp, width = 960, height = 960, pointsize = 18)
@@ -666,7 +669,7 @@ dev.off()
 ## Plot: z-rot-embeddings
 set.seed(12345)
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('eda_z-rot_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -801,7 +804,7 @@ for (k_star in 1:K) {
   ## Plot
   pi_grid <- pi_grid_fun(Ji)
   path_plot <- file.path(
-    'artifacts', 'demo_nhanes', 'plots',
+    'artifacts', dir_art, 'plots',
     str_glue('effect_k-{k_star}.png')
   )
   pal <- colorRampPalette(c("blue", "gray", "red"))(101)
@@ -861,7 +864,7 @@ if (run_diagnostics) {
   ## Check for marginal normality via Q-Q plots
   nc <- ceiling(sqrt(K))
   nr <- ceiling(K / nc)
-  path_plot <- file.path('artifacts', 'demo_nhanes', 'diagnostics', 'group-comp_norm-marg-qq.png')
+  path_plot <- file.path('artifacts', dir_art, 'diagnostics', 'group-comp_norm-marg-qq.png')
   png(path_plot_tmp, width = 250*nc, height = 250*nr, pointsize = 12)
   par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
   for (k in seq_len(K)) {
@@ -875,7 +878,7 @@ if (run_diagnostics) {
   ## Check for marginal normality via histograms
   nc <- ceiling(sqrt(K))
   nr <- ceiling(K / nc)
-  path_plot <- file.path('artifacts', 'demo_nhanes', 'diagnostics', 'group-comp_norm-marg-hist.png')
+  path_plot <- file.path('artifacts', dir_art, 'diagnostics', 'group-comp_norm-marg-hist.png')
   png(path_plot_tmp, width = 250*nc, height = 250*nr, pointsize = 12)
   par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
   for (k in seq_len(K)) {
@@ -889,7 +892,7 @@ if (run_diagnostics) {
   n_plots <- choose(K, 2)
   nc <- ceiling(sqrt(n_plots))
   nr <- ceiling(n_plots / nc)
-  path_plot <- file.path('artifacts', 'demo_nhanes', 'diagnostics', 'group-comp_norm-mv-pw-plots.png')
+  path_plot <- file.path('artifacts', dir_art, 'diagnostics', 'group-comp_norm-mv-pw-plots.png')
   png(path_plot_tmp, width = 250*nc, height = 250*nr, pointsize = 12)
   par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
   for (k1 in 1:(K-1)) {
@@ -1026,7 +1029,7 @@ print(res_rb)
 
 ## Save results
 path <- file.path(
-  'artifacts', 'demo_nhanes', 'plots', 
+  'artifacts', dir_art, 'plots', 
   str_glue('mod_{bin_pred}.txt')
 )
 sink(path)
@@ -1144,7 +1147,7 @@ plot_roy_bose <- function(rb_df, xlim = NULL, main = "") {
 }
 
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('roy-bose_{bin_pred}.png')
 )
 png(path_plot, width = 600, height = 800, pointsize = 14)
@@ -1524,7 +1527,7 @@ Qi_boot_1 <- decode_z_rot_to_Qi(z_boot_1, Ji)
 ## --- Plot conditional QFs with bands
 
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('gc_cond-qfs_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -1539,7 +1542,7 @@ dev.off()
 ## --- Plot difference of conditional QFs with bands
 
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('gc_cond-qfs-diff_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -1558,7 +1561,7 @@ y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1)
 ## --- Plot conditional CDFs with bands
 
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('gc_cond-cdfs_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -1577,7 +1580,7 @@ dev.off()
 ## --- Plot CDF difference with bands
 
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('gc_cond-cdfs-diff_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -1596,7 +1599,7 @@ dev.off()
 ## --- Plot moments with bands (4 panels, one per moment)
 
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('gc_cond-moments_{bin_pred}.png')
 )
 png(path_plot, width = 1280, height = 360, pointsize = 14)
@@ -1611,7 +1614,7 @@ dev.off()
 ## --- Contrast in conditional moments (group 1 - group 0)
 
 path_plot <- file.path(
-  'artifacts', 'demo_nhanes', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('gc_cond-moments-diff_{bin_pred}.png')
 )
 png(path_plot, width = 1280, height = 360, pointsize = 14)
@@ -1963,13 +1966,13 @@ summary_tbl <- data.frame(
 print(summary_tbl)
 write.csv(
   summary_tbl,
-  file.path('artifacts', 'demo_nhanes', 'amm_summary.csv'),
+  file.path('artifacts', dir_art, 'amm_summary.csv'),
   row.names = FALSE
 )
 
 
 ## (2) Smoothing-parameter plot (log10 lambda by k)
-path_plot <- file.path('artifacts', 'demo_nhanes', 'plots', 'amm_lambda.png')
+path_plot <- file.path('artifacts', dir_art, 'plots', 'amm_lambda.png')
 png(path_plot, width = 960, height = 540, pointsize = 14)
 par(mfrow = c(1, 1), mar = c(4, 5, 3, 1))
 lambda_log <- log10(c(amm$lambda_age, amm$lambda_pir))
@@ -1993,7 +1996,7 @@ dev.off()
 ## (3) Residual Q-Q panels
 nc <- ceiling(sqrt(K_amm))
 nr <- ceiling(K_amm / nc)
-path_plot <- file.path('artifacts', 'demo_nhanes', 'plots', 'amm_resid_qq.pdf')
+path_plot <- file.path('artifacts', dir_art, 'plots', 'amm_resid_qq.pdf')
 pdf(path_plot, width = 3 * nc, height = 3 * nr)
 par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
 for (k in seq_len(K_amm)) {
@@ -2006,7 +2009,7 @@ par(mfrow = c(1, 1))
 
 
 ## (4) Residual covariance heatmap (Sigma_E)
-path_plot <- file.path('artifacts', 'demo_nhanes', 'plots', 'amm_sigma_e.png')
+path_plot <- file.path('artifacts', dir_art, 'plots', 'amm_sigma_e.png')
 zmax    <- max(abs(amm$Sigma_E))
 breaks  <- seq(-zmax, zmax, length.out = 101)
 col_pal <- colorRampPalette(c("#0000FF", "white", "#FF000000"))(100)
@@ -2103,12 +2106,12 @@ plot_RE_cov_diag <- function(U_hat, K_, title_expr, path) {
 plot_RE_cov_diag(
   amm$U_age_hat, K_amm,
   expression(hat(Sigma)[U]^"(age)"),
-  file.path('artifacts', 'demo_nhanes', 'plots', 'amm_sigma_u_age.png')
+  file.path('artifacts', dir_art, 'plots', 'amm_sigma_u_age.png')
 )
 plot_RE_cov_diag(
   amm$U_pir_hat, K_amm,
   expression(hat(Sigma)[U]^"(pir)"),
-  file.path('artifacts', 'demo_nhanes', 'plots', 'amm_sigma_u_pir.png')
+  file.path('artifacts', dir_art, 'plots', 'amm_sigma_u_pir.png')
 )
 
 
@@ -2586,11 +2589,11 @@ ci_pir  <- intervals_linear(amm, "pir",  alpha = 0.05)
 #     boot_age_iss = boot_age_iss, boot_age_lrt = boot_age_lrt,
 #     boot_pir_iss = boot_pir_iss, boot_pir_lrt = boot_pir_lrt
 #   ),
-#   file.path('artifacts', 'demo_nhanes', 'amm_bootstraps.rds')
+#   file.path('artifacts', dir_art, 'amm_bootstraps.rds')
 # )
 
 ## Read Bootstrap
-tmp <- readRDS(file.path('artifacts', 'demo_nhanes', 'amm_bootstraps.rds'))
+tmp <- readRDS(file.path('artifacts', dir_art, 'amm_bootstraps.rds'))
 boot_age_iss <- tmp[['boot_age_iss']]
 boot_age_lrt <- tmp[['boot_age_lrt']]
 boot_pir_iss <- tmp[['boot_pir_iss']]
@@ -2646,7 +2649,7 @@ inference_tbl <- data.frame(
 print(inference_tbl)
 write.csv(
   inference_tbl,
-  file.path('artifacts', 'demo_nhanes', 'amm_inference_summary.csv'),
+  file.path('artifacts', dir_art, 'amm_inference_summary.csv'),
   row.names = FALSE
 )
 
@@ -2665,7 +2668,7 @@ inf_tbl_latex <- data.frame(
   "Income" = c(p_val_to_text(hot_pir$p_value), p_val_to_text(cr_pir$p_Bonf))
 )
 path <- file.path(
-  'artifacts', 'demo_nhanes', 'plots', 
+  'artifacts', dir_art, 'plots', 
   str_glue('amm_inf_latex.txt')
 )
 sink(path)
@@ -2696,13 +2699,13 @@ plot_boot_hist <- function(boot_res, title, path) {
   dev.off()
 }
 plot_boot_hist(boot_age_iss, "Bootstrap (age, ISS, VC-only)",
-               file.path('artifacts', 'demo_nhanes', 'plots', 'amm_boot_hist_age_iss.png'))
+               file.path('artifacts', dir_art, 'plots', 'amm_boot_hist_age_iss.png'))
 plot_boot_hist(boot_age_lrt, "Bootstrap (age, LRT, VC-only)",
-               file.path('artifacts', 'demo_nhanes', 'plots', 'amm_boot_hist_age_lrt.png'))
+               file.path('artifacts', dir_art, 'plots', 'amm_boot_hist_age_lrt.png'))
 plot_boot_hist(boot_pir_iss, "Bootstrap (pir, ISS, VC-only)",
-               file.path('artifacts', 'demo_nhanes', 'plots', 'amm_boot_hist_pir_iss.png'))
+               file.path('artifacts', dir_art, 'plots', 'amm_boot_hist_pir_iss.png'))
 plot_boot_hist(boot_pir_lrt, "Bootstrap (pir, LRT, VC-only)",
-               file.path('artifacts', 'demo_nhanes', 'plots', 'amm_boot_hist_pir_lrt.png'))
+               file.path('artifacts', dir_art, 'plots', 'amm_boot_hist_pir_lrt.png'))
 
 ## Self & Liang mixture-weights plots
 plot_sl_mixture <- function(sl_res, title, path) {
@@ -2719,9 +2722,9 @@ plot_sl_mixture <- function(sl_res, title, path) {
   dev.off()
 }
 plot_sl_mixture(sl_age, "Self & Liang mixture (age)",
-                file.path('artifacts', 'demo_nhanes', 'plots', 'amm_sl_mixture_age.png'))
+                file.path('artifacts', dir_art, 'plots', 'amm_sl_mixture_age.png'))
 plot_sl_mixture(sl_pir, "Self & Liang mixture (pir)",
-                file.path('artifacts', 'demo_nhanes', 'plots', 'amm_sl_mixture_pir.png'))
+                file.path('artifacts', dir_art, 'plots', 'amm_sl_mixture_pir.png'))
 
 
 ## Crainiceanu-Ruppert: per-column null distributions (faceted) and joint
@@ -2766,13 +2769,13 @@ plot_cr_joint <- function(cr_res, title, path) {
 }
 
 plot_cr_per_k(cr_age, "Crainiceanu-Ruppert per-column null (age)",
-              file.path('artifacts', 'demo_nhanes', 'plots', 'amm_cr_per_k_age.png'))
+              file.path('artifacts', dir_art, 'plots', 'amm_cr_per_k_age.png'))
 plot_cr_per_k(cr_pir, "Crainiceanu-Ruppert per-column null (pir)",
-              file.path('artifacts', 'demo_nhanes', 'plots', 'amm_cr_per_k_pir.png'))
+              file.path('artifacts', dir_art, 'plots', 'amm_cr_per_k_pir.png'))
 plot_cr_joint(cr_age, "Crainiceanu-Ruppert joint null (age)",
-              file.path('artifacts', 'demo_nhanes', 'plots', 'amm_cr_joint_age.png'))
+              file.path('artifacts', dir_art, 'plots', 'amm_cr_joint_age.png'))
 plot_cr_joint(cr_pir, "Crainiceanu-Ruppert joint null (pir)",
-              file.path('artifacts', 'demo_nhanes', 'plots', 'amm_cr_joint_pir.png'))
+              file.path('artifacts', dir_art, 'plots', 'amm_cr_joint_pir.png'))
 
 
 
@@ -3810,7 +3813,7 @@ amm_boots <- amm_boot(
   seed            = 12345
 )
 
-interp_dir <- file.path('artifacts', 'demo_nhanes', 'plots')
+interp_dir <- file.path('artifacts', dir_art, 'plots')
 
 ## Per-covariate quantile levels for QF crossings / markings.
 quantile_levels_by_cov <- list(
@@ -4095,7 +4098,7 @@ dev.off()
 
 # ## Plot waterfall
 # path_plot <- file.path(
-#   'artifacts', 'demo_nhanes', 'plots',
+#   'artifacts', dir_art, 'plots',
 #   str_glue('waterfall_{bin_pred}.png')
 # )
 # n_funs    <- length(Qi_hats)
@@ -4238,7 +4241,7 @@ dev.off()
 
 # ## Plot
 # path_plot <- file.path(
-#   'artifacts', 'demo_nhanes', 'plots', 'mc',
+#   'artifacts', dir_art, 'plots', 'mc',
 #   str_glue('Z-means_{bin_pred}.png')
 # )
 # png(path_plot_tmp, width = 960, height = 960, pointsize = 18)
@@ -4298,7 +4301,7 @@ dev.off()
 # ## Check for marginal normality via Q-Q plots
 # nc <- ceiling(sqrt(K))
 # nr <- ceiling(K / nc)
-# path_plot <- file.path('artifacts', 'demo_nhanes', 'diagnostics', 'group-comp_norm-marg-qq.png')
+# path_plot <- file.path('artifacts', dir_art, 'diagnostics', 'group-comp_norm-marg-qq.png')
 # png(path_plot_tmp, width = 250*nc, height = 250*nr, pointsize = 12)
 # par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
 # for (k in seq_len(K)) {
@@ -4312,7 +4315,7 @@ dev.off()
 # ## Check for marginal normality via histograms
 # nc <- ceiling(sqrt(K))
 # nr <- ceiling(K / nc)
-# path_plot <- file.path('artifacts', 'demo_nhanes', 'diagnostics', 'group-comp_norm-marg-hist.png')
+# path_plot <- file.path('artifacts', dir_art, 'diagnostics', 'group-comp_norm-marg-hist.png')
 # png(path_plot_tmp, width = 250*nc, height = 250*nr, pointsize = 12)
 # par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
 # for (k in seq_len(K)) {
@@ -4326,7 +4329,7 @@ dev.off()
 # n_plots <- choose(K, 2)
 # nc <- ceiling(sqrt(n_plots))
 # nr <- ceiling(n_plots / nc)
-# path_plot <- file.path('artifacts', 'demo_nhanes', 'diagnostics', 'group-comp_norm-mv-pw-plots.png')
+# path_plot <- file.path('artifacts', dir_art, 'diagnostics', 'group-comp_norm-mv-pw-plots.png')
 # png(path_plot_tmp, width = 250*nc, height = 250*nr, pointsize = 12)
 # par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
 # for (k1 in 1:(K-1)) {
@@ -4508,7 +4511,7 @@ dev.off()
 
 # ## Plot
 # path_plot <- file.path(
-#   'artifacts', 'demo_nhanes', 'plots', 'mc',
+#   'artifacts', dir_art, 'plots', 'mc',
 #   str_glue('Q-means_{bin_pred}.png')
 # )
 # png(path_plot, width = 960, height = 960, pointsize = 18)
