@@ -88,13 +88,7 @@ reload_py_pkg <- function() {
   importlib <- import("importlib")
   python <- import("python", convert = TRUE)
   flow <- import("python.flow", convert = TRUE)
-  lqd_ae <- import("python.lqd_ae", convert = TRUE)
-  lqd_hae <- import("python.lqd_hae", convert = TRUE)
-  lqd_vae <- import("python.lqd_vae", convert = TRUE)
   importlib$reload(flow)
-  importlib$reload(lqd_ae)
-  importlib$reload(lqd_hae)
-  importlib$reload(lqd_vae)
   importlib$reload(python)
   python
 }
