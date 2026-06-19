@@ -14,34 +14,14 @@ source('src/utils.R')
 
 
 
-## ========== Helpers ========== ##
-
-decode_z_to_Qi <- function(z_list, Ji) {
-  z_ctx <- new_context(
-    payload = z_list,
-    cache = pipeline$training$cache,
-    meta = list(Ji_vec = rep(Ji, length.out = length(z_list)))
-  )
-  decode(pipeline, z_ctx, from = 6, to = 2)$payload
-}
-
-decode_z_rot_to_Qi <- function(z_rot_list, Ji) {
-  z_rot_ctx <- new_context(
-    payload = z_rot_list,
-    cache = pipeline$training$cache,
-    meta = list(Ji_vec = rep(Ji, length.out = length(z_rot_list)))
-  )
-  decode(pipeline, z_rot_ctx, from = 7, to = 2)$payload
-}
-
 
 ## ========== Representation Learning ========== ##
 
 ## Globals
-dir_art <- 'demo_nhanes'
+dir_art <- 'demo_nhanes_baseline'
 
 ## Load data
-path <- file.path('data', 'processed', 'nhanes_v1_nofilter.rds')
+path <- file.path('data', 'processed', 'nhanes_v1_nofilter_N-1000.rds')
 y_list <- readRDS(path)
 # y_list <- y_list[1:500]
 N <- length(y_list)
@@ -63,7 +43,6 @@ p_grid <- p_grid_fun_2(
 ## Construct pipeline
 pipeline <- construct_pipeline(
   stages = list(
-    stage_y_axis(y_trans = 'identity', y_shift = 0),
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid, Ji_min = 100), 
     stage_lqd(),
@@ -85,7 +64,7 @@ pipeline <- construct_pipeline(
   ),
   supp_Y = c(0, seq(0.006, 500, by = 0.001)),
   p_star = 0,
-  y_star = 0,
+  Q_star = 0,
   y_min = 0,
   loss = 'wasserstein',
   loss_scale = 'none',
@@ -107,20 +86,18 @@ y_ctx <- new_context(
 )
 
 ## Encode/Decode
-Ty_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
-Qi_ctx <- encode(pipeline, Ty_ctx, from = 1, to = 2)
-Q_ctx <- encode(pipeline, Qi_ctx, from = 2, to = 3)
-G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 3, to = 4)
-c_ctx <- encode(pipeline, G_Q_star_ctx, from = 4, to = 5)
-z_ctx <- encode(pipeline, c_ctx, from = 5, to = 6)
-z_rot_ctx <- encode(pipeline, z_ctx, from = 6, to = 7)
-z_ctx_ <- decode(pipeline, z_rot_ctx, from = 7, to = 6)
-c_ctx_ <- decode(pipeline, z_ctx_, from = 6, to = 5)
-G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 5, to = 4)
-Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 4, to = 3)
-Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 3, to = 2)
-Ty_ctx_ <- decode(pipeline, Qi_ctx_, from = 2, to = 1)
-y_ctx_ <- decode(pipeline, Ty_ctx_, from = 1, to = 0)
+Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
+Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
+G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
+c_ctx <- encode(pipeline, G_Q_star_ctx, from = 3, to = 4)
+z_ctx <- encode(pipeline, c_ctx, from = 4, to = 5)
+z_rot_ctx <- encode(pipeline, z_ctx, from = 5, to = 6)
+z_ctx_ <- decode(pipeline, z_rot_ctx, from = 6, to = 5)
+c_ctx_ <- decode(pipeline, z_ctx_, from = 5, to = 4)
+G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 4, to = 3)
+Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 3, to = 2)
+Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
+y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
 
 ## ----- Visualize reconstructions
@@ -403,7 +380,7 @@ p_grid     <- pipeline$training$cache$p_grid
 J_aug      <- 500
 p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(J_aug - length(p_grid)))))
 w_p_grid   <- get_quadrature_weights(p_grid)
-supp_TY    <- pipeline$training$cache$supp_TY
+supp_Y    <- pipeline$training$cache$supp_Y
 
 ## Pairwise Wasserstein distances on Qi (existing utility handles the
 ## per-subject pi-grid -> p_grid_aug placement and weighted L2 integration).
@@ -414,7 +391,7 @@ d_wass <- pairwise_distance(
   loss_fun     = wasserstein,
   pi_grid_list = pi_grid_list,
   p_grid_aug   = p_grid_aug,
-  supp_TY      = supp_TY
+  supp_Y      = supp_Y
 )
 
 ## Pairwise L2 in LQD space and Euclidean in Z-space, looped in the SAME

@@ -36,7 +36,6 @@ for (lambda in lambdas) {
   ## Construct pipeline
   pipeline <- construct_pipeline(
     stages = list(
-      stage_y_axis(y_trans = 'identity', y_shift = 0),
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
       stage_lqd(),
@@ -57,7 +56,7 @@ for (lambda in lambdas) {
     ),
     supp_Y = c(0, seq(0.006, 400, by = 0.001)),
     p_star = 0,
-    y_star = 0,
+    Q_star = 0,
     y_min = 0,
     loss = 'wasserstein',
     loss_scale = 'none',

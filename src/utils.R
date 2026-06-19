@@ -9,6 +9,68 @@ gen_seed <- function() {
 }
 
 
+## ---------- Y-Axis Transforms ---------- ##
+
+## Standalone y-axis transforms, retained for axis labelling / manual use after
+## the Y-Axis stage was removed from the encoder-decoder pipeline.
+
+identity_transform <- function(x, shift = 0, inverse = FALSE) {
+  if (inverse) {
+    x - shift
+  } else {
+    x + shift
+  }
+}
+
+log_transform <- function(x, shift = 0, inverse = FALSE) {
+  if (inverse) {
+    exp(x) - shift
+  } else {
+    log(x + shift)
+  }
+}
+
+loglog_transform <- function(x, shift = 0, inverse = FALSE) {
+  if (inverse) {
+    log_transform(log_transform(x, shift, TRUE), shift, TRUE)
+  } else {
+    log_transform(log_transform(x, shift), shift)
+  }
+}
+
+sqrt_transform <- function(x, shift = 0, inverse = FALSE) {
+  if (inverse) {
+    x^2 - shift
+  } else {
+    sqrt(x + shift)
+  }
+}
+
+boxcox_transform <- function(x, shift = 0, lambda = 0, inverse = FALSE) {
+  if (inverse) {
+    if (abs(lambda) < 1e-8) {
+      exp(x) - shift
+    } else {
+      (lambda*x + 1)^(1/lambda) - shift
+    }
+  } else {
+    if (abs(lambda) < 1e-8) {
+      log(x + shift)
+    } else {
+      ((x + shift)^lambda - 1) / lambda
+    }
+  }
+}
+
+y_trans_to_fun <- list(
+  'identity' = identity_transform,
+  'log' = log_transform,
+  'loglog' = loglog_transform,
+  'sqrt' = sqrt_transform,
+  'boxcox' = boxcox_transform
+)
+
+
 ## ---------- Python ---------- ##
 
 init_python <- function() {
@@ -159,7 +221,7 @@ pairwise_distance <- function(
     loss_fun,
     pi_grid_list,
     p_grid_aug,
-    supp_TY = NULL
+    supp_Y = NULL
 ) {
   N <- length(Qi_list)
   distances <- numeric(N * (N - 1) / 2)
@@ -168,7 +230,7 @@ pairwise_distance <- function(
   for (i in 1:N) {
     Qi_list[[i]] <- inv_eqf_cgrid(
       Qi_list[[i]], pi_grid_list[[i]],
-      p_grid_aug, supp_TY
+      p_grid_aug, supp_Y
     )
   }
   w_aug <- get_quadrature_weights(p_grid_aug)
@@ -195,9 +257,9 @@ quantile_pairwise_distance <- function(
     pi_grid_list,
     p_grid_aug,
     p_scale = 0.5,
-    supp_TY = NULL
+    supp_Y = NULL
 ) {
-  d <- pairwise_distance(Qi_list, loss_fun, pi_grid_list, p_grid_aug, supp_TY)
+  d <- pairwise_distance(Qi_list, loss_fun, pi_grid_list, p_grid_aug, supp_Y)
   unname(quantile(d, c(p_scale)))
 }
 
@@ -337,40 +399,55 @@ decode_z_draws <- function(z_draws, pipeline, Ji = 1000) {
   draws$z <- z_draws_ctx$payload
 
   ## C
-  c_draws_ctx <- decode(pipeline, z_draws_ctx, from = 6, to = 5)
+  c_draws_ctx <- decode(pipeline, z_draws_ctx, from = 5, to = 4)
   draws$c <- c_draws_ctx$payload
 
   ## G
-  G_Q_star_draws_ctx <- decode(pipeline, c_draws_ctx, from = 5, to = 4)
+  G_Q_star_draws_ctx <- decode(pipeline, c_draws_ctx, from = 4, to = 3)
   draws$G_Q_star <- G_Q_star_draws_ctx$payload
 
   ## Q
-  Q_draws_ctx <- decode(pipeline, G_Q_star_draws_ctx, from = 4, to = 3)
+  Q_draws_ctx <- decode(pipeline, G_Q_star_draws_ctx, from = 3, to = 2)
   draws$Q <- Q_draws_ctx$payload
 
   ## Qi
-  Qi_draws_ctx <- decode(pipeline, Q_draws_ctx, from = 3, to = 2)
+  Qi_draws_ctx <- decode(pipeline, Q_draws_ctx, from = 2, to = 1)
   draws$Qi <- Qi_draws_ctx$payload
 
   draws
 }
 
+decode_z_to_Qi <- function(z_list, Ji) {
+  z_ctx <- new_context(
+    payload = z_list,
+    cache = pipeline$training$cache,
+    meta = list(Ji_vec = rep(Ji, length.out = length(z_list)))
+  )
+  decode(pipeline, z_ctx, from = 5, to = 1)$payload
+}
 
-## Decode a list of latent z's to Qi on the augmented p-grid. p_grid is the
-## pipeline's native cgrid (was previously closed over as a global).
 z_to_Qi_aug <- function(pipeline, z_list, p_grid_aug, p_grid) {
   N <- length(z_list)
   draws <- decode_z_draws(z_list, pipeline)
 
   Qi_list <- draws$Q
-  supp_TY <- pipeline$training$cache$supp_TY
+  supp_Y <- pipeline$training$cache$supp_Y
   for (i in seq_len(N)) {
     Qi_list[[i]] <- inv_eqf_cgrid(
       Qi_list[[i]], p_grid,
-      p_grid_aug, supp_TY
+      p_grid_aug, supp_Y
     )
   }
   Qi_list
+}
+
+decode_z_rot_to_Qi <- function(z_rot_list, Ji) {
+  z_rot_ctx <- new_context(
+    payload = z_rot_list,
+    cache = pipeline$training$cache,
+    meta = list(Ji_vec = rep(Ji, length.out = length(z_rot_list)))
+  )
+  decode(pipeline, z_rot_ctx, from = 6, to = 1)$payload
 }
 
 
@@ -381,7 +458,7 @@ encode_to_Z <- function(pipeline, y_list) {
     cache = pipeline$training$cache,
     meta = list()
   )
-  z_ctx <- encode(pipeline, y_ctx, from = 0, to = 6)
+  z_ctx <- encode(pipeline, y_ctx, from = 0, to = 5)
   do.call(rbind, z_ctx$payload)
 }
 
@@ -395,15 +472,15 @@ y_to_Qi_aug <- function(pipeline, y_list, p_grid_aug) {
     cache = pipeline$training$cache,
     meta = list()
   )
-  Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 2)
+  Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
 
   Qi_list <- Qi_ctx$payload
-  supp_TY <- pipeline$training$cache$supp_TY
+  supp_Y <- pipeline$training$cache$supp_Y
   for (i in seq_len(N)) {
     pi_grid <- pi_grid_fun(Ji_vec[i])
     Qi_list[[i]] <- inv_eqf_cgrid(
       Qi_list[[i]], pi_grid,
-      p_grid_aug, supp_TY
+      p_grid_aug, supp_Y
     )
   }
   Qi_list

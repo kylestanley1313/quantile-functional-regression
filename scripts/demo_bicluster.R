@@ -16,7 +16,7 @@ decode_z_to_Qi <- function(z_list, Ji) {
     cache = pipeline$training$cache,
     meta = list(Ji_vec = rep(Ji, length.out = length(z_list)))
   )
-  decode(pipeline, z_ctx, from = 6, to = 2)$payload
+  decode(pipeline, z_ctx, from = 5, to = 1)$payload
 }
 
 
@@ -41,7 +41,6 @@ p_grid <- p_grid_fun_2(
 ## Construct pipeline
 pipeline <- construct_pipeline(
   stages = list(
-    stage_y_axis(y_trans = 'identity', y_shift = 0),
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid),
     stage_lqd(),
@@ -61,7 +60,7 @@ pipeline <- construct_pipeline(
   ),
   supp_Y = NULL,
   p_star = 0.5,
-  y_star = NULL,
+  Q_star = NULL,
   y_min = NULL,
   loss = 'wasserstein',
   loss_scale = 'quantile_pairwise_distance',
@@ -83,18 +82,16 @@ y_ctx <- new_context(
 )
 
 ## Encode/Decode
-Ty_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
-Qi_ctx <- encode(pipeline, Ty_ctx, from = 1, to = 2)
-Q_ctx <- encode(pipeline, Qi_ctx, from = 2, to = 3)
-G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 3, to = 4)
-c_ctx <- encode(pipeline, G_Q_star_ctx, from = 4, to = 5)
-z_ctx <- encode(pipeline, c_ctx, from = 5, to = 6)
-c_ctx_ <- decode(pipeline, z_ctx, from = 6, to = 5)
-G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 5, to = 4)
-Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 4, to = 3)
-Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 3, to = 2)
-Ty_ctx_ <- decode(pipeline, Qi_ctx_, from = 2, to = 1)
-y_ctx_ <- decode(pipeline, Ty_ctx_, from = 1, to = 0)
+Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
+Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
+G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
+c_ctx <- encode(pipeline, G_Q_star_ctx, from = 3, to = 4)
+z_ctx <- encode(pipeline, c_ctx, from = 4, to = 5)
+c_ctx_ <- decode(pipeline, z_ctx, from = 5, to = 4)
+G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 4, to = 3)
+Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 3, to = 2)
+Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
+y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
 
 ## ----- Visualize reconstructions
