@@ -103,38 +103,6 @@ plot_embeddings(
 )
 dev.off()
 
-idx <- c(34, 162)
-fun_list  <- c(Qi_chop[-idx], Qi_chop[idx])
-grid_list <- c(
-  lapply(lengths(fun_list), pi_grid_fun)
-)
-colors <- c(
-  rep(col_train, length(Qi_chop) - length(idx)), 
-  rep(col_flag, length(idx))
-)
-widths <- rep(0.25, length(fun_list))
-types  <- rep(1,    length(fun_list))
-cwt_lbl <- data.frame(
-  color = c(col_train, col_flag),
-  width = c(2.5, 2.5),
-  type  = c(1, 1),
-  label = c('no-flag', 'flag')
-)
-png(file.path('artifacts', art_dir,
-              str_glue('chop_qi_K-{K_star}.png')),
-    width = 960, height = 960, pointsize = 18)
-plot_funs(
-  fun_list  = fun_list,
-  grid_list = grid_list,
-  ylim      = ylim_shared,
-  colors    = colors,
-  widths    = widths,
-  types     = types,
-  color_width_type_labels = cwt_lbl,
-  main      = str_glue("Synthetic vs Real Val Qi ({toupper(label)}, K = {K_star})")
-)
-dev.off()
-
 
 
 ## ---------- Generativity: NHANES vs CHOP ---------- ##
