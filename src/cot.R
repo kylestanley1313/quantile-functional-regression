@@ -1350,7 +1350,8 @@ stage_wame <- function(
     requires_fit = TRUE,
     init_state   = list(
       child_lqd    = child_lqd,
-      child_qg_pca = child_qg_pca
+      child_qg_pca = child_qg_pca,
+      loss         = loss
     ),
     fit_fun      = fit_fun_wame,
     encode_fun   = encode_fun_wame,

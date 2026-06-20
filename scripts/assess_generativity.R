@@ -38,8 +38,7 @@ for (lambda in lambdas) {
     stages = list(
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
-      stage_lqd(),
-      stage_qg_pca(
+      stage_wame(
         # K = 6,
         K_max = 20,
         epsilon = 1.25,
@@ -130,7 +129,7 @@ Ks <- sapply(lambdas, function(lambda) {
     'artifacts', 'demo_nhanes', 'generativity-2',
     str_glue('pipe_lambda-{lambda}.rds')
   ))
-  pipe$stages[[5]]$state$K
+  pipe$stages[[3]]$state$child_qg_pca$state$K
 })
 gen_res <- readRDS(path_gen)
 

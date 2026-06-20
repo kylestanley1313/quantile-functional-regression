@@ -14,7 +14,7 @@ epsilon <- 1.25
 ## Canonical pipeline (the one demo_nhanes.R chose). K_star follows.
 path_pipe_star <- file.path('artifacts', art_dir_nhanes, 'pipe_nhanes.rds')
 pipeline_star  <- readRDS(path_pipe_star)
-K_star         <- pipeline_star$stages[[4]]$state$K
+K_star         <- pipeline_star$stages[[3]]$state$child_qg_pca$state$K
 
 ## Load datasets used by every section below.
 y_nhanes <- readRDS(file.path('data', 'processed', 'nhanes_v1_nofilter.rds'))
@@ -80,9 +80,9 @@ y_ctx_chop <- new_context(
 )
 Qi_chop <- encode(pipeline_star, y_ctx_chop, from = 0, to = 1)$payload
 c_chop <- do.call(rbind,
-  encode(pipeline_star, y_ctx_chop, from = 0, to = 4)$payload$c_list)
+  encode(pipeline_star, y_ctx_chop, from = 0, to = 3)$payload$c_list)
 z_chop <- do.call(rbind,
-  encode(pipeline_star, y_ctx_chop, from = 0, to = 5)$payload)
+  encode(pipeline_star, y_ctx_chop, from = 0, to = 4)$payload)
 
 png(file.path('artifacts', art_dir, str_glue('chop-z_K-{K_star}.png')),
     width = 960, height = 960, pointsize = 18)
@@ -259,7 +259,7 @@ for (label in names(plot_data)) {
 #   meta    = list()
 # )
 # Qi_list <- encode(pipeline, y_ctx, from = 0, to = 1)$payload
-# Qi_reco_list <- decode(pipeline, encode(pipeline, y_ctx), from = 4, to = 1)$payload
+# Qi_reco_list <- decode(pipeline, encode(pipeline, y_ctx), from = 3, to = 1)$payload
 
 # ## Compute concordances
 # concordances <- numeric(length(Qi_list))

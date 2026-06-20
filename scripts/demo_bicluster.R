@@ -16,7 +16,7 @@ decode_z_to_Qi <- function(z_list, Ji) {
     cache = pipeline$training$cache,
     meta = list(Ji_vec = rep(Ji, length.out = length(z_list)))
   )
-  decode(pipeline, z_ctx, from = 5, to = 1)$payload
+  decode(pipeline, z_ctx, from = 4, to = 1)$payload
 }
 
 
@@ -43,8 +43,7 @@ pipeline <- construct_pipeline(
   stages = list(
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid),
-    stage_lqd(),
-    stage_qg_pca(
+    stage_wame(
       K_max = 20,
       epsilon = 1, # 0.25,
       alpha = 0.05,
@@ -80,12 +79,10 @@ y_ctx <- new_context(
 ## Encode/Decode
 Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
 Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
-G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
-c_ctx <- encode(pipeline, G_Q_star_ctx, from = 3, to = 4)
-z_ctx <- encode(pipeline, c_ctx, from = 4, to = 5)
-c_ctx_ <- decode(pipeline, z_ctx, from = 5, to = 4)
-G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 4, to = 3)
-Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 3, to = 2)
+c_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
+z_ctx <- encode(pipeline, c_ctx, from = 3, to = 4)
+c_ctx_ <- decode(pipeline, z_ctx, from = 4, to = 3)
+Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
 Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
 y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 

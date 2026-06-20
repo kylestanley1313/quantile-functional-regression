@@ -388,8 +388,7 @@ fit_pipeline_qg_pca <- function(
     stages = list(
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
-      stage_lqd(),
-      stage_qg_pca(K = K, lambda = lambda, loss = loss)
+      stage_wame(K = K, lambda = lambda, loss = loss)
     ),
     supp_Y = supp_Y,
     p_star = p_star,

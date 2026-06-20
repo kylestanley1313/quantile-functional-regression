@@ -44,9 +44,8 @@ p_grid <- p_grid_fun_2(
 pipeline <- construct_pipeline(
   stages = list(
     stage_eqf_sgrid(),
-    stage_eqf_cgrid(p_grid = p_grid, Ji_min = 100), 
-    stage_lqd(),
-    stage_qg_pca(
+    stage_eqf_cgrid(p_grid = p_grid, Ji_min = 100),
+    stage_wame(
       K_max = 20,
       epsilon = 1.25, # 0.25,
       alpha = 0.05,
@@ -83,14 +82,12 @@ y_ctx <- new_context(
 ## Encode/Decode
 Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
 Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
-G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
-c_ctx <- encode(pipeline, G_Q_star_ctx, from = 3, to = 4)
-z_ctx <- encode(pipeline, c_ctx, from = 4, to = 5)
-z_rot_ctx <- encode(pipeline, z_ctx, from = 5, to = 6)
-z_ctx_ <- decode(pipeline, z_rot_ctx, from = 6, to = 5)
-c_ctx_ <- decode(pipeline, z_ctx_, from = 5, to = 4)
-G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 4, to = 3)
-Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 3, to = 2)
+c_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
+z_ctx <- encode(pipeline, c_ctx, from = 3, to = 4)
+z_rot_ctx <- encode(pipeline, z_ctx, from = 4, to = 5)
+z_ctx_ <- decode(pipeline, z_rot_ctx, from = 5, to = 4)
+c_ctx_ <- decode(pipeline, z_ctx_, from = 4, to = 3)
+Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
 Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
 y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
@@ -389,21 +386,16 @@ d_wass <- pairwise_distance(
   supp_Y      = supp_Y
 )
 
-## Pairwise L2 in LQD space and Euclidean in Z-space, looped in the SAME
-## (i, j>i) order pairwise_distance uses so d_wass[k] / d_lqd[k] / d_z[k]
-## refer to the same pair. wasserstein() is reused here as the
-## quadrature-weighted L2 norm on the native p_grid.
-G_samp <- G_Q_star_ctx$payload$G_list[idx_samp]
+## Euclidean distances in C- and Z-space, looped in the SAME (i, j>i) order
+## pairwise_distance uses so d_wass[k] / d_c[k] / d_z[k] refer to the same pair.
 C_samp <- do.call(rbind, c_ctx$payload$c_list[idx_samp])
 Z_samp <- do.call(rbind, z_ctx$payload[idx_samp])
 n_pair <- N_samp * (N_samp - 1) / 2
-d_lqd  <- numeric(n_pair)
 d_c    <- numeric(n_pair)
 d_z    <- numeric(n_pair)
 k <- 1
 for (i in 1:(N_samp - 1)) {
   for (j in (i + 1):N_samp) {
-    d_lqd[k] <- wasserstein(G_samp[[i]], G_samp[[j]], w_p_grid)
     d_c[k]   <- sqrt(sum((C_samp[i, ] - C_samp[j, ])^2))
     d_z[k]   <- sqrt(sum((Z_samp[i, ] - Z_samp[j, ])^2))
     k <- k + 1
@@ -417,17 +409,6 @@ fmt_cors <- function(x, y) {
     sprintf("Kendall:  %.3f", cor(x, y, method = "kendall"))
   )
 }
-
-png(file.path('artifacts', dir_art, 'plots',
-              'pairwise_wass_vs_lqd.png'),
-    width = 720, height = 720, pointsize = 14)
-plot(d_wass, d_lqd,
-     xlab = "pairwise Wasserstein (Qi)",
-     ylab = "pairwise L2 (G, LQD space)",
-     pch  = 19, col = rgb(0, 0, 0, 0.25),
-     main = str_glue("Pairwise distances: Wass vs LQD (N_samp = {N_samp})"))
-legend("topleft", legend = fmt_cors(d_wass, d_lqd), bty = "n")
-dev.off()
 
 png(file.path('artifacts', dir_art, 'plots',
               'pairwise_wass_vs_c.png'),
@@ -455,7 +436,7 @@ dev.off()
 ## ----- Visualize synthetic
 
 ## Globals
-K  <- pipeline$stages[[5]]$state$K
+K  <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 Ji <- 10080
 
 ## Train/val split (same convention as assess_generativity_split): fit the
@@ -743,7 +724,7 @@ simbas <- function(betas) {
 
 ## ---------- Effect Plots ---------- ##
 
-K <- pipeline$stages[[5]]$state$K
+K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 k_star_quantiles <- seq(0.1, 0.9, by = 0.1)
 for (k_star in 1:K) {
 

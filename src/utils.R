@@ -356,6 +356,14 @@ compute_likelihoods <- function(
 
 ## ---------- Encoding/Decoding ---------- ##
 
+## NOTE: The hard-coded from=/to= stage indices below assume the canonical
+## pipeline order
+##   eqf_sgrid(1) -> eqf_cgrid(2) -> wame(3) -> flow(4) -> [pca_rotation(5)]
+## where `z` is the flow latent (stage 4) and `z_rot` is the pca_rotation
+## output (stage 5). The LQD and QG-PCA steps are fused inside the single
+## `wame` stage, so there is no separate G/G_Q_star boundary. Update these
+## indices if the stage layout changes.
+
 ## Decode a list of latent z draws through the pipeline back to Qi (and the
 ## intermediate context payloads). Mirrors the encode chain in reverse.
 decode_z_draws <- function(z_draws, pipeline, Ji = 1000) {
@@ -371,15 +379,11 @@ decode_z_draws <- function(z_draws, pipeline, Ji = 1000) {
   draws$z <- z_draws_ctx$payload
 
   ## C
-  c_draws_ctx <- decode(pipeline, z_draws_ctx, from = 5, to = 4)
+  c_draws_ctx <- decode(pipeline, z_draws_ctx, from = 4, to = 3)
   draws$c <- c_draws_ctx$payload
 
-  ## G
-  G_Q_star_draws_ctx <- decode(pipeline, c_draws_ctx, from = 4, to = 3)
-  draws$G_Q_star <- G_Q_star_draws_ctx$payload
-
   ## Q
-  Q_draws_ctx <- decode(pipeline, G_Q_star_draws_ctx, from = 3, to = 2)
+  Q_draws_ctx <- decode(pipeline, c_draws_ctx, from = 3, to = 2)
   draws$Q <- Q_draws_ctx$payload
 
   ## Qi
@@ -395,7 +399,7 @@ decode_z_to_Qi <- function(z_list, Ji) {
     cache = pipeline$training$cache,
     meta = list(Ji_vec = rep(Ji, length.out = length(z_list)))
   )
-  decode(pipeline, z_ctx, from = 5, to = 1)$payload
+  decode(pipeline, z_ctx, from = 4, to = 1)$payload
 }
 
 z_to_Qi_aug <- function(pipeline, z_list, p_grid_aug, p_grid) {
@@ -419,7 +423,7 @@ decode_z_rot_to_Qi <- function(z_rot_list, Ji) {
     cache = pipeline$training$cache,
     meta = list(Ji_vec = rep(Ji, length.out = length(z_rot_list)))
   )
-  decode(pipeline, z_rot_ctx, from = 6, to = 1)$payload
+  decode(pipeline, z_rot_ctx, from = 5, to = 1)$payload
 }
 
 
@@ -430,7 +434,7 @@ encode_to_Z <- function(pipeline, y_list) {
     cache = pipeline$training$cache,
     meta = list()
   )
-  z_ctx <- encode(pipeline, y_ctx, from = 0, to = 5)
+  z_ctx <- encode(pipeline, y_ctx, from = 0, to = 4)
   do.call(rbind, z_ctx$payload)
 }
 

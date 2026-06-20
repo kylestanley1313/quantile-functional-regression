@@ -48,8 +48,7 @@ if (dataset == 'chop-mims-day') {
     stages = list(
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
-      stage_lqd(),
-      stage_qg_pca(
+      stage_wame(
         K_max = 20,
         epsilon = 0.25,
         alpha = 0.05,
@@ -89,12 +88,10 @@ y_ctx <- new_context(
 ## Encode/Decode
 Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
 Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
-G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
-c_ctx <- encode(pipeline, G_Q_star_ctx, from = 3, to = 4)
-z_ctx <- encode(pipeline, c_ctx, from = 4, to = 5)
-c_ctx_ <- decode(pipeline, z_ctx, from = 5, to = 4)
-G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 4, to = 3)
-Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 3, to = 2)
+c_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
+z_ctx <- encode(pipeline, c_ctx, from = 3, to = 4)
+c_ctx_ <- decode(pipeline, z_ctx, from = 4, to = 3)
+Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
 Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
 y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
@@ -114,8 +111,6 @@ for (i in 1:2) {
   plot(pi_grid, Qi_ctx$payload[[i]], type = 'l', xlim = c(0, 1), col = 'gray')
   lines(p_grid, Q_ctx$payload[[i]], type = 'l')
   lines(p_grid, Q_ctx_$payload[[i]], type = 'l', col = col_recon)
-  plot(p_grid, G_Q_star_ctx$payload$G_list[[i]], type = 'l', xlim = c(0, 1))
-  lines(p_grid, G_Q_star_ctx_$payload$G_list[[i]], type = 'l', col = col_recon)
   plot(c_ctx$payload$c_list[[i]])
   points(c_ctx_$payload$c_list[[i]], col = col_recon)
   plot(z_ctx$payload[[i]])
@@ -165,8 +160,8 @@ path_p_grid <- file.path(dir_art, str_glue('p_grid.rds'))
 Q <- do.call(rbind, Q_ctx$payload)
 C <- do.call(rbind, c_ctx$payload$c_list)
 Z <- do.call(rbind, z_ctx$payload)
-E <- pipeline$stages[[5]]$state$E
-p_grid <- pipeline$stages[[3]]$state$p_grid
+E <- pipeline$stages[[3]]$state$child_qg_pca$state$E
+p_grid <- pipeline$training$cache$p_grid
 saveRDS(Q, path_Q)
 saveRDS(C, path_C)
 saveRDS(Z, path_Z)
@@ -177,8 +172,8 @@ saveRDS(p_grid, path_p_grid)
 ## ----- Weighted Q-PCA
 
 ## Perform Q-PCA
-sqrt_w <- pipeline$stages[[3]]$state$sqrt_w
-K <- pipeline$stages[[5]]$state$K
+sqrt_w <- pipeline$training$cache$sqrt_w
+K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 Qw <- sweep(Q, 2, sqrt_w, FUN = "*")
 Qpc_res <- prcomp(Qw, center = TRUE, scale. = FALSE)
 Qpc <- Qpc_res$x[, 1:K, drop = FALSE]
@@ -485,7 +480,7 @@ preds_common <- c('age_cat', 'sex', 'bmiz')
 path_pipe <- file.path(dir_art, 'pipe.pth')
 path_df <- file.path(dir_art, 'df.rds')
 pipeline <- readRDS(path_pipe)
-K <- pipeline$stages[[5]]$state$K
+K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 df <- readRDS(path_df)
 
 ## Predictors
