@@ -1,5 +1,9 @@
 library(MASS)
 
+source('src/model/utils.R')
+source('src/model/binary.R')
+source('src/model/amm.R')
+
 
 ## ---------- Mean Covariance Model ---------- ##
 
@@ -19,4 +23,3 @@ draw_mean_cov <- function(n, fit) {
   if (n == 1) draws <- matrix(draws, nrow = 1)
   asplit(draws, MARGIN = 1) |> lapply(as.numeric)
 }
-
