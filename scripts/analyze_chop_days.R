@@ -38,7 +38,7 @@ if (dataset == 'chop-mims-day') {
 
   ## Define grid
   J_max <- 1000
-  p_grid <- p_grid_fun_2(
+  p_grid <- p_grid_fun(
     breaks = c(1/(J_max + 1), 0.95, J_max/(J_max + 1)),
     interval_counts = c(51, 50)
   )

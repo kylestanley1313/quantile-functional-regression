@@ -552,7 +552,7 @@ datasets <- list(
   # ),
   # mims = list(
   #   path = file.path('data', 'processed', 'chop-mims_v1.rds'),
-  #   p_grid = p_grid_fun_2(
+  #   p_grid = p_grid_fun(
   #     breaks = c(1/10001, 0.95, 10000/10001),
   #     interval_counts = c(51, 50)
   #   ),
@@ -598,7 +598,7 @@ datasets <- list(
   # ),
   # nhanes = list(
   #   path = file.path('data', 'processed', 'nhanes_v1_nofilter.rds'),
-  #   p_grid = p_grid_fun_2(
+  #   p_grid = p_grid_fun(
   #     breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
   #     interval_counts = c(51, 50)
   #   ),
@@ -613,7 +613,7 @@ datasets <- list(
   # ),
   nhanes_2 = list(
     path = file.path('data', 'processed', 'nhanes_v1_nofilter_N-1000.rds'),
-    p_grid = p_grid_fun_2(
+    p_grid = p_grid_fun(
       breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
       interval_counts = c(51, 50)
     ),

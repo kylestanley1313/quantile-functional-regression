@@ -8,18 +8,6 @@ source('src/utils.R')
 
 
 
-## ========== Helpers ========== ##
-
-decode_z_to_Qi <- function(z_list, Ji) {
-  z_ctx <- new_context(
-    payload = z_list,
-    cache = pipeline$training$cache,
-    meta = list(Ji_vec = rep(Ji, length.out = length(z_list)))
-  )
-  decode(pipeline, z_ctx, from = 4, to = 1)$payload
-}
-
-
 ## ========== Representation Learning ========== ##
 
 ## Load data
@@ -33,7 +21,7 @@ y_max <- max(unlist(y_list))
 path_plot_tmp = "scratch/plots/tmp_plot.png"
 
 ## Define grid
-p_grid <- p_grid_fun_2(
+p_grid <- p_grid_fun(
   breaks = c(1/(1+Ji_min), Ji_min/(1+Ji_min)),
   interval_counts = c(Ji_min)
 )
@@ -262,7 +250,7 @@ mean_q <- colMeans(do.call(rbind, Qi_ctx$payload))
 ## Z-mean
 Ji <- length(Qi_ctx$payload[[1]])
 mean_z <- colMeans(do.call(rbind, z_ctx$payload))
-mean_z <- decode_z_to_Qi(list(mean_z), Ji = Ji)[[1]]
+mean_z <- decode_z_to_Qi(pipeline, list(mean_z), Ji = Ji)[[1]]
 
 ## F-mean (L2 in CDF space)
 pi_grid <- pi_grid_fun(Ji)

@@ -49,7 +49,7 @@ y_max <- max(unlist(y_list))
 
 
 ## Define grid
-p_grid <- p_grid_fun_2(
+p_grid <- p_grid_fun(
   breaks = c(1/(Ji_max + 1), Ji_max/(Ji_max + 1)),
   interval_counts = c(Ji_max)
 )

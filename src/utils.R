@@ -100,7 +100,7 @@ pi_grid_fun <- function(J) {
   1:J / (1 + J)
 }
 
-p_grid_fun_2 <- function(breaks, interval_counts) {
+p_grid_fun <- function(breaks, interval_counts) {
   n_intervals <- length(interval_counts)
   if (length(breaks) != n_intervals + 1) {
     stop("Length of breaks must be one greater than length of interval_counts")
@@ -112,49 +112,6 @@ p_grid_fun_2 <- function(breaks, interval_counts) {
   grid <- c(grid, breaks[n_intervals+1])
   grid <- sort(unique(grid))
   grid
-}
-
-p_grid_fun <- function(
-    y_list, J,
-    p_left = NULL, 
-    p_right = NULL, 
-    J_left = NULL, 
-    J_right = NULL
-) {
-  Ji_max <- max(lengths(y_list))
-  p_min <- 1 / (1 + Ji_max)
-  p_max <- Ji_max / (1 + Ji_max)
-  
-  if (is.null(p_left) & is.null(p_right)) {  ## no tails
-    p_grid <- seq(p_min, p_max, length.out = J)
-  } else if (is.null(p_left)) {  ## right tail only
-    if (is.null(J_right)) {
-      stop("Must pass J_right to create right-tailed p-grid!")
-    }
-    p_grid <- c(
-      seq(p_min, p_right, length.out = J - J_right),
-      seq(p_right, p_max, length.out = J_right + 1)
-    )
-  } else if (is.null(p_right)) {  ## left tail only
-    if (is.null(J_left)) {
-      stop("Must pass J_left to create left-tailed p-grid!")
-    }
-    p_grid <- c(
-      seq(p_min, p_left, length.out = J_left + 1),
-      seq(p_left, p_max, length.out = J - J_left)
-    )
-  } else {  ## left and right tails
-    if (is.null(J_left) || is.null(J_right)) {
-      stop("Must pass J_left and J_right to create left- and right-tailed p-grid!")
-    }
-    p_grid <- c(
-      seq(p_min, p_left, length.out = J_left + 1),
-      seq(p_left, p_right, length.out = J - J_left - J_right),
-      seq(p_right, p_max, length.out = J_right + 1)
-    )
-  }
-  
-  sort(unique(p_grid))
 }
 
 get_quadrature_weights <- function(p_grid) {
@@ -249,111 +206,6 @@ loss_to_fun <- list(
 )
 
 
-## ---------- Likelihood Computation ---------- ##
-
-compute_likelihoods <- function(
-    y,
-    Q,
-    p_grid,
-    supp_Y = NULL,
-    log = FALSE,
-    min_lik = 1e-20
-) {
-  
-  if(length(Q) != length(p_grid))
-    stop("Q and p_grid must have same length")
-  
-  if(any(diff(p_grid) <= 0))
-    stop("p_grid must be strictly increasing")
-  
-  y <- as.numeric(y)
-  J <- length(Q)
-  
-  if(is.null(supp_Y)){
-    
-    slopes <- diff(Q) / diff(p_grid)
-    idx <- findInterval(y, Q)
-    
-    valid <- (idx >= 1) & (idx <= J-1)
-    
-    lik <- numeric(length(y))
-    lik[!valid] <- 0
-    lik[valid] <- 1 / slopes[idx[valid]]
-    
-    lik[lik <= 0 | !is.finite(lik)] <- 0
-    
-  } else {
-    
-    supp_Y <- sort(unique(as.numeric(supp_Y)))
-    
-    # Only keep support inside Q range
-    T_vals <- supp_Y[supp_Y > Q[1] & supp_Y <= Q[J]]
-    
-    if(length(T_vals) == 0){
-      lik <- numeric(length(y))
-    } else {
-      
-      # ----- Build inverse CDF via interpolation
-      #   i.e. interpolate (Q_j , p_j)
-      
-      Q <- cummax(Q)
-      p_at_T <- approx(
-        x = Q,
-        y = p_grid,
-        xout = T_vals,
-        method="linear",
-        ties="ordered"
-      )$y
-      
-      # Enforce monotone safety
-      p_at_T[is.na(p_at_T)] <- 0
-      
-      # ----- Compute masses via finite differences
-      
-      mass <- numeric(length(T_vals))
-      
-      # Interior points
-      mass[1:(length(T_vals)-1)] <- diff(p_at_T)
-      
-      # Right endpoint
-      mass[length(T_vals)] <- p_grid[J] - p_at_T[length(T_vals)]
-      
-      # Left endpoint
-      left_candidates <- supp_Y[supp_Y <= Q[1]]
-      if(length(left_candidates)==0){
-        T_min <- min(supp_Y)
-      } else {
-        T_min <- max(left_candidates)
-        T_vals <- c(T_min, T_vals)
-        mass <- c(p_at_T[1] - p_grid[1], mass)
-      }
-      
-      # numerical guard
-      mass[mass < 0] <- 0
-      
-      # normalize
-      if (sum(mass) > 0) {
-        mass <- mass / sum(mass)
-      }
-      
-      # lookup
-      lik <- mass[match(y, T_vals)]
-      lik[is.na(lik)] <- 0
-    }
-  }
-  
-  ## Threshold
-  lik[lik < min_lik] <- min_lik
-  
-  if(log){
-    lik[lik <= 0] <- -Inf
-    lik[lik > 0] <- log(lik[lik > 0])
-  }
-  
-  as.numeric(lik)
-}
-
-
 ## ---------- Encoding/Decoding ---------- ##
 
 ## NOTE: The hard-coded from=/to= stage indices below assume the canonical
@@ -364,36 +216,7 @@ compute_likelihoods <- function(
 ## `wame` stage, so there is no separate G/G_Q_star boundary. Update these
 ## indices if the stage layout changes.
 
-## Decode a list of latent z draws through the pipeline back to Qi (and the
-## intermediate context payloads). Mirrors the encode chain in reverse.
-decode_z_draws <- function(z_draws, pipeline, Ji = 1000) {
-
-  draws <- list()
-
-  ## Z
-  z_draws_ctx <- new_context(
-    payload = z_draws,
-    cache = pipeline$training$cache,
-    meta = list(Ji_vec = rep(Ji, length.out = length(z_draws)))
-  )
-  draws$z <- z_draws_ctx$payload
-
-  ## C
-  c_draws_ctx <- decode(pipeline, z_draws_ctx, from = 4, to = 3)
-  draws$c <- c_draws_ctx$payload
-
-  ## Q
-  Q_draws_ctx <- decode(pipeline, c_draws_ctx, from = 3, to = 2)
-  draws$Q <- Q_draws_ctx$payload
-
-  ## Qi
-  Qi_draws_ctx <- decode(pipeline, Q_draws_ctx, from = 2, to = 1)
-  draws$Qi <- Qi_draws_ctx$payload
-
-  draws
-}
-
-decode_z_to_Qi <- function(z_list, Ji) {
+decode_z_to_Qi <- function(pipeline, z_list, Ji) {
   z_ctx <- new_context(
     payload = z_list,
     cache = pipeline$training$cache,
@@ -402,11 +225,15 @@ decode_z_to_Qi <- function(z_list, Ji) {
   decode(pipeline, z_ctx, from = 4, to = 1)$payload
 }
 
-z_to_Qi_aug <- function(pipeline, z_list, p_grid_aug, p_grid) {
+decode_z_to_Qi_aug <- function(pipeline, z_list, p_grid_aug, p_grid) {
   N <- length(z_list)
-  draws <- decode_z_draws(z_list, pipeline)
+  z_ctx <- new_context(
+    payload = z_list,
+    cache = pipeline$training$cache,
+    meta = list(Ji_vec = rep(1000, length.out = length(z_list)))
+  )
+  Qi_list <- decode(pipeline, z_ctx, from = 4, to = 2)$payload
 
-  Qi_list <- draws$Q
   supp_Y <- pipeline$training$cache$supp_Y
   for (i in seq_len(N)) {
     Qi_list[[i]] <- inv_eqf_cgrid(
@@ -417,7 +244,7 @@ z_to_Qi_aug <- function(pipeline, z_list, p_grid_aug, p_grid) {
   Qi_list
 }
 
-decode_z_rot_to_Qi <- function(z_rot_list, Ji) {
+decode_z_rot_to_Qi <- function(pipeline, z_rot_list, Ji) {
   z_rot_ctx <- new_context(
     payload = z_rot_list,
     cache = pipeline$training$cache,
@@ -428,7 +255,7 @@ decode_z_rot_to_Qi <- function(z_rot_list, Ji) {
 
 
 ## Encode y_list to the rotated latent space (z) and stack into an N x K matrix.
-encode_to_Z <- function(pipeline, y_list) {
+encode_y_to_z <- function(pipeline, y_list) {
   y_ctx <- new_context(
     payload = y_list,
     cache = pipeline$training$cache,
@@ -439,7 +266,7 @@ encode_to_Z <- function(pipeline, y_list) {
 }
 
 ## Encode y_list to Qi on the augmented p-grid.
-y_to_Qi_aug <- function(pipeline, y_list, p_grid_aug) {
+encode_y_to_Qi_aug <- function(pipeline, y_list, p_grid_aug) {
   N <- length(y_list)
   Ji_vec <- lengths(y_list)
 
@@ -460,18 +287,6 @@ y_to_Qi_aug <- function(pipeline, y_list, p_grid_aug) {
     )
   }
   Qi_list
-}
-
-
-## ---------- Modeling ---------- ##
-
-## Frequentist mean-covariance fit on the latent matrix Z.
-fit_mean_cov <- function(Z, ridge = 0) {
-  K <- ncol(Z)
-  list(
-    mu    = colMeans(Z),
-    Sigma = cov(Z) + ridge * diag(K)
-  )
 }
 
 
@@ -527,15 +342,6 @@ generativity_score <- function(Q_a, Q_b, w) {
 }
 
 
-## Draw n iid samples from N(fit$mu, fit$Sigma), returned as a length-n list of
-## K-vectors (matches the input shape decode_z_draws expects).
-draw_mean_cov <- function(n, fit) {
-  K <- length(fit$mu)
-  draws <- MASS::mvrnorm(n, mu = fit$mu, Sigma = fit$Sigma)
-  if (n == 1) draws <- matrix(draws, nrow = 1)
-  asplit(draws, MARGIN = 1) |> lapply(as.numeric)
-}
-
 ## Data-split normalized generativity assessment.
 ##
 ## For each of S splits: partition y_list into train/val (optionally
@@ -587,19 +393,19 @@ assess_generativity_split <- function(pipeline, y_list,
     y_tr  <- y_list[idx_tr]
     y_val <- y_list[idx_val]
 
-    Q_val_aug   <- y_to_Qi_aug(pipeline, y_val, p_grid_aug)
-    Q_train_aug <- y_to_Qi_aug(pipeline, y_tr,  p_grid_aug)
+    Q_val_aug   <- encode_y_to_Qi_aug(pipeline, y_val, p_grid_aug)
+    Q_train_aug <- encode_y_to_Qi_aug(pipeline, y_tr,  p_grid_aug)
 
     T_tv <- generativity_score(Q_train_aug, Q_val_aug, w_aug)
 
-    Z_tr <- encode_to_Z(pipeline, y_tr)
+    Z_tr <- encode_y_to_z(pipeline, y_tr)
     fit  <- fit_mean_cov(Z_tr, ridge = ridge)
 
     rep_seeds <- sample.int(.Machine$integer.max, R)
     T_sv <- unlist(parallel::mclapply(seq_len(R), function(r) {
       set.seed(rep_seeds[r])
       z_draws     <- draw_mean_cov(length(idx_val), fit)
-      Q_synth_aug <- z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
+      Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
       generativity_score(Q_synth_aug, Q_val_aug, w_aug)
     }, mc.cores = n_cores))
 
@@ -610,7 +416,7 @@ assess_generativity_split <- function(pipeline, y_list,
     )
   }
 
-  K_used <- ncol(encode_to_Z(pipeline, y_list[1]))
+  K_used <- ncol(encode_y_to_z(pipeline, y_list[1]))
   list(
     splits = splits,
     meta = list(
@@ -621,89 +427,6 @@ assess_generativity_split <- function(pipeline, y_list,
       K           = K_used
     )
   )
-}
-
-## Group-wise box plot of generativity scores with optional right-axis K line.
-## Designed for two display modes:
-##   - lambda-sweep:   groups = as.character(lambdas), Ks supplied, vline at lambda_star
-##   - dataset compare: groups = c("NHANES", "CHOP"), Ks = NULL, vline_group = NULL
-plot_generativity_boxes <- function(groups,
-                                     scores,
-                                     Ks          = NULL,
-                                     hline       = 0,
-                                     vline_group = NULL,
-                                     xlab        = "",
-                                     ylab        = "log normalized generativity",
-                                     main        = "",
-                                     path        = NULL,
-                                     width       = 960,
-                                     height      = 720,
-                                     pointsize   = 14) {
-  L <- length(groups)
-  stopifnot(length(scores) == L)
-  if (!is.null(Ks)) stopifnot(length(Ks) == L)
-
-  ## Flatten per-group values to set y-limits and per-split box positions.
-  S <- length(scores[[1]])
-  if (!all(vapply(scores, length, integer(1)) == S)) {
-    stop("Every group must have the same number of splits.")
-  }
-  y_all  <- unlist(scores, use.names = FALSE)
-  y_rng  <- range(c(y_all, hline), finite = TRUE)
-  y_pad  <- 0.05 * diff(y_rng)
-  y_lim  <- c(y_rng[1] - y_pad, y_rng[2] + y_pad)
-
-  ## Within-group offsets so the S boxes per group sit side-by-side.
-  half_span <- 0.25
-  offsets   <- if (S == 1) 0 else seq(-half_span, half_span, length.out = S)
-  box_w     <- if (S == 1) 0.55 else min(0.18, (2 * half_span) / (S - 1) * 0.8)
-
-  if (!is.null(path)) png(path, width = width, height = height, pointsize = pointsize)
-  old_par <- par(mar = c(4.5, 4.5, 3, if (is.null(Ks)) 2 else 4.5))
-  on.exit(par(old_par), add = TRUE)
-
-  plot(NULL,
-       xlim = c(0.5, L + 0.5),
-       ylim = y_lim,
-       xaxt = "n",
-       xlab = xlab, ylab = ylab, main = main)
-  axis(1, at = seq_len(L), labels = groups)
-
-  abline(h = hline, col = "red", lty = 3, lwd = 1.2)
-  if (!is.null(vline_group)) {
-    vx <- match(vline_group, groups)
-    if (!is.na(vx)) abline(v = vx, col = "red", lty = 3, lwd = 1.2)
-  }
-
-  for (g in seq_len(L)) {
-    for (s in seq_len(S)) {
-      boxplot(scores[[g]][[s]],
-              at      = g + offsets[s],
-              boxwex  = box_w,
-              add     = TRUE,
-              axes    = FALSE,
-              col     = "gray85",
-              border  = "black")
-    }
-  }
-
-  if (!is.null(Ks)) {
-    K_rng  <- range(Ks)
-    K_ylim <- if (diff(K_rng) == 0) K_rng + c(-1, 1) else K_rng + c(-0.5, 0.5)
-    k_to_y <- function(k) {
-      y_lim[1] + (k - K_ylim[1]) / diff(K_ylim) * diff(y_lim)
-    }
-    lines(seq_len(L),  k_to_y(Ks), col = "forestgreen", lwd = 2)
-    points(seq_len(L), k_to_y(Ks), col = "forestgreen", pch = 19, cex = 1.2)
-    k_ticks <- pretty(K_ylim)
-    k_ticks <- k_ticks[k_ticks >= K_ylim[1] & k_ticks <= K_ylim[2]]
-    axis(side = 4, at = k_to_y(k_ticks), labels = k_ticks,
-         col = "forestgreen", col.axis = "forestgreen", las = 1)
-    mtext("K", side = 4, line = 3, col = "forestgreen")
-  }
-
-  if (!is.null(path)) dev.off()
-  invisible(NULL)
 }
 
 
@@ -1149,29 +872,87 @@ plot_qi_recon_grid <- function(Qi_orig_list, Qi_recon_list, recon_losses,
 }
 
 
+## Group-wise box plot of generativity scores with optional right-axis K line.
+## Designed for two display modes:
+##   - lambda-sweep:   groups = as.character(lambdas), Ks supplied, vline at lambda_star
+##   - dataset compare: groups = c("NHANES", "CHOP"), Ks = NULL, vline_group = NULL
+plot_generativity_boxes <- function(groups,
+                                     scores,
+                                     Ks          = NULL,
+                                     hline       = 0,
+                                     vline_group = NULL,
+                                     xlab        = "",
+                                     ylab        = "log normalized generativity",
+                                     main        = "",
+                                     path        = NULL,
+                                     width       = 960,
+                                     height      = 720,
+                                     pointsize   = 14) {
+  L <- length(groups)
+  stopifnot(length(scores) == L)
+  if (!is.null(Ks)) stopifnot(length(Ks) == L)
 
-## ---------- Mass and Density Functions ---------- ##
+  ## Flatten per-group values to set y-limits and per-split box positions.
+  S <- length(scores[[1]])
+  if (!all(vapply(scores, length, integer(1)) == S)) {
+    stop("Every group must have the same number of splits.")
+  }
+  y_all  <- unlist(scores, use.names = FALSE)
+  y_rng  <- range(c(y_all, hline), finite = TRUE)
+  y_pad  <- 0.05 * diff(y_rng)
+  y_lim  <- c(y_rng[1] - y_pad, y_rng[2] + y_pad)
 
-y_to_pmf <- function(y) {
-  if (length(y) == 0) {
-    stop("y must be non-empty.")
+  ## Within-group offsets so the S boxes per group sit side-by-side.
+  half_span <- 0.25
+  offsets   <- if (S == 1) 0 else seq(-half_span, half_span, length.out = S)
+  box_w     <- if (S == 1) 0.55 else min(0.18, (2 * half_span) / (S - 1) * 0.8)
+
+  if (!is.null(path)) png(path, width = width, height = height, pointsize = pointsize)
+  old_par <- par(mar = c(4.5, 4.5, 3, if (is.null(Ks)) 2 else 4.5))
+  on.exit(par(old_par), add = TRUE)
+
+  plot(NULL,
+       xlim = c(0.5, L + 0.5),
+       ylim = y_lim,
+       xaxt = "n",
+       xlab = xlab, ylab = ylab, main = main)
+  axis(1, at = seq_len(L), labels = groups)
+
+  abline(h = hline, col = "red", lty = 3, lwd = 1.2)
+  if (!is.null(vline_group)) {
+    vx <- match(vline_group, groups)
+    if (!is.na(vx)) abline(v = vx, col = "red", lty = 3, lwd = 1.2)
   }
-  
-  if (any(is.na(y))) {
-    stop("y must not contain NA values.")
+
+  for (g in seq_len(L)) {
+    for (s in seq_len(S)) {
+      boxplot(scores[[g]][[s]],
+              at      = g + offsets[s],
+              boxwex  = box_w,
+              add     = TRUE,
+              axes    = FALSE,
+              col     = "gray85",
+              border  = "black")
+    }
   }
-  
-  tab <- table(y)
-  
-  pmf <- data.frame(
-    value = as.numeric(names(tab)),
-    prob  = as.integer(tab) / length(y),
-    row.names = NULL
-  )
-  
-  pmf[order(pmf$value), ]
+
+  if (!is.null(Ks)) {
+    K_rng  <- range(Ks)
+    K_ylim <- if (diff(K_rng) == 0) K_rng + c(-1, 1) else K_rng + c(-0.5, 0.5)
+    k_to_y <- function(k) {
+      y_lim[1] + (k - K_ylim[1]) / diff(K_ylim) * diff(y_lim)
+    }
+    lines(seq_len(L),  k_to_y(Ks), col = "forestgreen", lwd = 2)
+    points(seq_len(L), k_to_y(Ks), col = "forestgreen", pch = 19, cex = 1.2)
+    k_ticks <- pretty(K_ylim)
+    k_ticks <- k_ticks[k_ticks >= K_ylim[1] & k_ticks <= K_ylim[2]]
+    axis(side = 4, at = k_to_y(k_ticks), labels = k_ticks,
+         col = "forestgreen", col.axis = "forestgreen", las = 1)
+    mtext("K", side = 4, line = 3, col = "forestgreen")
+  }
+
+  if (!is.null(path)) dev.off()
+  invisible(NULL)
 }
-
-
 
 

@@ -179,9 +179,9 @@ for (label in c("nhanes", "chop")) {
   idx_tr  <- perm[seq_len(n_train)]
   idx_val <- perm[(n_train + 1):N_d]
 
-  fit      <- fit_mean_cov(encode_to_Z(pipeline_star, y_data[idx_tr]), ridge = 0)
+  fit      <- fit_mean_cov(encode_y_to_z(pipeline_star, y_data[idx_tr]), ridge = 0)
   z_draws  <- draw_mean_cov(length(idx_val), fit)
-  Qi_draws <- decode_z_draws(z_draws, pipeline_star, Ji = Ji)$Qi
+  Qi_draws <- decode_z_to_Qi(pipeline_star, z_draws, Ji = Ji)
 
   y_ctx_val <- new_context(
     payload = y_data[idx_val],
