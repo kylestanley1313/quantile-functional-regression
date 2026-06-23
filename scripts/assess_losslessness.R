@@ -62,9 +62,8 @@ assess_losslessness <- function(
       ## Fit pipeline
       pipeline <- fit_pipeline(y_list[idx_train], K)
       stage_to <- stage_to %||% pipeline$n_stages
-      loss_fun <- pipeline$training$cache$loss_fun
-      loss_scale <- pipeline$training$meta$loss_scale
-      
+      loss_fun <- loss_to_fun[[pipeline$stages[[pipeline$n_stages]]$state$loss]]
+
       ## Fast forward to stage_from data (get data_list)
       ctx <- new_context(
         payload = y_list,
@@ -84,7 +83,7 @@ assess_losslessness <- function(
       ## Compute train/valid losses
       for (i in 1:N) {
         dp <- 1 / (length(data_list[[i]]) + 1)
-        loss_i <- loss_fun(data_list[[i]], reco_list[[i]], dp) / loss_scale
+        loss_i <- loss_fun(data_list[[i]], reco_list[[i]], dp)
         if (folds[i] == v) {
           valid_losses[i] <- loss_i
           if (!is.null(quantile_levels)) {
@@ -381,38 +380,20 @@ fit_pipeline_qg_pca <- function(
     y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
-    loss_scale = 'quantile_pairwise_distance',
-    loss_scale_samp_rate = 1.0,
-    p_scale = 0.5,
     seed = 12345,
-    y_trans = NULL,
-    y_shift = NULL,
-    lambda = NULL,
-    boxcox_lambdas = seq(-1, 1, by = 0.01),
-    boxcox_samp_rate = 0.01
+    lambda = NULL
 ) {
-  
+
   pipeline <- construct_pipeline(
     stages = list(
-      stage_y_axis(
-        y_trans = y_trans, 
-        y_shift = y_shift,
-        boxcox_lambdas = boxcox_lambdas,
-        boxcox_samp_rate = boxcox_samp_rate
-      ),
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
-      stage_lqd(),
-      stage_qg_pca(K = K, lambda = lambda)
+      stage_wame(K = K, lambda = lambda, loss = loss)
     ),
     supp_Y = supp_Y,
     p_star = p_star,
     y_star = y_star,
     y_min = y_min,
-    loss = loss,
-    loss_scale = loss_scale,
-    loss_scale_samp_rate = loss_scale_samp_rate,
-    p_scale = p_scale,
     seed = seed
   )
   pipeline <- fit(pipeline, y_list)
@@ -428,35 +409,18 @@ fit_pipeline_q_pca <- function(
     y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
-    loss_scale = 'quantile_pairwise_distance',
-    loss_scale_samp_rate = 1.0,
-    p_scale = 0.5,
-    seed = 12345,
-    y_trans = NULL,
-    y_shift = NULL,
-    boxcox_lambdas = seq(-1, 1, by = 0.01),
-    boxcox_samp_rate = 0.01
+    seed = 12345
 ) {
-  
+
   pipeline <- construct_pipeline(
     stages = list(
-      stage_y_axis(
-        y_trans = y_trans, 
-        y_shift = y_shift,
-        boxcox_lambdas = boxcox_lambdas,
-        boxcox_samp_rate = boxcox_samp_rate
-      ),
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
-      stage_q_pca(K = K)
+      stage_q_pca(K = K, loss = loss)
     ),
     supp_Y = supp_Y,
     y_star = y_star,
     y_min = y_min,
-    loss = loss,
-    loss_scale = loss_scale,
-    loss_scale_samp_rate = loss_scale_samp_rate,
-    p_scale = p_scale,
     seed = seed
   )
   pipeline <- fit(pipeline, y_list)
@@ -473,37 +437,20 @@ fit_pipeline_g_pca <- function(
     y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
-    loss_scale = 'quantile_pairwise_distance',
-    loss_scale_samp_rate = 1.0,
-    p_scale = 0.5,
-    seed = 12345,
-    y_trans = NULL,
-    y_shift = NULL,
-    boxcox_lambdas = seq(-1, 1, by = 0.01),
-    boxcox_samp_rate = 0.01
+    seed = 12345
 ) {
 
   pipeline <- construct_pipeline(
     stages = list(
-      stage_y_axis(
-        y_trans = y_trans,
-        y_shift = y_shift,
-        boxcox_lambdas = boxcox_lambdas,
-        boxcox_samp_rate = boxcox_samp_rate
-      ),
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
       stage_lqd(),
-      stage_g_pca(K = K)
+      stage_g_pca(K = K, loss = loss)
     ),
     supp_Y = supp_Y,
     p_star = p_star,
     y_star = y_star,
     y_min = y_min,
-    loss = loss,
-    loss_scale = loss_scale,
-    loss_scale_samp_rate = loss_scale_samp_rate,
-    p_scale = p_scale,
     seed = seed
   )
   pipeline <- fit(pipeline, y_list)
@@ -547,7 +494,7 @@ fit_pipeline_g_pca <- function(
 
 ## ----- Globals 
 
-dir_sim <- file.path('simulations', 'nhanes-5')
+dir_sim <- file.path('simulations', 'nhanes-baseline')
 
 
 ## ----- Create YAML configs
@@ -605,7 +552,7 @@ datasets <- list(
   # ),
   # mims = list(
   #   path = file.path('data', 'processed', 'chop-mims_v1.rds'),
-  #   p_grid = p_grid_fun_2(
+  #   p_grid = p_grid_fun(
   #     breaks = c(1/10001, 0.95, 10000/10001),
   #     interval_counts = c(51, 50)
   #   ),
@@ -651,7 +598,7 @@ datasets <- list(
   # ),
   # nhanes = list(
   #   path = file.path('data', 'processed', 'nhanes_v1_nofilter.rds'),
-  #   p_grid = p_grid_fun_2(
+  #   p_grid = p_grid_fun(
   #     breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
   #     interval_counts = c(51, 50)
   #   ),
@@ -665,18 +612,15 @@ datasets <- list(
   #   lambda = 0
   # ),
   nhanes_2 = list(
-    path = file.path('data', 'processed', 'nhanes_v1_nofilter.rds'),
-    p_grid = p_grid_fun_2(
+    path = file.path('data', 'processed', 'nhanes_v1_nofilter_N-1000.rds'),
+    p_grid = p_grid_fun(
       breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
       interval_counts = c(51, 50)
     ),
     supp_Y = c(0, seq(0.006, 400, by = 0.001)),
     y_star = 0,
     y_min = 0,
-    y_trans = 'identity', #'identity',
-    y_shift = 0,
-    loss_scale_samp_rate = 1.0, # 0.05,
-    p_scale = NULL, # 0.025,
+    pairwise_samp_rate = 1.0, # 0.05,
     lambda = 0.1 # 0
   )
 )
@@ -726,13 +670,8 @@ for (i in 1:n_configs) {
       supp_Y = datasets[[config$dataset]]$supp_Y,
       y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min,
-      y_trans = datasets[[config$dataset]]$y_trans,
-      y_shift = datasets[[config$dataset]]$y_shift,
-      loss_scale_samp_rate = datasets[[config$dataset]]$loss_scale_samp_rate,
-      p_scale = datasets[[config$dataset]]$p_scale,
       lambda = datasets[[config$dataset]]$lambda,
-      loss = 'wasserstein',
-      loss_scale = 'none'
+      loss = 'wasserstein'
     )
   } else if (config$model_type == 'q_pca') {
     fit_pipeline <- partial(
@@ -740,11 +679,7 @@ for (i in 1:n_configs) {
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
       y_star = datasets[[config$dataset]]$y_star,
-      y_min = datasets[[config$dataset]]$y_min,
-      y_trans = datasets[[config$dataset]]$y_trans,
-      y_shift = datasets[[config$dataset]]$y_shift,
-      loss_scale_samp_rate = datasets[[config$dataset]]$loss_scale_samp_rate,
-      p_scale = datasets[[config$dataset]]$p_scale,
+      y_min = datasets[[config$dataset]]$y_min
     )
   } else if (config$model_type == 'g_pca') {
     fit_pipeline <- partial(
@@ -752,11 +687,7 @@ for (i in 1:n_configs) {
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
       y_star = datasets[[config$dataset]]$y_star,
-      y_min = datasets[[config$dataset]]$y_min,
-      y_trans = datasets[[config$dataset]]$y_trans,
-      y_shift = datasets[[config$dataset]]$y_shift,
-      loss_scale_samp_rate = datasets[[config$dataset]]$loss_scale_samp_rate,
-      p_scale = datasets[[config$dataset]]$p_scale
+      y_min = datasets[[config$dataset]]$y_min
     )
   } else {
     stop(str_glue("Config {i} has invalid model_type!"))
@@ -766,9 +697,9 @@ for (i in 1:n_configs) {
     y_list = y_list,
     fit_pipeline = fit_pipeline,
     K_from = 1,
-    K_to = 20,
+    K_to = 4,
     K_by = 1,
-    stage_from = 2,
+    stage_from = 1,
     V = 5,
     seed = gen_seed(),
     verbose = FALSE
@@ -781,11 +712,10 @@ for (i in 1:n_configs) {
   pipe       <- fit_pipeline(y_list, K = 1)
   Qi_list_p  <- pipe$training$meta$Qi_list
   Ji_vec_p   <- pipe$training$meta$Ji_vec
-  loss_fun_p <- pipe$training$cache$loss_fun
-  loss_scale_p <- pipe$training$meta$loss_scale
+  loss_fun_p <- loss_to_fun[[pipe$stages[[pipe$n_stages]]$state$loss]]
   p_grid_p   <- pipe$training$cache$p_grid
-  supp_TY_p  <- pipe$training$cache$supp_TY
-  samp_rate  <- datasets[[config$dataset]]$loss_scale_samp_rate
+  supp_Y_p  <- pipe$training$cache$supp_Y
+  samp_rate  <- datasets[[config$dataset]]$pairwise_samp_rate
   set.seed(12345)
   idx_samp   <- sample(seq_along(Qi_list_p), size = floor(samp_rate * length(Qi_list_p)))
   d <- pairwise_distance(
@@ -793,9 +723,9 @@ for (i in 1:n_configs) {
     loss_fun     = loss_fun_p,
     pi_grid_list = lapply(Ji_vec_p[idx_samp], pi_grid_fun),
     p_grid_aug   = p_grid_p,
-    supp_TY      = supp_TY_p
+    supp_Y       = supp_Y_p
   )
-  saveRDS(d / loss_scale_p, config$path_pairwise_dist_norm)
+  saveRDS(d, config$path_pairwise_dist_norm)
 }
 
 
@@ -811,6 +741,7 @@ for (i in 1:n_configs) {
 ## skipped (no file written), and plot_losslessness will fall back to
 ## drawing no annotation box for that config.
 
+K_stars <- c(4)
 for (i in 1:n_configs) {
   message(str_glue("========== Concordance for CONFIG {i} of {n_configs} =========="))
 
@@ -834,13 +765,8 @@ for (i in 1:n_configs) {
       supp_Y = datasets[[config$dataset]]$supp_Y,
       y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min,
-      y_trans = datasets[[config$dataset]]$y_trans,
-      y_shift = datasets[[config$dataset]]$y_shift,
-      loss_scale_samp_rate = datasets[[config$dataset]]$loss_scale_samp_rate,
-      p_scale = datasets[[config$dataset]]$p_scale,
       lambda = datasets[[config$dataset]]$lambda,
-      loss = 'wasserstein',
-      loss_scale = 'none'
+      loss = 'wasserstein'
     )
   } else if (config$model_type == 'q_pca') {
     fit_pipeline <- partial(
@@ -848,11 +774,7 @@ for (i in 1:n_configs) {
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
       y_star = datasets[[config$dataset]]$y_star,
-      y_min = datasets[[config$dataset]]$y_min,
-      y_trans = datasets[[config$dataset]]$y_trans,
-      y_shift = datasets[[config$dataset]]$y_shift,
-      loss_scale_samp_rate = datasets[[config$dataset]]$loss_scale_samp_rate,
-      p_scale = datasets[[config$dataset]]$p_scale,
+      y_min = datasets[[config$dataset]]$y_min
     )
   } else if (config$model_type == 'g_pca') {
     fit_pipeline <- partial(
@@ -860,11 +782,7 @@ for (i in 1:n_configs) {
       p_grid = datasets[[config$dataset]]$p_grid,
       supp_Y = datasets[[config$dataset]]$supp_Y,
       y_star = datasets[[config$dataset]]$y_star,
-      y_min = datasets[[config$dataset]]$y_min,
-      y_trans = datasets[[config$dataset]]$y_trans,
-      y_shift = datasets[[config$dataset]]$y_shift,
-      loss_scale_samp_rate = datasets[[config$dataset]]$loss_scale_samp_rate,
-      p_scale = datasets[[config$dataset]]$p_scale
+      y_min = datasets[[config$dataset]]$y_min
     )
   } else {
     stop(str_glue("Config {i} has invalid model_type!"))
@@ -872,7 +790,7 @@ for (i in 1:n_configs) {
 
   ## Fit at K_star and reconstruct.
   pipeline   <- fit_pipeline(y_list, K = K_star)
-  stage_from <- 2
+  stage_from <- 1
   stage_to   <- pipeline$n_stages
 
   ctx <- new_context(
@@ -902,7 +820,6 @@ for (i in 1:n_configs) {
 ## ----- Plot
 
 set.seed(12345)
-K_stars <- c(11)
 for (i in 1:n_configs) {
   print(i)
   path_config <- file.path(dir_sim, 'configs', str_glue('config-{i}.yml'))

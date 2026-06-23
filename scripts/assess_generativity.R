@@ -26,7 +26,7 @@ J_aug <- 500
 path_plot_tmp = "scratch/plots/tmp_plot.png"
 
 ## Define grid
-p_grid <- p_grid_fun_2(
+p_grid <- p_grid_fun(
   breaks = c(1/(Ji_min + 1), 0.95, Ji_min/(Ji_min + 1)),
   interval_counts = c(51, 50)
 )
@@ -36,11 +36,9 @@ for (lambda in lambdas) {
   ## Construct pipeline
   pipeline <- construct_pipeline(
     stages = list(
-      stage_y_axis(y_trans = 'identity', y_shift = 0),
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
-      stage_lqd(),
-      stage_qg_pca(
+      stage_wame(
         # K = 6,
         K_max = 20,
         epsilon = 1.25,
@@ -59,10 +57,6 @@ for (lambda in lambdas) {
     p_star = 0,
     y_star = 0,
     y_min = 0,
-    loss = 'wasserstein',
-    loss_scale = 'none',
-    loss_scale_samp_rate = 0.05,
-    p_scale = 0.025,
     seed = gen_seed()
   )
 
@@ -78,8 +72,8 @@ for (lambda in lambdas) {
 ## ==================== Generativity Helpers ==================== ##
 
 ## All generativity helpers live in src/utils.R:
-##   decode_z_draws, y_to_Qi_aug, z_to_Qi_aug, compute_generativity,
-##   generativity_score, encode_to_Z, fit_mean_cov, draw_mean_cov,
+##   decode_z_to_Qi, encode_y_to_Qi_aug, decode_z_to_Qi_aug, compute_generativity,
+##   generativity_score, encode_y_to_z, fit_mean_cov, draw_mean_cov,
 ##   assess_generativity_split, plot_generativity_boxes.
 
 
@@ -135,7 +129,7 @@ Ks <- sapply(lambdas, function(lambda) {
     'artifacts', 'demo_nhanes', 'generativity-2',
     str_glue('pipe_lambda-{lambda}.rds')
   ))
-  pipe$stages[[5]]$state$K
+  pipe$stages[[3]]$state$child_qg_pca$state$K
 })
 gen_res <- readRDS(path_gen)
 

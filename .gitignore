@@ -2,9 +2,9 @@
 renv/*
 renv.lock
 *.pyc
-src/config/*
 data/*
-scratch/*
 simulations/*
 artifacts/*
+scratch/*
 scripts/archive/*
+python/archive/*

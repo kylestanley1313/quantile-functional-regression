@@ -49,7 +49,7 @@ y_max <- max(unlist(y_list))
 
 
 ## Define grid
-p_grid <- p_grid_fun_2(
+p_grid <- p_grid_fun(
   breaks = c(1/(Ji_max + 1), Ji_max/(Ji_max + 1)),
   interval_counts = c(Ji_max)
 )
@@ -57,7 +57,6 @@ p_grid <- p_grid_fun_2(
 ## Construct pipeline
 pipeline <- construct_pipeline(
   stages = list(
-    stage_y_axis(y_trans = 'identity', y_shift = 0),
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid, Ji_min = Ji_min),
     stage_wame(
@@ -65,7 +64,6 @@ pipeline <- construct_pipeline(
       epsilon = 0.5,
       alpha = 0.01,
       V = 5,
-      quantlet_construction = 'pca',
       lambda = 0
     ),
     stage_flow(
@@ -79,10 +77,6 @@ pipeline <- construct_pipeline(
   p_star = 0.5,
   y_star = NULL,
   y_min = NULL,
-  loss = 'wasserstein',
-  loss_scale = 'none',
-  loss_scale_samp_rate = 1.0,
-  p_scale = NULL,
   seed = 12345
 )
 
@@ -99,16 +93,14 @@ y_ctx <- new_context(
 )
 
 ## Encode/Decode
-Ty_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
-Qi_ctx <- encode(pipeline, Ty_ctx, from = 1, to = 2)
-Q_ctx <- encode(pipeline, Qi_ctx, from = 2, to = 3)
-c_ctx <- encode(pipeline, Q_ctx, from = 3, to = 4)
-z_ctx <- encode(pipeline, c_ctx, from = 4, to = 5)
-c_ctx_ <- decode(pipeline, z_ctx, from = 5, to = 4)
-Q_ctx_ <- decode(pipeline, c_ctx_, from = 4, to = 3)
-Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 3, to = 2)
-Ty_ctx_ <- decode(pipeline, Qi_ctx_, from = 2, to = 1)
-y_ctx_ <- decode(pipeline, Ty_ctx_, from = 1, to = 0)
+Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
+Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
+c_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
+z_ctx <- encode(pipeline, c_ctx, from = 3, to = 4)
+c_ctx_ <- decode(pipeline, z_ctx, from = 4, to = 3)
+Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
+Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
+y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
 
 
@@ -127,7 +119,7 @@ distances <- pairwise_distance(
   loss_fun = wasserstein,
   pi_grid_list = lapply(lengths(Qi_list), pi_grid_fun),
   p_grid_aug = p_grid_aug,
-  supp_TY = pipeline$training$cache$supp_TY
+  supp_Y = pipeline$training$cache$supp_Y
 )
 quantile(distances, c(0.5, 0.1, 0.01, 0.005, 0.001))
 
@@ -309,7 +301,7 @@ z_draws_ctx <- new_context(
   cache = pipeline$training$cache,
   meta = list(Ji_vec = rep(Ji_max, length.out = length(z_draws)))
 )
-Qi_draws <- decode(pipeline, z_draws_ctx, from = 5, to = 2)$payload
+Qi_draws <- decode(pipeline, z_draws_ctx, from = 4, to = 1)$payload
 
 ## Plot Q
 set.seed(12345)

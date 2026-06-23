@@ -8,18 +8,6 @@ source('src/utils.R')
 
 
 
-## ========== Helpers ========== ##
-
-decode_z_to_Qi <- function(z_list, Ji) {
-  z_ctx <- new_context(
-    payload = z_list,
-    cache = pipeline$training$cache,
-    meta = list(Ji_vec = rep(Ji, length.out = length(z_list)))
-  )
-  decode(pipeline, z_ctx, from = 6, to = 2)$payload
-}
-
-
 ## ========== Representation Learning ========== ##
 
 ## Load data
@@ -33,7 +21,7 @@ y_max <- max(unlist(y_list))
 path_plot_tmp = "scratch/plots/tmp_plot.png"
 
 ## Define grid
-p_grid <- p_grid_fun_2(
+p_grid <- p_grid_fun(
   breaks = c(1/(1+Ji_min), Ji_min/(1+Ji_min)),
   interval_counts = c(Ji_min)
 )
@@ -41,11 +29,9 @@ p_grid <- p_grid_fun_2(
 ## Construct pipeline
 pipeline <- construct_pipeline(
   stages = list(
-    stage_y_axis(y_trans = 'identity', y_shift = 0),
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid),
-    stage_lqd(),
-    stage_qg_pca(
+    stage_wame(
       K_max = 20,
       epsilon = 1, # 0.25,
       alpha = 0.05,
@@ -63,10 +49,6 @@ pipeline <- construct_pipeline(
   p_star = 0.5,
   y_star = NULL,
   y_min = NULL,
-  loss = 'wasserstein',
-  loss_scale = 'quantile_pairwise_distance',
-  loss_scale_samp_rate = 0.2,
-  p_scale = 0.1,
   seed = gen_seed()
 )
 
@@ -83,18 +65,14 @@ y_ctx <- new_context(
 )
 
 ## Encode/Decode
-Ty_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
-Qi_ctx <- encode(pipeline, Ty_ctx, from = 1, to = 2)
-Q_ctx <- encode(pipeline, Qi_ctx, from = 2, to = 3)
-G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 3, to = 4)
-c_ctx <- encode(pipeline, G_Q_star_ctx, from = 4, to = 5)
-z_ctx <- encode(pipeline, c_ctx, from = 5, to = 6)
-c_ctx_ <- decode(pipeline, z_ctx, from = 6, to = 5)
-G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 5, to = 4)
-Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 4, to = 3)
-Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 3, to = 2)
-Ty_ctx_ <- decode(pipeline, Qi_ctx_, from = 2, to = 1)
-y_ctx_ <- decode(pipeline, Ty_ctx_, from = 1, to = 0)
+Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
+Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
+c_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
+z_ctx <- encode(pipeline, c_ctx, from = 3, to = 4)
+c_ctx_ <- decode(pipeline, z_ctx, from = 4, to = 3)
+Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
+Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
+y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
 
 ## ----- Visualize reconstructions
@@ -272,7 +250,7 @@ mean_q <- colMeans(do.call(rbind, Qi_ctx$payload))
 ## Z-mean
 Ji <- length(Qi_ctx$payload[[1]])
 mean_z <- colMeans(do.call(rbind, z_ctx$payload))
-mean_z <- decode_z_to_Qi(list(mean_z), Ji = Ji)[[1]]
+mean_z <- decode_z_to_Qi(pipeline, list(mean_z), Ji = Ji)[[1]]
 
 ## F-mean (L2 in CDF space)
 pi_grid <- pi_grid_fun(Ji)

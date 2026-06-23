@@ -26,7 +26,7 @@ if (dataset == 'chop-mims-sub') {
 
   ## Define grid
   J_max <- 10000
-  p_grid <- p_grid_fun_2(
+  p_grid <- p_grid_fun(
     breaks = c(1/(J_max + 1), 0.95, J_max/(J_max + 1)),
     interval_counts = c(51, 50)
   )
@@ -34,11 +34,9 @@ if (dataset == 'chop-mims-sub') {
   ## Construct pipeline
   pipeline <- construct_pipeline(
     stages = list(
-      stage_y_axis(y_trans = 'identity', y_shift = 0),
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
-      stage_lqd(),
-      stage_qg_pca(
+      stage_wame(
         K_max = 20,
         epsilon = 0.25,
         alpha = 0.05,
@@ -56,11 +54,6 @@ if (dataset == 'chop-mims-sub') {
     p_star = 0,
     y_star = 0,
     y_min = 0,
-    loss = 'wasserstein',
-    loss_scale = 'quantile_pairwise_distance',
-    # loss = 'wasserstein',
-    # loss_scale = 'median_pairwise_wasserstein',
-    # loss_scale_samp_rate = 1.0,
     seed = 12345
   )
 
@@ -81,18 +74,14 @@ y_ctx <- new_context(
 )
 
 ## Encode/Decode
-Ty_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
-Qi_ctx <- encode(pipeline, Ty_ctx, from = 1, to = 2)
-Q_ctx <- encode(pipeline, Qi_ctx, from = 2, to = 3)
-G_Q_star_ctx <- encode(pipeline, Q_ctx, from = 3, to = 4)
-c_ctx <- encode(pipeline, G_Q_star_ctx, from = 4, to = 5)
-z_ctx <- encode(pipeline, c_ctx, from = 5, to = 6)
-c_ctx_ <- decode(pipeline, z_ctx, from = 6, to = 5)
-G_Q_star_ctx_ <- decode(pipeline, c_ctx_, from = 5, to = 4)
-Q_ctx_ <- decode(pipeline, G_Q_star_ctx_, from = 4, to = 3)
-Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 3, to = 2)
-Ty_ctx_ <- decode(pipeline, Qi_ctx_, from = 2, to = 1)
-y_ctx_ <- decode(pipeline, Ty_ctx_, from = 1, to = 0)
+Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
+Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
+c_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
+z_ctx <- encode(pipeline, c_ctx, from = 3, to = 4)
+c_ctx_ <- decode(pipeline, z_ctx, from = 4, to = 3)
+Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
+Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
+y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
 ## Plot stages
 col_recon <- rgb(0, 0, 1, alpha = 0.5)
@@ -101,24 +90,17 @@ i <- i + 1
 pi_grid <- pi_grid_fun(Ji_vec[[i]])
 y_max_i <- max(c(y_ctx$payload[[i]], y_ctx_$payload[[i]]))
 y_min_i <- min(c(y_ctx$payload[[i]], y_ctx_$payload[[i]]))
-Ty_max_i <- max(c(Ty_ctx$payload[[i]], Ty_ctx_$payload[[i]]))
-Ty_min_i <- min(c(Ty_ctx$payload[[i]], Ty_ctx_$payload[[i]]))
 breaks_y <- seq(y_min_i, y_max_i, length.out = 50)
-breaks_Ty <- seq(Ty_min_i, Ty_max_i, length.out = 50)
 
 png(path_plot_tmp, width = 1000, height = 500)
-par(mfrow=c(2,4))
+par(mfrow=c(2,3))
 h <- hist(y_ctx$payload[[i]], breaks = breaks_y)
 hist(y_ctx_$payload[[i]], add = TRUE, col = col_recon, breaks = breaks_y)
-h <- hist(Ty_ctx$payload[[i]], breaks = breaks_Ty)
-hist(Ty_ctx_$payload[[i]], add = TRUE, col = col_recon, breaks = breaks_Ty)
 plot(pi_grid, Qi_ctx$payload[[i]], type = 'l', xlim = c(0, 1))
 lines(pi_grid, Qi_ctx_$payload[[i]], type = 'l', col = col_recon)
 plot(pi_grid, Qi_ctx$payload[[i]], type = 'l', xlim = c(0, 1), col = 'gray')
 lines(p_grid, Q_ctx$payload[[i]], type = 'l')
 lines(p_grid, Q_ctx_$payload[[i]], type = 'l', col = col_recon)
-plot(p_grid, G_Q_star_ctx$payload$G_list[[i]], type = 'l', xlim = c(0, 1))
-lines(p_grid, G_Q_star_ctx_$payload$G_list[[i]], type = 'l', col = col_recon)
 plot(c_ctx$payload$c_list[[i]])
 points(c_ctx_$payload$c_list[[i]], col = col_recon)
 plot(z_ctx$payload[[i]])
@@ -164,8 +146,8 @@ path_p_grid <- file.path(dir_art, str_glue('p_grid.rds'))
 Q <- do.call(rbind, Q_ctx$payload)
 C <- do.call(rbind, c_ctx$payload$c_list)
 Z <- do.call(rbind, z_ctx$payload)
-E <- pipeline$stages[[5]]$state$E
-p_grid <- pipeline$stages[[3]]$state$p_grid
+E <- pipeline$stages[[3]]$state$child_qg_pca$state$E
+p_grid <- pipeline$training$cache$p_grid
 saveRDS(Q, path_Q)
 saveRDS(C, path_C)
 saveRDS(Z, path_Z)
@@ -177,8 +159,8 @@ saveRDS(p_grid, path_p_grid)
 ## ----- Weighted Q-PCA
 
 ## Perform Q-PCA
-sqrt_w <- pipeline$stages[[3]]$state$sqrt_w
-K <- pipeline$stages[[5]]$state$K
+sqrt_w <- pipeline$training$cache$sqrt_w
+K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 Qw <- sweep(Q, 2, sqrt_w, FUN = "*")
 Qpc_res <- prcomp(Qw, center = TRUE, scale. = FALSE)
 Qpc <- Qpc_res$x[, 1:K, drop = FALSE]
@@ -556,7 +538,7 @@ preds_common <- c('age_cat', 'sex', 'bmiz')
 path_pipe <- file.path(dir_art, 'pipe.pth')
 path_df <- file.path(dir_art, 'df.rds')
 pipeline <- readRDS(path_pipe)
-K <- pipeline$stages[[5]]$state$K
+K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 df <- readRDS(path_df)
 
 ## Predictors
@@ -885,7 +867,7 @@ p_idx <- 1:length(p_grid)
 
 ## Get scores of Q_center
 Q_mean <- colMeans(do.call(rbind, pipeline$training$meta$Q_list))
-sqrt_w <- pipeline$stages[[3]]$state$sqrt_w
+sqrt_w <- pipeline$training$cache$sqrt_w
 path_Qpc_res <- file.path(dir_art, str_glue('Qpc_res.rds'))
 Qpc_res <- readRDS(path_Qpc_res)
 Qw_mean  <- Q_mean * sqrt_w
@@ -936,11 +918,6 @@ cols <- col_fun(n_cols)
 # Map each curve to a color
 curve_cols <- cols[ceiling(resp_scaled * (n_cols - 1)) + 1]
 
-## Prepare Y-axis transform
-stage_y_axis_state <- pipeline$stages[[1]]$state
-y_trans_fun <- y_trans_to_fun[[stage_y_axis_state$y_trans]]
-y_shift <- stage_y_axis_state$y_shift
-
 # Plot first curve to initialize axes
 png(str_glue('artifacts/analyze_chop-mims-subs/plots/q{k_star}_bd-all_pa-q.png'), width = 500, height = 400)
 plot(
@@ -956,7 +933,7 @@ plot(
   main = str_glue('q_{k_star}')
 )
 y_labs <- c(1, 10, 100)
-y_ticks <- y_trans_fun(y_labs, shift = y_shift)
+y_ticks <- y_labs  ## identity: Y-axis transform removed from pipeline
 axis(side = 2, at = y_ticks, labels = y_labs)
 
 # Add remaining curves
@@ -1050,13 +1027,13 @@ p_idx <- 1:length(p_grid)
 ## Create df_new
 out <- qg_pca(
   Q_obs = colMeans(do.call(rbind, pipeline$training$meta$Q_list)),
-  E = pipeline$stages[[5]]$state$E,
-  G_center = pipeline$stages[[5]]$state$G_center,
+  E = pipeline$stages[[3]]$state$child_qg_pca$state$E,
+  G_center = pipeline$stages[[3]]$state$child_qg_pca$state$G_center,
   p_grid = pipeline$training$cache$p_grid,
   p_star = pipeline$training$cache$p_star,
   Q_star = pipeline$training$cache$Q_star,
   sqrt_w = pipeline$training$cache$sqrt_w,
-  lambda = pipeline$stages[[5]]$state$lambda
+  lambda = pipeline$stages[[3]]$state$child_qg_pca$state$lambda
 )
 preds_star <- data.frame(
   age_cat = c('<=12'),
@@ -1090,7 +1067,7 @@ c_shifts_ctx <- new_context(
   cache = pipeline$training$cache,
   meta = list()
 )
-out <- decode(pipeline, c_shifts_ctx, from = 5, to = 3)
+out <- decode(pipeline, c_shifts_ctx, from = 3, to = 2)
 Q_plot <- do.call(rbind, out$payload)
 
 # Normalize response to [0,1]
@@ -1104,11 +1081,6 @@ cols <- col_fun(n_cols)
 
 # Map each curve to a color
 curve_cols <- cols[ceiling(resp_scaled * (n_cols - 1)) + 1]
-
-## Prepare Y-axis transform
-stage_y_axis_state <- pipeline$stages[[1]]$state
-y_trans_fun <- y_trans_to_fun[[stage_y_axis_state$y_trans]]
-y_shift <- stage_y_axis_state$y_shift
 
 # Plot first curve to initialize axes
 png(str_glue('artifacts/analyze_chop-mims-subs/plots/c{k_star}_bd-all_pa-c.png'), width = 500, height = 400)
@@ -1125,7 +1097,7 @@ plot(
   main = str_glue('c_{k_star}')
 )
 y_labs <- c(1, 10, 100)
-y_ticks <- y_trans_fun(y_labs, shift = y_shift)
+y_ticks <- y_labs  ## identity: Y-axis transform removed from pipeline
 axis(side = 2, at = y_ticks, labels = y_labs)
 
 # Add remaining curves
@@ -1259,7 +1231,7 @@ c_shifts_ctx <- new_context(
   cache = pipeline$training$cache,
   meta = list()
 )
-out <- decode(pipeline, c_shifts_ctx, from = 5, to = 3)
+out <- decode(pipeline, c_shifts_ctx, from = 3, to = 2)
 Q_plot <- do.call(rbind, out$payload)
 
 # Normalize response to [0,1]
@@ -1273,11 +1245,6 @@ cols <- col_fun(n_cols)
 
 # Map each curve to a color
 curve_cols <- cols[ceiling(resp_scaled * (n_cols - 1)) + 1]
-
-## Prepare Y-axis transform
-stage_y_axis_state <- pipeline$stages[[1]]$state
-y_trans_fun <- y_trans_to_fun[[stage_y_axis_state$y_trans]]
-y_shift <- stage_y_axis_state$y_shift
 
 # Plot first curve to initialize axes
 png(str_glue('artifacts/analyze_chop-mims-subs/plots/c{k_star}_bd-all_imp-2_pa-c.png'), width = 500, height = 400)
@@ -1294,7 +1261,7 @@ plot(
   main = str_glue('c_{k_star}')
 )
 y_labs <- c(1, 10, 100)
-y_ticks <- y_trans_fun(y_labs, shift = y_shift)
+y_ticks <- y_labs  ## identity: Y-axis transform removed from pipeline
 axis(side = 2, at = y_ticks, labels = y_labs)
 
 # Add remaining curves

@@ -7,13 +7,14 @@ source('src/utils.R')
 
 
 ## Globals
+art_dir_nhanes <- 'demo_nhanes'
 art_dir <- 'validate_nhanes_3'
 epsilon <- 1.25
 
 ## Canonical pipeline (the one demo_nhanes.R chose). K_star follows.
-path_pipe_star <- file.path('artifacts', 'demo_nhanes', 'pipe_nhanes.rds')
+path_pipe_star <- file.path('artifacts', art_dir_nhanes, 'pipe_nhanes.rds')
 pipeline_star  <- readRDS(path_pipe_star)
-K_star         <- pipeline_star$stages[[5]]$state$K
+K_star         <- pipeline_star$stages[[3]]$state$child_qg_pca$state$K
 
 ## Load datasets used by every section below.
 y_nhanes <- readRDS(file.path('data', 'processed', 'nhanes_v1_nofilter.rds'))
@@ -29,14 +30,13 @@ compute_recon_loss <- function(pipeline, y_list) {
     cache   = pipeline$training$cache,
     meta    = list(Ji_vec = lengths(y_list))
   )
-  Qi_list      <- encode(pipeline, y_ctx, from = 0, to = 2)$payload
+  Qi_list      <- encode(pipeline, y_ctx, from = 0, to = 1)$payload
   ctx_top      <- encode(pipeline, y_ctx)   # default to = n_stages
-  Qi_reco_list <- decode(pipeline, ctx_top, from = pipeline$n_stages, to = 2)$payload
-  loss_scale   <- pipeline$training$meta$loss_scale
+  Qi_reco_list <- decode(pipeline, ctx_top, from = pipeline$n_stages, to = 1)$payload
   losses       <- numeric(length(Qi_list))
   for (i in seq_along(Qi_list)) {
     dp         <- 1 / (length(Qi_list[[i]]) + 1)
-    losses[i]  <- wasserstein(Qi_list[[i]], Qi_reco_list[[i]], dp) / loss_scale
+    losses[i]  <- wasserstein(Qi_list[[i]], Qi_reco_list[[i]], dp)
   }
   losses
 }
@@ -71,16 +71,18 @@ plot_losslessness_groups(
 k_start   <- 1
 k_stop    <- 3
 col_train <- rgb(0, 0, 0, alpha = 0.25)
+col_flag <- rgb(1, 0, 0)
 
 y_ctx_chop <- new_context(
   payload = y_chop,
   cache   = pipeline_star$training$cache,
   meta    = list()
 )
+Qi_chop <- encode(pipeline_star, y_ctx_chop, from = 0, to = 1)$payload
 c_chop <- do.call(rbind,
-  encode(pipeline_star, y_ctx_chop, from = 0, to = 5)$payload$c_list)
+  encode(pipeline_star, y_ctx_chop, from = 0, to = 3)$payload$c_list)
 z_chop <- do.call(rbind,
-  encode(pipeline_star, y_ctx_chop, from = 0, to = 6)$payload)
+  encode(pipeline_star, y_ctx_chop, from = 0, to = 4)$payload)
 
 png(file.path('artifacts', art_dir, str_glue('chop-z_K-{K_star}.png')),
     width = 960, height = 960, pointsize = 18)
@@ -177,16 +179,16 @@ for (label in c("nhanes", "chop")) {
   idx_tr  <- perm[seq_len(n_train)]
   idx_val <- perm[(n_train + 1):N_d]
 
-  fit      <- fit_mean_cov(encode_to_Z(pipeline_star, y_data[idx_tr]), ridge = 0)
+  fit      <- fit_mean_cov(encode_y_to_z(pipeline_star, y_data[idx_tr]), ridge = 0)
   z_draws  <- draw_mean_cov(length(idx_val), fit)
-  Qi_draws <- decode_z_draws(z_draws, pipeline_star, Ji = Ji)$Qi
+  Qi_draws <- decode_z_to_Qi(pipeline_star, z_draws, Ji = Ji)
 
   y_ctx_val <- new_context(
     payload = y_data[idx_val],
     cache   = pipeline_star$training$cache,
     meta    = list(Ji_vec = lengths(y_data[idx_val]))
   )
-  Qi_val <- encode(pipeline_star, y_ctx_val, from = 0, to = 2)$payload
+  Qi_val <- encode(pipeline_star, y_ctx_val, from = 0, to = 1)$payload
 
   plot_data[[label]] <- list(
     Qi_val   = Qi_val,
@@ -256,8 +258,8 @@ for (label in names(plot_data)) {
 #   cache   = pipeline_star$training$cache,
 #   meta    = list()
 # )
-# Qi_list <- encode(pipeline, y_ctx, from = 0, to = 2)$payload
-# Qi_reco_list <- decode(pipeline, encode(pipeline, y_ctx), from = 5, to = 2)$payload
+# Qi_list <- encode(pipeline, y_ctx, from = 0, to = 1)$payload
+# Qi_reco_list <- decode(pipeline, encode(pipeline, y_ctx), from = 3, to = 1)$payload
 
 # ## Compute concordances
 # concordances <- numeric(length(Qi_list))
