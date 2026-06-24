@@ -112,7 +112,7 @@ n_cores <- min(5, R)
 
 ## NHANES gets subsampled to CHOP's size BEFORE each split so both arms see
 ## matched-size splits and the comparison is apples-to-apples.
-gen_nhanes <- assess_generativity_split(
+gen_nhanes <- evaluate_pipeline_generativity(
   pipeline_star, y_nhanes,
   S = S, R = R,
   frac_train  = 0.5,
@@ -122,7 +122,7 @@ gen_nhanes <- assess_generativity_split(
   seed        = 12345,
   n_cores     = n_cores
 )
-gen_chop <- assess_generativity_split(
+gen_chop <- evaluate_pipeline_generativity(
   pipeline_star, y_chop,
   S = S, R = R,
   frac_train  = 0.5,

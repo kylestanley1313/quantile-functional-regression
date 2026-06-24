@@ -1,6 +1,10 @@
 source('src/cot.R')
+source('src/model.R')
 source('src/utils.R')
 
+
+## Globals
+dir_art <- 'demo_iceland'
 
 ## ========== Data Processing ========== ##
 
@@ -25,46 +29,53 @@ path <- file.path('data', 'processed', 'iceland_test_spacetime.rds')
 saveRDS(y_test_spacetime_list, path)
 
 
-## NOTES
-##  - Maximum of J = 91 observations per site-year
-##  - About 4% of site-year times are NA
-##  - Each site-year is code 1 (train), 0 (time test), 2 (space-time test)
+## ========== Data Loading ========== ##
 
-## PLAN 
-##  - Common grid on 1/92, ..., 91/92
-##  - Embeddings for only training split
-
-
-## ========== Representation Learning ========== ##
-
-## Load data
 path <- file.path('data', 'processed', 'iceland_train.rds')
 y_list <- readRDS(path)
-# y_list <- y_list[1:500]
 N <- length(y_list)
 Ji_vec <- lengths(y_list)
 Ji_max <- max(Ji_vec)
 Ji_min <- min(Ji_vec)
-y_max <- max(unlist(y_list))
+J_aug <- 500
 
 
-## Define grid
+## ========== Representation Learning ========== ##
+
+## To start, let's assume that we have already tuned the 
+## pipeline hyperparamters: epsilon, alpha, and lambda. 
+## We will actually tune them in the next subsection.
+## Below shows you how to fit the pipeline. 
+
+## ---------- Grid Definitions
+
+## Construct the "common grid" that all EQFs will be smoothed onto
 p_grid <- p_grid_fun(
   breaks = c(1/(Ji_max + 1), Ji_max/(Ji_max + 1)),
   interval_counts = c(Ji_max)
 )
+
+## Construct the "augmented grid", which augments the common grid with 
+## a collection of evenly-spaced points. This grid is never used in 
+## representation learning but is used later to approximate 
+## pairwise Wasserstein distances and to compute generativity scores.
+p_grid_aug <- c(p_grid, pi_grid_fun(J_aug - length(p_grid)))
+p_grid_aug <- sort(unique(p_grid_aug))
+
+
+## ---------- Encoder-Decoder Fitting
 
 ## Construct pipeline
 pipeline <- construct_pipeline(
   stages = list(
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid, Ji_min = Ji_min),
-    stage_wame(
-      K_max = 20,
-      epsilon = 0.5,
-      alpha = 0.01,
+    stage_wame( 
+      K_max = 20,     ## Automatically finds the smallest K < K_max that satisfies near-losslessness
+      epsilon = 0.5,  ## Tuned tolerance level
+      alpha = 0.01,   ## Tuned slippage rate
       V = 5,
-      lambda = 0
+      lambda = 0      ## Tuned shrinkage parameter
     ),
     stage_flow(
       n_layers = 16,
@@ -85,6 +96,9 @@ pipeline <- fit(pipeline, y_list)
 path <- 'artifacts/demo_iceland/pipe.rds'
 saveRDS(pipeline, path)
 
+
+## ---------- Representation Presentation
+
 ## New context
 y_ctx <- new_context(
   payload = y_list,
@@ -92,7 +106,7 @@ y_ctx <- new_context(
   meta = list()
 )
 
-## Encode/Decode
+## Encode/Decode stage-by-stage
 Qi_ctx <- encode(pipeline, y_ctx, from = 0, to = 1)
 Q_ctx <- encode(pipeline, Qi_ctx, from = 1, to = 2)
 c_ctx <- encode(pipeline, Q_ctx, from = 2, to = 3)
@@ -101,33 +115,12 @@ c_ctx_ <- decode(pipeline, z_ctx, from = 4, to = 3)
 Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
 Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
 y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
+## Can perform full encode/decode operations:
+##    z_ctx  <- encode(pipeline, y_ctx)
+##    y_ctx_ <- decode(pipeline, z_ctx))
 
 
-
-## --- Pairwise distances
-
-## Augmented p-grid
-J_aug <- 500
-p_grid_aug <- c(p_grid, pi_grid_fun(J_aug - length(p_grid)))
-p_grid_aug <- sort(unique(p_grid_aug))
-
-## Pairwise distances
-set.seed(12345)
-Qi_list <- Qi_ctx$payload[sample(1:N, size = 1000)]
-distances <- pairwise_distance(
-  Qi_list = Qi_list,
-  loss_fun = wasserstein,
-  pi_grid_list = lapply(lengths(Qi_list), pi_grid_fun),
-  p_grid_aug = p_grid_aug,
-  supp_Y = pipeline$training$cache$supp_Y
-)
-quantile(distances, c(0.5, 0.1, 0.01, 0.005, 0.001))
-
-## NOTE: We have set the tolerance level to eps = 0.5. This is
-## roughly equivalent to the 0.5th percentile of pairwise Wasserstein
-## distances in the training sample.
-
-## --- Visualize reconstructions
+## -------- Visualize reconstructions
 
 recon_losses <- numeric(N)
 for (i in 1:N) {
@@ -136,8 +129,6 @@ for (i in 1:N) {
   w <- get_quadrature_weights(pi_grid_fun(length(Q1)))
   recon_losses[i] <- wasserstein(Q1, Q2, w)
 }
-
-set.seed(12345)
 
 lower_mat_3x5 <- matrix(
   c(0.00, 0.10, 0.20, 0.30, 0.40,
@@ -152,25 +143,20 @@ upper_mat_3x5 <- matrix(
   nrow = 3, byrow = TRUE
 )
 
-log_scale <- FALSE   # toggle: TRUE => plot on log(Q(p) + 1) scale
-
-plot_qi_recon_grid( ## See demo_iceland.R
+set.seed(12345)
+plot_qi_recon_grid(
   Qi_orig_list  = Qi_ctx$payload,
   Qi_recon_list = Qi_ctx_$payload,
   recon_losses  = recon_losses,
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
-  log_x_plus_1  = log_scale,
   path          = file.path('artifacts', 'demo_iceland', 'plots',
-                            sprintf('Qi-recon_grid_3x5%s.png',
-                                    if (log_scale) '_log' else ''))
+                            'Qi-recon_grid_3x5.png')
 )
 
 
 
-
-
-## ----- Visualize data in different spaces
+## ---------- Visualize data in different spaces
 
 ## Plotting globals
 idx_outliers <- pipeline$training$meta$idx_outliers
@@ -287,24 +273,18 @@ plot_funs(
 dev.off()
 
 
-## ---------- Generativity
 
-## Get Z-draws from fitted mean-covariance model
+## ---------- Synthetic Data
+
+## Generate synthetic data by simulating from a fitted latent 
+## mean-covariance model
 set.seed(12345)
 Z <- do.call(rbind, z_ctx$payload)
 fit <- fit_mean_cov(Z)
 z_draws <- draw_mean_cov(N, fit)
-
-## Decode Z-draws
-z_draws_ctx <- new_context(
-  payload = z_draws,
-  cache = pipeline$training$cache,
-  meta = list(Ji_vec = rep(Ji_max, length.out = length(z_draws)))
-)
-Qi_draws <- decode(pipeline, z_draws_ctx, from = 4, to = 1)$payload
+Qi_draws <- decode_z_to_Qi(pipeline, z_draws, Ji = Ji_max)
 
 ## Plot Q
-set.seed(12345)
 idx_shuff <- sample(1:(2*N))
 col_data <- rgb(0, 0, 0, alpha = 0.25)
 col_draws <- rgb(1, 0, 0, alpha = 0.25)
@@ -348,4 +328,187 @@ plot_funs(
 )
 dev.off()
 
+
+
+## ========== Hyperparameter Tuning ========== ##
+
+## Now let's see how we tuned those hyperparameters.
+## We tune in two stages: 
+##  (1) Inspect plot of cross-validated losses) to choose suitable epsilon and alpha for lambda = 0.
+##  (2) For fixed epsilon and alpha, use generativity scoring to choose lambda.
+
+## Returns fitted Iceland pipeline.
+## We will reuse this wrapper throughout tuning. 
+## Use Cases: 
+##  1. Create pipeline with fixed K --> pass y_list, K, lambda (opt)
+##  2. Create pipeline with auto-chosen K --> pass y_list, epsilon, alpha, lambda (opt)
+fit_pipeline_iceland <- function(
+  y_list,
+  epsilon = NULL, 
+  alpha = NULL, 
+  lambda = NULL, 
+  K = NULL, 
+  K_max = 20, 
+  path_flow = NULL
+) {
+  ## Validate arguments
+  if (is.null(epsilon) && is.null(alpha) && is.null(K)) {
+    stop("If epsilon and alpha are NULL, must pass K.")
+  }
+  if (!is.null(epsilon) && !is.null(alpha) && !is.null(K)) {
+    warning("Passed K will override dimension derived from passed epsilon and alpha.")
+  }
+
+  ## Stages
+  stages <- list(
+    stage_eqf_sgrid(),
+    stage_eqf_cgrid(
+      p_grid = p_grid_fun(
+        breaks = c(1/(91 + 1), 91/(91 + 1)),
+        interval_counts = c(91)
+      ), 
+      Ji_min = 28
+    ),
+    stage_wame(
+      epsilon = epsilon,
+      alpha = alpha,
+      lambda = lambda, 
+      K = K, 
+      K_max = K_max,
+      loss = 'wasserstein'
+    )
+  )
+  if (!is.null(path_flow)) {
+    stages[[4]] <- stage_flow(
+      n_layers = 16,
+      max_epochs = 1000,
+      lr = 1e-3,
+      path = path_flow
+    )
+  }
+
+  ## Fit pipeline
+  pipeline <- construct_pipeline(
+    stages = stages,
+    supp_Y = seq(-30, 20, by = 0.0001),
+    p_star = 0.5,
+    y_star = NULL,
+    y_min = NULL,
+    seed = 12345
+  )
+  pipeline <- fit(pipeline, y_list)
+  pipeline
+}
+
+
+## ---------- Choose epsilon and alpha via near-losslessness
+
+## Compute validation losses for candidate K
+valid_losses_by_K <- compute_cv_losses(
+  y_list, fit_pipeline_iceland, 
+  K_from = 1, 
+  K_to = 20, 
+  V = 5, 
+  seed = 12345
+)
+path <- file.path('artifacts', dir_art, 'valid_losses.rds')
+saveRDS(valid_losses_by_K, path)
+
+## Wasserstein losses are not themselves interpretable.
+## Compute pairwise wasserstein losses for a sample of
+## observations for provide a reference. 
+pwds <- compute_sampled_pwds(
+  y_list, pipeline,
+  loss = 'wasserstein',
+  p_grid_aug = p_grid_aug,
+  N_samp = 500,
+  seed = 12345
+)
+
+## Plot losslessness
+epsilon_star <- 0.5  ## set as desired
+alpha_star <- 0.01   ## set as desired
+plot_losslessness(
+  valid_losses_by_K,
+  jitter_width = 0.2,
+  epsilon = epsilon_star,  
+  alpha = alpha_star,   
+  plot_mean = FALSE,
+  ylab = "Cross-Validated Wasserstein Error",
+  ylab2 = "Pairwise Wasserstein Distance Percentile",
+  xlab = "K",
+  K_star = NULL,
+  pairwise_distances = pwds,
+  main = "Cross-Validated Wasserstein Reconstruction Errors",
+  path = file.path('artifacts', dir_art, 'plots', 'valid_losses.png')
+)
+
+
+## ---------- Choose lambda via generativity
+
+## TODO: Streamline this code. 
+
+## Shrinkage parameter candidates
+lambdas <- c(0, 1e-3, 1e-2)
+
+## Fit pipelines with these candidate lambdas
+for (lambda in lambdas) {
+  pipeline <- fit_pipeline_iceland(
+    y_list, 
+    epsilon = epsilon_star, 
+    alpha = alpha_star, 
+    lambda = lambda,
+    path_flow = file.path('artifacts', dir_art, 'generativity', str_glue('flow_lambda-{lambda}.pth'))
+  )
+  path <- file.path('artifacts', dir_art, 'generativity', str_glue('pipe_lambda-{lambda}.rds'))
+  saveRDS(pipeline, path)
+}
+
+## Evalute generativity for each lambda
+S <- 5   ## number of data splits
+R <- 20  ## number of repetitions per split
+n_cores <- min(5, R)
+gen_list <- list()
+for (lambda in lambdas) {
+  print(str_glue("lambda = {lambda}"))
+  path_pipe <- file.path(
+    'artifacts', dir_art, 'generativity',
+    str_glue('pipe_lambda-{lambda}.rds')
+  )
+  pipeline <- readRDS(path_pipe)
+  gen_list[[as.character(lambda)]] <- evaluate_pipeline_generativity(
+    pipeline, y_list,
+    S = S, R = R,
+    frac_train = 0.5,
+    J_aug = 500,
+    ridge = 0,
+    seed = 12345,
+    n_cores = n_cores
+  )
+}
+path_gen <- file.path('artifacts', dir_art, 'generativity', 'gen_res.rds')
+saveRDS(gen_list, path_gen)
+
+## Plot generativity and K against lambda
+K_by_lambda <- sapply(lambdas, function(lambda) {
+  pipe <- readRDS(file.path(
+    'artifacts', dir_art, 'generativity',
+    str_glue('pipe_lambda-{lambda}.rds')
+  ))
+  pipe$stages[[3]]$state$child_qg_pca$state$K
+})
+scores_by_lambda <- lapply(lambdas, function(lambda) {
+  lapply(gen_list[[as.character(lambda)]]$splits, `[[`, "log_norm")
+})
+plot_generativity_boxes(
+  groups      = as.character(lambdas),
+  scores      = scores_by_lambda,
+  Ks          = Ks,
+  hline       = 0,
+  # vline_group = as.character(lambda_star),
+  xlab        = expression(lambda),
+  ylab        = "log normalized generativity",
+  main        = "Generativity (log-normalized) and K vs lambda",
+  path        = file.path('artifacts', dir_art, 'plots', 'gen_score_vs_lambda.png')
+)
 

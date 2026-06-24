@@ -74,7 +74,7 @@ for (lambda in lambdas) {
 ## All generativity helpers live in src/utils.R:
 ##   decode_z_to_Qi, encode_y_to_Qi_aug, decode_z_to_Qi_aug, compute_generativity,
 ##   generativity_score, encode_y_to_z, fit_mean_cov, draw_mean_cov,
-##   assess_generativity_split, plot_generativity_boxes.
+##   evaluate_pipeline_generativity, plot_generativity_boxes.
 
 
 
@@ -104,7 +104,7 @@ for (lambda in lambdas) {
   pipeline <- readRDS(path_pipe)
 
   start <- Sys.time()
-  gen_list[[as.character(lambda)]] <- assess_generativity_split(
+  gen_list[[as.character(lambda)]] <- evaluate_pipeline_generativity(
     pipeline, y_list,
     S = S, R = R,
     frac_train  = 0.5,

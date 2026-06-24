@@ -332,7 +332,7 @@ dev.off()
 K  <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 Ji <- 10080
 
-## Train/val split (same convention as assess_generativity_split): fit the
+## Train/val split (same convention as evaluate_pipeline_generativity): fit the
 ## latent mean-cov model on the train half, then draw |val| synthetic z's
 ## and compare against the held-out real Qi.
 set.seed(12345)

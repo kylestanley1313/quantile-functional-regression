@@ -1,5 +1,6 @@
 library(reticulate)
 
+source('src/model.R')
 
 
 ## ---------- Miscellaneous ---------- ##
@@ -163,24 +164,40 @@ wasserstein <- function(Q1, Q2, w) {
   sqrt(sum(w * (Q1 - Q2)^2))
 }
 
-pairwise_distance <- function(
-    Qi_list,
-    loss_fun,
-    pi_grid_list,
+loss_to_fun <- list(
+  'one_minus_sqcor' = one_minus_sqcor,
+  'one_minus_sqconc' = one_minus_sqconc,
+  'wasserstein' = wasserstein
+)
+
+
+compute_sampled_pwds <- function(
+    y_list,
+    pipeline,
+    loss,
     p_grid_aug,
-    supp_Y = NULL
+    N_samp = NULL,
+    seed = gen_seed()
 ) {
-  N <- length(Qi_list)
+  set.seed(seed)
+  w_aug <- get_quadrature_weights(p_grid_aug)
+  loss_fun <- loss_to_fun[[loss]]
+
+  ## Get indices for samping
+  N <- length(y_list)
+  if (is.null(N_samp)) {
+    idx_samp <- 1:N
+  } else {
+    idx_samp <- sample(1:N, size = N_samp)
+    N <- length(idx_samp)
+  }
   distances <- numeric(N * (N - 1) / 2)
 
-  ## Place Qi on augmented p-grid
-  for (i in 1:N) {
-    Qi_list[[i]] <- inv_eqf_cgrid(
-      Qi_list[[i]], pi_grid_list[[i]],
-      p_grid_aug, supp_Y
-    )
-  }
-  w_aug <- get_quadrature_weights(p_grid_aug)
+  ## Get list of pi_grids
+  pi_grid_list <- lapply(lengths(y_list[idx_samp]), pi_grid_fun)
+
+  ## Encode y to Qi_aug
+  Qi_aug_list <- encode_y_to_Qi_aug(pipeline, y_list[idx_samp], p_grid_aug)
 
   ## Compute pairwise distances
   idx <- 1
@@ -190,7 +207,7 @@ pairwise_distance <- function(
       p_high <- min(tail(pi_grid_list[[i]], 1), tail(pi_grid_list[[j]], 1))
       mask   <- (p_grid_aug >= p_low) & (p_grid_aug <= p_high)
       w_ij   <- w_aug[mask] / sum(w_aug[mask])
-      distances[idx] <- loss_fun(Qi_list[[i]][mask], Qi_list[[j]][mask], w_ij)
+      distances[idx] <- loss_fun(Qi_aug_list[[i]][mask], Qi_aug_list[[j]][mask], w_ij)
       idx <- idx + 1
     }
   }
@@ -198,12 +215,6 @@ pairwise_distance <- function(
   distances
 }
 
-
-loss_to_fun <- list(
-  'one_minus_sqcor' = one_minus_sqcor,
-  'one_minus_sqconc' = one_minus_sqconc,
-  'wasserstein' = wasserstein
-)
 
 
 ## ---------- Encoding/Decoding ---------- ##
@@ -290,6 +301,283 @@ encode_y_to_Qi_aug <- function(pipeline, y_list, p_grid_aug) {
 }
 
 
+## ---------- Losslessness ---------- ##
+
+compute_cv_losses <- function(
+    y_list, 
+    fit_pipeline,
+    K_from = 1, 
+    K_to = 50, 
+    K_by = 1, 
+    stage_from = 0,
+    stage_to = NULL,
+    V = 5,
+    seed = gen_seed(),
+    verbose = TRUE
+) {
+  
+  ## Set parameters
+  N <- length(y_list)
+  Ks <- seq(K_from, K_to, K_by)
+  valid_losses_by_K <- list()
+
+  ## Assign folds
+  set.seed(seed)
+  folds <- sample(rep(1:V, length.out = N))
+
+  for (K in Ks) {
+    message(str_glue("---------- K = {K} ----------"))
+
+    valid_losses <- vector(mode = "numeric", length = N)
+    for (v in 1:V) {
+      
+      ## Get train/valid indices
+      idx_train <- which(folds != v)
+      idx_valid <- which(folds == v)
+      
+      ## Fit pipeline
+      pipeline <- fit_pipeline(y_list[idx_train], K = K)
+      stage_to <- stage_to %||% pipeline$n_stages
+      loss_fun <- loss_to_fun[[pipeline$stages[[pipeline$n_stages]]$state$loss]]
+
+      ## Fast forward to stage_from data (get data_list)
+      ctx <- new_context(
+        payload = y_list,
+        cache = pipeline$training$cache,
+        meta = list()
+      )
+      if (stage_from > 0) {
+        ctx <- encode(pipeline, ctx, from = 0, to = stage_from)
+      } 
+      data_list <- ctx$payload
+      
+      ## Encode/Decode (get reco_list)
+      ctx <- encode(pipeline, ctx, from = stage_from, to = stage_to)
+      ctx <- decode(pipeline, ctx, from = stage_to, to = stage_from)
+      reco_list <- ctx$payload
+      
+      ## Compute valid losses
+      for (i in 1:N) {
+        dp <- 1 / (length(data_list[[i]]) + 1)
+        loss_i <- loss_fun(data_list[[i]], reco_list[[i]], dp)
+        if (folds[i] == v) {
+          valid_losses[i] <- loss_i
+        }
+      }
+    }
+
+    valid_losses_by_K[[as.character(K)]] <- valid_losses
+  }
+
+  valid_losses_by_K
+}
+
+
+plot_losslessness <- function(
+    valid_losses_by_K,
+    train_losses_by_K = NULL,
+    jitter_width = 0.01,
+    epsilon = 0.01,
+    alpha = 0.05,
+    plot_mean = TRUE,
+    ylim = NULL,
+    ylab = "Loss",
+    xlab = "K",
+    main = "Loss by K",
+    K_star = NULL,
+    pairwise_distances = NULL,
+    pairwise_percentiles = c(50, 25, 10, 1),
+    ylab2 = "Pairwise Distance Percentile",
+    concordances = NULL,
+    concordance_box_position = "topright",
+    concordance_box_cex = 0.8,
+    path = NULL,
+    width = 1200,
+    height = 900,
+    res = 150
+) {
+  ## If saving, open appropriate graphics device
+  if (!is.null(path)) {
+    ext <- tolower(tools::file_ext(path))
+    if (ext == "png") {
+      png(path, width = width, height = height, res = res)
+    } else if (ext %in% c("jpg", "jpeg")) {
+      jpeg(path, width = width, height = height, quality = 100)
+    } else {
+      stop("Unsupported extension: use png, jpg, or jpeg.")
+    }
+  }
+
+  ## Bump right margin if drawing a secondary y-axis
+  if (!is.null(pairwise_distances)) {
+    par(mar = c(5, 4, 4, 5) + 0.1)
+  }
+
+  Ks <- as.numeric(names(valid_losses_by_K))
+  xlim_pad <- 2 * jitter_width
+
+  y_vals <- unlist(valid_losses_by_K)
+  if (!is.null(train_losses_by_K)) {
+    y_vals <- c(y_vals, unlist(train_losses_by_K))
+  }
+
+  plot(
+    NULL,
+    xlim = c(min(Ks) - xlim_pad, max(Ks) + xlim_pad),
+    ylim = ylim %||% c(0, max(y_vals)),
+    xaxt = "n", xlab = xlab, ylab = ylab,
+    main = main
+  )
+  axis(1, at = Ks, labels = Ks)
+  
+  v_means <- v_quants <- rep(NA_real_, length(Ks))
+  t_means <- t_quants <- rep(NA_real_, length(Ks))
+  
+  for (i in seq_along(Ks)) {
+    v_losses <- valid_losses_by_K[[i]]
+    v_means[i]  <- mean(v_losses)
+    v_quants[i] <- quantile(v_losses, probs = 1 - alpha)
+    
+    xvals_v <- jitter(rep(Ks[i], length(v_losses)), amount = jitter_width)
+    points(xvals_v, v_losses, pch = 19, col = rgb(0,0,0,0.25), cex = 0.5)
+    
+    if (!is.null(train_losses_by_K)) {
+      t_losses <- train_losses_by_K[[i]]
+      t_means[i]  <- mean(t_losses)
+      t_quants[i] <- quantile(t_losses, probs = 1 - alpha)
+    }
+  }
+  
+  col_valid <- rgb(0, 0.75, 0)
+  
+  if (plot_mean) {
+    points(Ks, v_means,  col = col_valid, pch = 19)
+    lines(Ks,  v_means,  col = col_valid)
+  }
+  
+  points(Ks, v_quants, col = col_valid, pch = 17)
+  lines(Ks,  v_quants, col = col_valid)
+  
+  if (!is.null(train_losses_by_K)) {
+    points(Ks, t_means,  col = "blue", pch = 19)
+    lines(Ks,  t_means,  col = "blue")
+    
+    points(Ks, t_quants, col = "blue", pch = 17)
+    lines(Ks,  t_quants, col = "blue")
+  }
+  
+  for (e in epsilon) {
+    abline(h = e, lty = "dashed", col = "red")
+  }
+  
+  if (!is.null(K_star)) {
+    abline(v = K_star, lty = "dashed", col = 'red')
+  }
+
+  ## Secondary y-axis: pairwise-distance percentiles
+  if (!is.null(pairwise_distances)) {
+    ticks_y <- quantile(
+      pairwise_distances,
+      probs = pairwise_percentiles / 100,
+      names = FALSE
+    )
+    yr <- par("usr")[3:4]
+    in_range <- ticks_y >= yr[1] & ticks_y <= yr[2]
+    axis(
+      side = 4,
+      at = ticks_y[in_range],
+      labels = pairwise_percentiles[in_range],
+      las = 1
+    )
+    mtext(ylab2, side = 4, line = 3)
+  }
+
+  ## Concordance summary box. Reports the alpha-quantile of per-subject
+  ## reconstruction concordances at K_star -- so (1 - alpha) of subjects
+  ## have concordance above the quoted value.
+  if (!is.null(concordances) &&
+      !is.null(K_star) && !isTRUE(is.na(K_star)) &&
+      !is.null(alpha)) {
+    q_lower <- quantile(concordances, probs = alpha,
+                        names = FALSE, na.rm = TRUE)
+    pct <- round(100 * (1 - alpha))
+    box_text <- c(
+      sprintf("K = %g", K_star),
+      sprintf("%d%% of subjects have", pct),
+      sprintf("concordance > %.3f", q_lower)
+    )
+    legend(
+      concordance_box_position,
+      legend  = box_text,
+      bty     = "o",
+      bg      = rgb(1, 1, 1, 0.85),
+      cex     = concordance_box_cex,
+      inset   = 0.02,
+      x.intersp = -0.5
+    )
+  }
+
+  ## Close device only if we opened it
+  if (!is.null(path)) dev.off()
+}
+
+
+## Group-wise jittered scatter of per-subject losses (one column per group),
+## styled after plot_losslessness. Each entry in losses_list is a numeric
+## vector; group_labels are the x-axis tick labels.
+plot_losslessness_groups <- function(losses_list,
+                                      group_labels,
+                                      epsilon      = NULL,
+                                      annotate_idx = NULL,
+                                      jitter_width = 0.1,
+                                      ylab         = "Loss",
+                                      xlab         = "",
+                                      main         = "",
+                                      path         = NULL,
+                                      width        = 960,
+                                      height       = 720,
+                                      pointsize    = 14) {
+  L <- length(losses_list)
+  stopifnot(length(group_labels) == L)
+
+  if (!is.null(path)) png(path, width = width, height = height, pointsize = pointsize)
+  old_par <- par(mar = c(4.5, 4.5, 3, 2))
+  on.exit(par(old_par), add = TRUE)
+
+  y_all <- unlist(losses_list, use.names = FALSE)
+  y_max <- max(c(y_all, epsilon), na.rm = TRUE)
+
+  plot(NULL,
+       xlim = c(0.5, L + 0.5),
+       ylim = c(0, y_max),
+       xaxt = "n",
+       xlab = xlab, ylab = ylab, main = main)
+  axis(1, at = seq_len(L), labels = group_labels)
+
+  for (i in seq_len(L)) {
+    v <- losses_list[[i]]
+    xvals <- jitter(rep(i, length(v)), amount = jitter_width)
+    points(xvals, v, pch = 19, col = rgb(0, 0, 0, 0.4))
+  }
+
+  if (!is.null(epsilon)) {
+    for (e in epsilon) abline(h = e, lty = "dashed", col = "red")
+  }
+
+  if (!is.null(annotate_idx)) {
+    eps <- epsilon[1]
+    txts <- vapply(annotate_idx, function(g) {
+      pct <- 100 * mean(losses_list[[g]] < eps)
+      sprintf("%.1f%% of %s < %.2f", pct, group_labels[g], eps)
+    }, character(1))
+    legend("topleft", legend = txts, bty = "n")
+  }
+
+  if (!is.null(path)) dev.off()
+  invisible(NULL)
+}
+
+
 ## ---------- Generativity ---------- ##
 
 ## Compute the (per-real-observation) generativity costs and scalar score
@@ -337,7 +625,7 @@ compute_generativity <- function(
 
 ## Scalar wrapper around compute_generativity for callers that only need the
 ## score.
-generativity_score <- function(Q_a, Q_b, w) {
+compute_generativity_score <- function(Q_a, Q_b, w) {
   compute_generativity(Q_a, Q_b, w)$score
 }
 
@@ -355,14 +643,16 @@ generativity_score <- function(Q_a, Q_b, w) {
 ## Cost note: for NHANES-sized splits (~4000x4000) each transport solve
 ## allocates a ~128 MB cost matrix and mc.cores multiplies that footprint.
 ## Keep S, R modest for tuning runs.
-assess_generativity_split <- function(pipeline, y_list,
-                                       S, R,
-                                       frac_train  = 0.5,
-                                       subsample_n = NULL,
-                                       J_aug       = 500,
-                                       ridge       = 0,
-                                       seed        = 12345,
-                                       n_cores     = 1) {
+evaluate_pipeline_generativity <- function(
+  pipeline, y_list,
+  S, R,
+  frac_train  = 0.5,
+  subsample_n = NULL,
+  J_aug       = 500,
+  ridge       = 0,
+  seed        = 12345,
+  n_cores     = 1
+) {
   set.seed(seed)
 
   ## Build augmented grid + weights once
@@ -396,7 +686,7 @@ assess_generativity_split <- function(pipeline, y_list,
     Q_val_aug   <- encode_y_to_Qi_aug(pipeline, y_val, p_grid_aug)
     Q_train_aug <- encode_y_to_Qi_aug(pipeline, y_tr,  p_grid_aug)
 
-    T_tv <- generativity_score(Q_train_aug, Q_val_aug, w_aug)
+    T_tv <- compute_generativity_score(Q_train_aug, Q_val_aug, w_aug)
 
     Z_tr <- encode_y_to_z(pipeline, y_tr)
     fit  <- fit_mean_cov(Z_tr, ridge = ridge)
@@ -406,7 +696,7 @@ assess_generativity_split <- function(pipeline, y_list,
       set.seed(rep_seeds[r])
       z_draws     <- draw_mean_cov(length(idx_val), fit)
       Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
-      generativity_score(Q_synth_aug, Q_val_aug, w_aug)
+      compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug)
     }, mc.cores = n_cores))
 
     splits[[s]] <- list(
@@ -653,155 +943,6 @@ plot_embeddings <- function(
     }
   }
   if (!is.null(path)) dev.off()
-}
-
-plot_losslessness <- function(
-    valid_losses_by_K,
-    train_losses_by_K = NULL,
-    jitter_width = 0.01,
-    epsilon = 0.01,
-    alpha = 0.05,
-    plot_mean = TRUE,
-    ylab = "Loss",
-    xlab = "K",
-    main = "Loss by K",
-    K_star = NULL,
-    path = NULL, 
-    width = 1200, 
-    height = 900, 
-    res = 150
-) {
-  ## If saving, open appropriate graphics device
-  if (!is.null(path)) {
-    ext <- tolower(tools::file_ext(path))
-    if (ext == "png") {
-      png(path, width = width, height = height, res = res)
-    } else if (ext %in% c("jpg", "jpeg")) {
-      jpeg(path, width = width, height = height, quality = 100)
-    } else {
-      stop("Unsupported extension: use png, jpg, or jpeg.")
-    }
-  }
-  
-  Ks <- as.numeric(names(valid_losses_by_K))
-  xlim_pad <- 2 * jitter_width
-  
-  y_vals <- unlist(valid_losses_by_K)
-  if (!is.null(train_losses_by_K)) {
-    y_vals <- c(y_vals, unlist(train_losses_by_K))
-  }
-  
-  plot(
-    NULL,
-    xlim = c(min(Ks) - xlim_pad, max(Ks) + xlim_pad),
-    ylim = c(0, max(y_vals)),
-    xaxt = "n", xlab = xlab, ylab = ylab,
-    main = main
-  )
-  axis(1, at = Ks, labels = Ks)
-  
-  v_means <- v_quants <- rep(NA_real_, length(Ks))
-  t_means <- t_quants <- rep(NA_real_, length(Ks))
-  
-  for (i in seq_along(Ks)) {
-    v_losses <- valid_losses_by_K[[i]]
-    v_means[i]  <- mean(v_losses)
-    v_quants[i] <- quantile(v_losses, probs = 1 - alpha)
-    
-    xvals_v <- jitter(rep(Ks[i], length(v_losses)), amount = jitter_width)
-    points(xvals_v, v_losses, pch = 19, col = rgb(0,0,0,0.4))
-    
-    if (!is.null(train_losses_by_K)) {
-      t_losses <- train_losses_by_K[[i]]
-      t_means[i]  <- mean(t_losses)
-      t_quants[i] <- quantile(t_losses, probs = 1 - alpha)
-    }
-  }
-  
-  col_valid <- rgb(0, 0.75, 0)
-  
-  if (plot_mean) {
-    points(Ks, v_means,  col = col_valid, pch = 19)
-    lines(Ks,  v_means,  col = col_valid)
-  }
-  
-  points(Ks, v_quants, col = col_valid, pch = 17)
-  lines(Ks,  v_quants, col = col_valid)
-  
-  if (!is.null(train_losses_by_K)) {
-    points(Ks, t_means,  col = "blue", pch = 19)
-    lines(Ks,  t_means,  col = "blue")
-    
-    points(Ks, t_quants, col = "blue", pch = 17)
-    lines(Ks,  t_quants, col = "blue")
-  }
-  
-  for (e in epsilon) {
-    abline(h = e, lty = "dashed", col = "red")
-  }
-  
-  if (!is.null(K_star)) {
-    abline(v = K_star, lty = "dashed", col = 'black')
-  }
-  
-  ## Close device only if we opened it
-  if (!is.null(path)) dev.off()
-}
-
-
-## Group-wise jittered scatter of per-subject losses (one column per group),
-## styled after plot_losslessness. Each entry in losses_list is a numeric
-## vector; group_labels are the x-axis tick labels.
-plot_losslessness_groups <- function(losses_list,
-                                      group_labels,
-                                      epsilon      = NULL,
-                                      annotate_idx = NULL,
-                                      jitter_width = 0.1,
-                                      ylab         = "Loss",
-                                      xlab         = "",
-                                      main         = "",
-                                      path         = NULL,
-                                      width        = 960,
-                                      height       = 720,
-                                      pointsize    = 14) {
-  L <- length(losses_list)
-  stopifnot(length(group_labels) == L)
-
-  if (!is.null(path)) png(path, width = width, height = height, pointsize = pointsize)
-  old_par <- par(mar = c(4.5, 4.5, 3, 2))
-  on.exit(par(old_par), add = TRUE)
-
-  y_all <- unlist(losses_list, use.names = FALSE)
-  y_max <- max(c(y_all, epsilon), na.rm = TRUE)
-
-  plot(NULL,
-       xlim = c(0.5, L + 0.5),
-       ylim = c(0, y_max),
-       xaxt = "n",
-       xlab = xlab, ylab = ylab, main = main)
-  axis(1, at = seq_len(L), labels = group_labels)
-
-  for (i in seq_len(L)) {
-    v <- losses_list[[i]]
-    xvals <- jitter(rep(i, length(v)), amount = jitter_width)
-    points(xvals, v, pch = 19, col = rgb(0, 0, 0, 0.4))
-  }
-
-  if (!is.null(epsilon)) {
-    for (e in epsilon) abline(h = e, lty = "dashed", col = "red")
-  }
-
-  if (!is.null(annotate_idx)) {
-    eps <- epsilon[1]
-    txts <- vapply(annotate_idx, function(g) {
-      pct <- 100 * mean(losses_list[[g]] < eps)
-      sprintf("%.1f%% of %s < %.2f", pct, group_labels[g], eps)
-    }, character(1))
-    legend("topleft", legend = txts, bty = "n")
-  }
-
-  if (!is.null(path)) dev.off()
-  invisible(NULL)
 }
 
 

@@ -7,7 +7,7 @@ source('src/utils.R')
 
 ## ---------- Utilities ---------- ##
 
-assess_losslessness <- function(
+compute_cv_losses <- function(
     y_list, 
     fit_pipeline,
     K_from = 1, 
@@ -693,7 +693,7 @@ for (i in 1:n_configs) {
     stop(str_glue("Config {i} has invalid model_type!"))
   }
   
-  out <- assess_losslessness(
+  out <- compute_cv_losses(
     y_list = y_list,
     fit_pipeline = fit_pipeline,
     K_from = 1,
@@ -709,6 +709,7 @@ for (i in 1:n_configs) {
   saveRDS(out$valid_quantile_resid_by_K, config$path_quantile_resid_valid)
 
   ## Compute normalized pairwise distances on a subsample of the training data
+  ## TOOD: This no longer works given new pairwise distance computation!
   pipe       <- fit_pipeline(y_list, K = 1)
   Qi_list_p  <- pipe$training$meta$Qi_list
   Ji_vec_p   <- pipe$training$meta$Ji_vec
@@ -718,10 +719,9 @@ for (i in 1:n_configs) {
   samp_rate  <- datasets[[config$dataset]]$pairwise_samp_rate
   set.seed(12345)
   idx_samp   <- sample(seq_along(Qi_list_p), size = floor(samp_rate * length(Qi_list_p)))
-  d <- pairwise_distance(
+  d <- compute_pwds(
     Qi_list      = Qi_list_p[idx_samp],
     loss_fun     = loss_fun_p,
-    pi_grid_list = lapply(Ji_vec_p[idx_samp], pi_grid_fun),
     p_grid_aug   = p_grid_p,
     supp_Y       = supp_Y_p
   )
