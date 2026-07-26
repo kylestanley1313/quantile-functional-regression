@@ -217,6 +217,45 @@ compute_sampled_pwds <- function(
 
 
 
+compute_pwds <- function(
+    Qi_list,
+    loss_fun,
+    p_grid_aug,
+    supp_Y = NULL
+) {
+  w_aug <- get_quadrature_weights(p_grid_aug)
+
+  N <- length(Qi_list)
+  distances <- numeric(N * (N - 1) / 2)
+
+  ## Per-subject grids and interpolation onto the shared augmented grid
+  pi_grid_list <- lapply(lengths(Qi_list), pi_grid_fun)
+  Qi_aug_list <- vector("list", N)
+  for (i in seq_len(N)) {
+    Qi_aug_list[[i]] <- inv_eqf_cgrid(
+      Qi_list[[i]], pi_grid_list[[i]],
+      p_grid_aug, supp_Y
+    )
+  }
+
+  ## Compute pairwise distances over the shared p-support of each pair
+  idx <- 1
+  for (i in 1:(N - 1)) {
+    for (j in (i + 1):N) {
+      p_low  <- max(pi_grid_list[[i]][1], pi_grid_list[[j]][1])
+      p_high <- min(tail(pi_grid_list[[i]], 1), tail(pi_grid_list[[j]], 1))
+      mask   <- (p_grid_aug >= p_low) & (p_grid_aug <= p_high)
+      w_ij   <- w_aug[mask] / sum(w_aug[mask])
+      distances[idx] <- loss_fun(Qi_aug_list[[i]][mask], Qi_aug_list[[j]][mask], w_ij)
+      idx <- idx + 1
+    }
+  }
+
+  distances
+}
+
+
+
 ## ---------- Encoding/Decoding ---------- ##
 
 ## NOTE: The hard-coded from=/to= stage indices below assume the canonical

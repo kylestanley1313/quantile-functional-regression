@@ -329,6 +329,30 @@ plot_funs(
 dev.off()
 
 
+## ========== Modeling ========== ##
+
+## Fit a linear model with a (fake) binary covariate
+set.seed(12345)
+Z <- do.call(rbind, z_ctx$payload) ## Z-embeddings ("normalized" LQD scores)
+x <- sample(0:1, size = nrow(Z), replace = TRUE)  ## binary covariate
+fit <- lm(Z ~ x)
+
+## Latent conditional means
+z_hat_0 <- coef(fit)[1,]                 ## predicted value for x == 0
+z_hat_1 <- coef(fit)[1,] + coef(fit)[2,] ## predicted value for x == 1
+
+## Decode z_hats
+z_hat_list <- list(
+  z_hat_0,
+  z_hat_1
+)
+Qi_hat_list <- decode_z_to_Qi(pipeline, z_hat_list, Ji = 91)
+
+## Plot
+pi_grid <- pi_grid_fun(91)
+plot(pi_grid, Qi_hat_list[[1]], type = 'l')
+lines(pi_grid, Qi_hat_list[[2]], col = 'red')
+
 
 ## ========== Hyperparameter Tuning ========== ##
 

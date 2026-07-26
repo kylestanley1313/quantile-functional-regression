@@ -48,7 +48,7 @@ df <- rbind(df_1, df_2)
 ## IDEA: 
 
 ## Preprocessing
-##  - Filter out rows with PAXPREDM that are not equal to 1 (wake aware minutes)
+##  - Filter out rows with PAXPREDM that are not equal to 3 (not nonwear minutes)
 ##  - Remove rows with PAXMTSM equal to -0.01 or greater than 500 (-0.01 is an 
 ##    error code and I am marking 500 as physiologically impossible)
 ##  - Remove rows with (SEQN, PAXDAYM) counts that are less than 480 (i.e., 
@@ -59,9 +59,14 @@ df <- rbind(df_1, df_2)
 ##    subject. The result should be a list y_list that maps subject IDs to a 
 ##    vector of MIMS.   
 
+## Output Files
+##   nhanes_cdc_v1.rds --> removes sleep and nonwear
+##   nhanes_cdc_v2.rds --> removes nonwear
+
 ## Filter to "clean" rows
 df_clean <- df %>%
-  filter(PAXPREDM != 3) %>%  ## remove nonwear
+  # filter(PAXPREDM != 3) %>%  ## remove nonwear
+  filter(!PAXPREDM %in% c(2, 3)) %>%  ## remove sleep and nonwear
   filter(PAXMTSM != -0.01, PAXMTSM <= 500) %>%  ## remove rows with MIMS outside feasible range
   filter(PAXFLGSM == "")  ## remove rows with quality flag
 

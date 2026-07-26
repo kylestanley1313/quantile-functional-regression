@@ -346,6 +346,7 @@ choose_near_lossless_K_qg_pca <- function(
       "converged = {sum(converged)} of {N}\n",
       "mean loss = {mean(losses)}\n",
       "max loss  = {max(losses)}\n",
+      "alpha loss = {quantile(losses, c(1-alpha))}\n",
       "prop tol  = {prop_tol}"
     )
     message(msg)
@@ -432,6 +433,7 @@ choose_near_lossless_K_q_pca <- function(
     msg <- glue(
       "mean loss = {mean(losses)}\n",
       "max loss  = {max(losses)}\n",
+      "alpha loss = {quantile(losses, c(1-alpha))}\n",
       "prop tol  = {prop_tol}"
     )
     message(msg)
@@ -518,6 +520,7 @@ choose_near_lossless_K_g_pca <- function(
     msg <- glue(
       "mean loss = {mean(losses)}\n",
       "max loss  = {max(losses)}\n",
+      "alpha loss = {quantile(losses, c(1-alpha))}\n",
       "prop tol  = {prop_tol}"
     )
     message(msg)

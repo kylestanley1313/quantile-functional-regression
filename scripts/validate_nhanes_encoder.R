@@ -7,9 +7,9 @@ source('src/utils.R')
 
 
 ## Globals
-art_dir_nhanes <- 'demo_nhanes'
-art_dir <- 'validate_nhanes_3'
-epsilon <- 1.25
+art_dir_nhanes <- 'demo_nhanes_v2'
+art_dir <- 'validate_nhanes_v2'
+epsilon <- 1.5  ## TODO: Change this!!!
 
 ## Canonical pipeline (the one demo_nhanes.R chose). K_star follows.
 path_pipe_star <- file.path('artifacts', art_dir_nhanes, 'pipe_nhanes.rds')
@@ -17,8 +17,8 @@ pipeline_star  <- readRDS(path_pipe_star)
 K_star         <- pipeline_star$stages[[3]]$state$child_qg_pca$state$K
 
 ## Load datasets used by every section below.
-y_nhanes <- readRDS(file.path('data', 'processed', 'nhanes_v1_nofilter.rds'))
-y_chop   <- readRDS(file.path('data', 'processed', 'chop-mims_v3_nofilter.rds'))
+y_nhanes <- readRDS(file.path('data', 'processed', 'nhanes_cdc_v2.rds'))
+y_chop   <- readRDS(file.path('data', 'processed', 'chop-mims_v6.rds'))
 
 
 

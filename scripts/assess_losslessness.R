@@ -267,108 +267,6 @@ plot_losslessness <- function(
 }
 
 
-plot_quantile_residuals <- function(
-    valid_resid_by_K,
-    quantile_level = NULL,
-    jitter_width = 0.01,
-    epsilon = NULL,
-    alpha = 0.05,
-    plot_mean = TRUE,
-    ylim = NULL,
-    ylab = "Residual",
-    xlab = "K",
-    main = NULL,
-    K_star = NULL,
-    path = NULL,
-    width = 1200,
-    height = 900,
-    res = 150
-) {
-  ## If saving, open appropriate graphics device
-  if (!is.null(path)) {
-    ext <- tolower(tools::file_ext(path))
-    if (ext == "png") {
-      png(path, width = width, height = height, res = res)
-    } else if (ext %in% c("jpg", "jpeg")) {
-      jpeg(path, width = width, height = height, quality = 100)
-    } else {
-      stop("Unsupported extension: use png, jpg, or jpeg.")
-    }
-  }
-
-  Ks <- as.numeric(names(valid_resid_by_K))
-  xlim_pad <- 2 * jitter_width
-
-  y_vals <- unlist(valid_resid_by_K)
-  y_max  <- max(abs(y_vals))
-  if (!is.null(epsilon)) y_max <- max(y_max, max(abs(epsilon)))
-
-  if (is.null(main)) {
-    main <- if (is.null(quantile_level)) {
-      "Residuals by K"
-    } else {
-      str_glue("Residuals by K  (q = {quantile_level})")
-    }
-  }
-
-  plot(
-    NULL,
-    xlim = c(min(Ks) - xlim_pad, max(Ks) + xlim_pad),
-    ylim = ylim %||% c(-y_max, y_max),
-    xaxt = "n", xlab = xlab, ylab = ylab,
-    main = main
-  )
-  axis(1, at = Ks, labels = Ks)
-
-  v_means <- v_lo <- v_hi <- rep(NA_real_, length(Ks))
-
-  for (i in seq_along(Ks)) {
-    r <- valid_resid_by_K[[i]]
-    v_means[i] <- mean(r)
-    if (!is.null(alpha)) {
-      v_lo[i]    <- quantile(r, probs = alpha / 2)
-      v_hi[i]    <- quantile(r, probs = 1 - alpha / 2)
-    }
-
-    xvals <- jitter(rep(Ks[i], length(r)), amount = jitter_width)
-    points(xvals, r, pch = 19, col = rgb(0, 0, 0, 0.25), cex = 0.5)
-  }
-
-  col_valid <- rgb(0, 0.75, 0)
-
-  if (plot_mean) {
-    points(Ks, v_means, col = col_valid, pch = 19)
-    lines(Ks,  v_means, col = col_valid)
-  }
-
-  if (!is.null(alpha)) {
-    points(Ks, v_lo, col = col_valid, pch = 17)
-    lines(Ks,  v_lo, col = col_valid)
-    points(Ks, v_hi, col = col_valid, pch = 17)
-    lines(Ks,  v_hi, col = col_valid)
-  }
-
-  abline(h = 0, lty = "dashed", col = "gray40")
-
-  if (!is.null(epsilon)) {
-    for (e in epsilon) {
-      abline(h =  e, lty = "dashed", col = "red")
-      abline(h = -e, lty = "dashed", col = "red")
-    }
-  }
-
-  if (!is.null(K_star)) {
-    abline(v = K_star, lty = "dashed", col = "black")
-  }
-
-  ## Close device only if we opened it
-  if (!is.null(path)) dev.off()
-}
-
-
-
-
-
 ## ---------- Pipeline Fitting Functions ---------- ##
 
 
@@ -494,7 +392,7 @@ fit_pipeline_g_pca <- function(
 
 ## ----- Globals 
 
-dir_sim <- file.path('simulations', 'nhanes-baseline')
+dir_sim <- file.path('simulations', 'nhanes_v2')
 
 
 ## ----- Create YAML configs
@@ -611,17 +509,29 @@ datasets <- list(
   #   p_scale = NULL, # 0.025,
   #   lambda = 0
   # ),
-  nhanes_2 = list(
-    path = file.path('data', 'processed', 'nhanes_v1_nofilter_N-1000.rds'),
+  # nhanes_2 = list(
+  #   path = file.path('data', 'processed', 'nhanes_v1_nofilter_N-1000.rds'),
+  #   p_grid = p_grid_fun(
+  #     breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
+  #     interval_counts = c(51, 50)
+  #   ),
+  #   supp_Y = c(0, seq(0.006, 400, by = 0.001)),
+  #   y_star = 0,
+  #   y_min = 0,
+  #   pairwise_samp_rate = 1.0, # 0.05,
+  #   lambda = 0.1 # 0
+  # )
+  nhanes_v2 = list(
+    path = file.path('data', 'processed', 'nhanes_cdc_v2.rds'),
     p_grid = p_grid_fun(
       breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
       interval_counts = c(51, 50)
     ),
-    supp_Y = c(0, seq(0.006, 400, by = 0.001)),
+    supp_Y = c(0, seq(0.006, 500, by = 0.001)),
     y_star = 0,
     y_min = 0,
-    pairwise_samp_rate = 1.0, # 0.05,
-    lambda = 0.1 # 0
+    pairwise_samp_rate = 0.05,
+    lambda = 0
   )
 )
 
@@ -651,7 +561,7 @@ n_configs <- i - 1
 
 ## ----- Process Configs
 
-set.seed(12346)
+set.seed(12345)
 for (i in 1:n_configs) {
   message(str_glue("========== CONFIG {i} of {n_configs} =========="))
   
@@ -697,7 +607,7 @@ for (i in 1:n_configs) {
     y_list = y_list,
     fit_pipeline = fit_pipeline,
     K_from = 1,
-    K_to = 4,
+    K_to = 20,
     K_by = 1,
     stage_from = 1,
     V = 5,
@@ -741,7 +651,7 @@ for (i in 1:n_configs) {
 ## skipped (no file written), and plot_losslessness will fall back to
 ## drawing no annotation box for that config.
 
-K_stars <- c(4)
+K_stars <- c(8)
 for (i in 1:n_configs) {
   message(str_glue("========== Concordance for CONFIG {i} of {n_configs} =========="))
 
@@ -841,7 +751,7 @@ for (i in 1:n_configs) {
   plot_losslessness(
     loss_valid, NULL,
     jitter_width = 0.2,
-    epsilon = c(1.25),
+    epsilon = c(1.43),
     alpha = 0.05,
     plot_mean = FALSE,
     # ylim = c(0, 15), #c(0, 20),
@@ -856,28 +766,6 @@ for (i in 1:n_configs) {
     main = "NHANES Validation",
     path = path_plot
   )
-
-  ## Plot quantile residuals
-  # for (q_name in names(quantile_resid_valid)) {
-  #   max_abs_resid <- max(abs(unlist(quantile_resid_valid)))
-  #   path_plot_q <- file.path(
-  #     dir_sim, 'plots',
-  #     str_glue('config-{i}_quantile-resid-{q_name}.png')
-  #   )
-  #   plot_quantile_residuals(
-  #     quantile_resid_valid[[q_name]],
-  #     quantile_level = as.numeric(q_name),
-  #     jitter_width   = 0.2,
-  #     alpha          = NULL,
-  #     plot_mean      = FALSE,
-  #     K_star         = NULL,
-  #     ylim           = c(-max_abs_resid, max_abs_resid),
-  #     main           = str_glue(
-  #       '{config$dataset} | {config$model_type} | q = {q_name}'
-  #     ),
-  #     path           = path_plot_q
-  #   )
-  # }
 
 }
 

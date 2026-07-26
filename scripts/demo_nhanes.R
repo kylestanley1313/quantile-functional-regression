@@ -18,10 +18,10 @@ source('src/utils.R')
 ## ========== Representation Learning ========== ##
 
 ## Globals
-dir_art <- 'demo_nhanes_baseline'
+dir_art <- 'demo_nhanes_v2'
 
 ## Load data
-path <- file.path('data', 'processed', 'nhanes_v1_nofilter.rds')
+path <- file.path('data', 'processed', 'nhanes_cdc_v2.rds')
 y_list <- readRDS(path)
 # y_list <- y_list[1:500]
 N <- length(y_list)
@@ -31,14 +31,11 @@ Ji_min <- min(Ji_vec)
 y_max <- max(unlist(y_list))
 path_plot_tmp = "scratch/plots/tmp_plot.png"
 
-## Define grid
+## Define grid (v1: 7500, v2: 10080)
 p_grid <- p_grid_fun(
-  breaks = c(1/(Ji_min + 1), 0.95, Ji_min/(Ji_min + 1)),
+  breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
   interval_counts = c(51, 50)
 )
-
-## NOTE: Unfiltered NHANES data contains 10080 observations for each subject. This
-## means extrapolation isn't necessary. 
 
 ## Construct pipeline
 pipeline <- construct_pipeline(
@@ -47,7 +44,7 @@ pipeline <- construct_pipeline(
     stage_eqf_cgrid(p_grid = p_grid, Ji_min = 100),
     stage_wame(
       K_max = 20,
-      epsilon = 1.25, # 0.25,
+      epsilon = 1.5, # 1.4, # 0.25,
       alpha = 0.05,
       V = 5,
       lambda = 0.1
