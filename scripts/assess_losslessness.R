@@ -8,24 +8,25 @@ source('src/utils.R')
 ## ---------- Utilities ---------- ##
 
 compute_cv_losses <- function(
-    y_list, 
+    y_list,
     fit_pipeline,
-    K_from = 1, 
-    K_to = 50, 
-    K_by = 1, 
+    K_from = 1,
+    K_to = 50,
+    K_by = 1,
     stage_from = 0,
     stage_to = NULL,
     V = 5,
     seed = gen_seed(),
-    quantile_levels = c(0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999),
+    quantile_levels = NULL,
+    compute_train_losses = FALSE,
     verbose = TRUE
 ) {
-  
+
   ## Set parameters
   N <- length(y_list)
   Ks <- seq(K_from, K_to, K_by)
   valid_losses_by_K <- list()
-  train_losses_by_K <- list()
+  train_losses_by_K <- if (compute_train_losses) list() else NULL
 
   ## Initialize per-quantile residual container: q -> K -> length-N vector
   valid_quantile_resid_by_K <- NULL
@@ -45,7 +46,7 @@ compute_cv_losses <- function(
     message(str_glue("---------- K = {K} ----------"))
 
     valid_losses <- vector(mode = "numeric", length = N)
-    train_losses <- matrix(nrow = N, ncol = V)
+    train_losses <- if (compute_train_losses) matrix(nrow = N, ncol = V) else NULL
     valid_q_resid <- NULL
     if (!is.null(quantile_levels)) {
       valid_q_resid <- matrix(
@@ -82,9 +83,11 @@ compute_cv_losses <- function(
       
       ## Compute train/valid losses
       for (i in 1:N) {
+        is_valid <- folds[i] == v
+        if (!is_valid && !compute_train_losses) next
         dp <- 1 / (length(data_list[[i]]) + 1)
         loss_i <- loss_fun(data_list[[i]], reco_list[[i]], dp)
-        if (folds[i] == v) {
+        if (is_valid) {
           valid_losses[i] <- loss_i
           if (!is.null(quantile_levels)) {
             q_data <- quantile(data_list[[i]], probs = quantile_levels, names = FALSE)
@@ -98,7 +101,9 @@ compute_cv_losses <- function(
     }
 
     valid_losses_by_K[[as.character(K)]] <- valid_losses
-    train_losses_by_K[[as.character(K)]] <- train_losses
+    if (compute_train_losses) {
+      train_losses_by_K[[as.character(K)]] <- train_losses
+    }
 
     if (!is.null(quantile_levels)) {
       K_name <- as.character(K)
@@ -392,7 +397,7 @@ fit_pipeline_g_pca <- function(
 
 ## ----- Globals 
 
-dir_sim <- file.path('simulations', 'nhanes_v2')
+dir_art <- file.path('artifacts', 'demo_nhanes_v3', 'losslessness')
 
 
 ## ----- Create YAML configs
@@ -521,17 +526,29 @@ datasets <- list(
   #   pairwise_samp_rate = 1.0, # 0.05,
   #   lambda = 0.1 # 0
   # )
-  nhanes_v2 = list(
-    path = file.path('data', 'processed', 'nhanes_cdc_v2.rds'),
+  # nhanes_v2 = list(
+  #   path = file.path('data', 'processed', 'nhanes_cdc_v2.rds'),
+  #   p_grid = p_grid_fun(
+  #     breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
+  #     interval_counts = c(51, 50)
+  #   ),
+  #   supp_Y = c(0, seq(0.006, 500, by = 0.001)),
+  #   y_star = 0,
+  #   y_min = 0,
+  #   pairwise_samp_rate = 0.05,
+  #   lambda = 0
+  # )
+  nhanes_v3 = list(
+    path = file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'),
     p_grid = p_grid_fun(
-      breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
+      breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
       interval_counts = c(51, 50)
     ),
     supp_Y = c(0, seq(0.006, 500, by = 0.001)),
     y_star = 0,
     y_min = 0,
     pairwise_samp_rate = 0.05,
-    lambda = 0
+    lambda = 1.0
   )
 )
 
@@ -541,15 +558,15 @@ models <- c('qg_pca')
 i <- 1
 for (dataset in names(datasets)) {
   for (model in models) {
-    path <- file.path(dir_sim, 'configs', str_glue('config-{i}.yml'))
+    path <- file.path(dir_art, 'configs', str_glue('config-{i}.yml'))
     config <- list(
       dataset = dataset,
       model_type = model,
-      path_loss_valid = file.path(dir_sim, 'losses', str_glue('config-{i}_loss-valid.rds')),
-      path_loss_train = file.path(dir_sim, 'losses', str_glue('config-{i}_loss-train.rds')),
-      path_quantile_resid_valid = file.path(dir_sim, 'losses', str_glue('config-{i}_quantile-resid-valid.rds')),
-      path_pairwise_dist_norm = file.path(dir_sim, 'losses', str_glue('config-{i}_pairwise-dist-norm.rds')),
-      path_concordances = file.path(dir_sim, 'losses', str_glue('config-{i}_concordances.rds'))
+      path_loss_valid = file.path(dir_art, 'losses', str_glue('config-{i}_loss-valid.rds')),
+      path_loss_train = file.path(dir_art, 'losses', str_glue('config-{i}_loss-train.rds')),
+      path_quantile_resid_valid = file.path(dir_art, 'losses', str_glue('config-{i}_quantile-resid-valid.rds')),
+      path_pairwise_dist_norm = file.path(dir_art, 'losses', str_glue('config-{i}_pairwise-dist-norm.rds')),
+      path_concordances = file.path(dir_art, 'losses', str_glue('config-{i}_concordances.rds'))
     )
     write_yaml(config, path)
     i <- i + 1  
@@ -566,7 +583,7 @@ for (i in 1:n_configs) {
   message(str_glue("========== CONFIG {i} of {n_configs} =========="))
   
   ## Load config
-  path <- file.path(dir_sim, 'configs', str_glue('config-{i}.yml'))
+  path <- file.path(dir_art, 'configs', str_glue('config-{i}.yml'))
   config <- read_yaml(path)
   
   ## Load data
@@ -607,7 +624,7 @@ for (i in 1:n_configs) {
     y_list = y_list,
     fit_pipeline = fit_pipeline,
     K_from = 1,
-    K_to = 20,
+    K_to = 15,
     K_by = 1,
     stage_from = 1,
     V = 5,
@@ -651,7 +668,7 @@ for (i in 1:n_configs) {
 ## skipped (no file written), and plot_losslessness will fall back to
 ## drawing no annotation box for that config.
 
-K_stars <- c(8)
+K_stars <- c(13)
 for (i in 1:n_configs) {
   message(str_glue("========== Concordance for CONFIG {i} of {n_configs} =========="))
 
@@ -663,7 +680,7 @@ for (i in 1:n_configs) {
   }
 
   ## Load config + data
-  path_config <- file.path(dir_sim, 'configs', str_glue('config-{i}.yml'))
+  path_config <- file.path(dir_art, 'configs', str_glue('config-{i}.yml'))
   config      <- read_yaml(path_config)
   y_list      <- readRDS(datasets[[config$dataset]]$path)
 
@@ -732,8 +749,8 @@ for (i in 1:n_configs) {
 set.seed(12345)
 for (i in 1:n_configs) {
   print(i)
-  path_config <- file.path(dir_sim, 'configs', str_glue('config-{i}.yml'))
-  path_plot <- file.path(dir_sim, 'plots', str_glue('config-{i}.png'))
+  path_config <- file.path(dir_art, 'configs', str_glue('config-{i}.yml'))
+  path_plot <- file.path(dir_art, 'plots', str_glue('config-{i}.png'))
   
   ## Extract losses
   config <- read_yaml(path_config)
@@ -751,7 +768,7 @@ for (i in 1:n_configs) {
   plot_losslessness(
     loss_valid, NULL,
     jitter_width = 0.2,
-    epsilon = c(1.43),
+    epsilon = c(1.5),
     alpha = 0.05,
     plot_mean = FALSE,
     # ylim = c(0, 15), #c(0, 20),
@@ -771,7 +788,7 @@ for (i in 1:n_configs) {
 
 
 ##### Concordance Computation for Jeff #####
-# path <- file.path(dir_sim, 'losses', str_glue('config-1_concordances.rds'))
+# path <- file.path(dir_art, 'losses', str_glue('config-1_concordances.rds'))
 # concordances <- readRDS(path)
 
 # mean(concordances > 0.99)
