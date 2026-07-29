@@ -124,6 +124,44 @@ inv_lqd <- function(G, p_grid, p_star, Q_star) {
   Q
 }
 
+## Unweighted J x K Jacobian block of inv_lqd(G_hat + E %*% dc) w.r.t. dc,
+## evaluated at G_hat -- i.e. d(Q_hat)/dc before any anchor column, sqrt_w
+## weighting, or lambda penalty rows are applied. Shared by qg_pca's jac_fun
+## (evaluated at the current nls.lm iterate) and order_quantlets_by_importance
+## (evaluated once at G_hat = G_center, i.e. c = 0).
+lqd_jacobian_core <- function(G_hat, E, p_grid, p_star_idx) {
+  J <- nrow(E)
+  dQ <- exp(G_hat)
+  F  <- dQ * E
+  dp <- diff(p_grid)
+
+  trap <- 0.5 * (F[-1, , drop = FALSE] +
+                   F[-J, , drop = FALSE]) * dp
+
+  J_core <- matrix(0, nrow = J, ncol = ncol(E))
+
+  ## Forward
+  if (p_star_idx < J) {
+    cs_fwd <- apply(
+      trap[p_star_idx:(J - 1), , drop = FALSE],
+      2, cumsum
+    )
+    J_core[(p_star_idx + 1):J, ] <- -cs_fwd
+  }
+
+  ## Backward
+  if (p_star_idx > 1) {
+    idx <- 1:(p_star_idx - 1)
+    cs_bwd <- apply(
+      trap[idx, , drop = FALSE][length(idx):1, , drop = FALSE],
+      2, cumsum
+    )
+    J_core[idx, ] <- cs_bwd[length(idx):1, , drop = FALSE]
+  }
+
+  J_core
+}
+
 qg_pca <- function(
     Q_obs, E, G_center, p_grid, p_star, 
     Q_star = NULL,
@@ -187,34 +225,10 @@ qg_pca <- function(
     }
     
     G_hat <- G_center + as.vector(E %*% c)
-    dQ <- exp(G_hat)
-    F  <- dQ * E
-    dp <- diff(p_grid)
-    
-    trap <- 0.5 * (F[-1, , drop = FALSE] +
-                     F[-J, , drop = FALSE]) * dp
-    
+
     J_mat <- matrix(0, nrow = J, ncol = Pdim)
-    
-    ## Forward
-    if (p_star_idx < J) {
-      cs_fwd <- apply(
-        trap[p_star_idx:(J - 1), , drop = FALSE],
-        2, cumsum
-      )
-      J_mat[(p_star_idx + 1):J, 1:K] <- -cs_fwd
-    }
-    
-    ## Backward
-    if (p_star_idx > 1) {
-      idx <- 1:(p_star_idx - 1)
-      cs_bwd <- apply(
-        trap[idx, , drop = FALSE][length(idx):1, , drop = FALSE],
-        2, cumsum
-      )
-      J_mat[idx, 1:K] <- cs_bwd[length(idx):1, , drop = FALSE]
-    }
-    
+    J_mat[, 1:K] <- lqd_jacobian_core(G_hat, E, p_grid, p_star_idx)
+
     if (is.null(Q_star)) {
       J_mat[, K + 1] <- -1
     }
@@ -254,6 +268,114 @@ qg_pca <- function(
   )
 }
 
+## Orders the K_max = ncol(E) columns of E by their (linearized) contribution
+## to the mean penalized training objective that qg_pca minimizes, instead of
+## trusting E's default variance-ranked column order. See conversation/plan
+## history for the full derivation; short version:
+##
+## qg_pca fits, per subject, c = argmin_c ||sqrt_w*(Q_obs - Phi(c))||^2 + lambda*||c||^2
+## where Phi(c) = inv_lqd(G_center + E %*% c). Linearizing Phi at c = 0 gives
+## Phi(c) ~= Phi(0) + J*c, where J = d(Phi)/dc at c = 0 is population-level
+## (G_hat(c=0) = G_center for every subject, not subject-specific) -- it is
+## exactly lqd_jacobian_core(G_center, E, p_grid, p_star_idx), weighted by
+## sqrt_w. This turns "rank columns by mean penalized loss reduction" into a
+## shared-design ridge regression: min_c ||r_i - J*c||^2 + lambda*||c||^2 for
+## per-subject residual r_i = sqrt_w*(Q_i - Phi(0)), same J for every subject.
+##
+## Greedy forward selection then uses the exact (for this linearized
+## surrogate) reduction-in-objective identity for an active column set A:
+##   reduction(A) = sum_i r_i' J_A (J_A'J_A + Lambda_A)^-1 J_A' r_i
+##                = sum(B_A * solve(Gram_AA + Lambda_A, B_A))
+## with Gram = J'J and B = J'R precomputed once (R = the stacked r_i's).
+## Lambda_A is lambda on quantlet columns, 0 on the anchor column (see below).
+## At each step we evaluate reduction(A u {k}) for each remaining candidate k
+## and take the argmax -- no baseline subtraction needed, since reduction(A)
+## is a common additive constant across candidates at a given step.
+##
+## If Q_star is NULL (qg_pca fits it per-subject as an extra unpenalized
+## parameter), an extra unpenalized anchor column (constant -sqrt_w) is
+## force-included in every active set, mirroring qg_pca's own jac_fun. Since
+## Phi(c=0, Q_star=v) is an *exact* additive shift in v (not just first
+## order), the resulting order is invariant to which reference value is used
+## for the anchor.
+order_quantlets_by_importance <- function(
+    Q_list, E, G_center, p_grid, p_star,
+    Q_star = NULL, sqrt_w = NULL, lambda = 0
+) {
+  stopifnot(!is.null(sqrt_w))
+
+  K_max <- ncol(E)
+  p_star_idx <- which.min(abs(p_grid - p_star))
+
+  ## 1. Shared linear design at c = 0
+  J_core <- lqd_jacobian_core(G_center, E, p_grid, p_star_idx)
+  J_core <- J_core * sqrt_w  ## row-recycle, equivalent to diag(sqrt_w) %*% J_core
+
+  anchor <- is.null(Q_star)
+  if (anchor) {
+    J_design <- cbind(J_core, -sqrt_w)
+    anchor_idx <- K_max + 1
+  } else {
+    J_design <- J_core
+    anchor_idx <- NULL
+  }
+
+  ## 2. Stacked per-subject residuals at the c = 0 baseline
+  Q_star_val <- Q_star %||% 0
+  Q_hat_0 <- inv_lqd(G_center, p_grid, p_star, Q_star_val)
+  Q_mat <- do.call(rbind, Q_list)
+  R <- sweep(Q_mat, 2, Q_hat_0, "-")
+  R <- sweep(R, 2, sqrt_w, "*")
+  R <- t(R)  ## J x N
+
+  ## 3. Precompute once
+  Gram <- t(J_design) %*% J_design
+  B <- t(J_design) %*% R
+
+  ## 4. Penalty vector: lambda on quantlet columns, 0 on the anchor
+  lambda_vec <- rep(lambda, K_max)
+  if (anchor) lambda_vec <- c(lambda_vec, 0)
+
+  ## 5. Greedy forward selection via closed-form ridge solves
+  active <- if (anchor) anchor_idx else integer(0)
+  candidates <- 1:K_max
+  order_idx <- integer(K_max)
+  reduction <- numeric(K_max)
+
+  for (m in 1:K_max) {
+    best_k <- NA_integer_
+    best_val <- -Inf
+    for (k in candidates) {
+      trial <- c(active, k)
+      Lambda <- matrix(0, length(trial), length(trial))
+      diag(Lambda) <- lambda_vec[trial]
+      Gaa <- Gram[trial, trial, drop = FALSE] + Lambda
+      Ba <- B[trial, , drop = FALSE]
+      val <- tryCatch(
+        sum(Ba * solve(Gaa, Ba)),
+        error = function(e) {
+          stop(
+            "order_quantlets_by_importance: singular system at active set ",
+            "size ", length(trial), ": ", conditionMessage(e)
+          )
+        }
+      )
+      if (val > best_val) {
+        best_val <- val
+        best_k <- k
+      }
+    }
+    order_idx[m] <- best_k
+    reduction[m] <- best_val
+    active <- c(active, best_k)
+    candidates <- setdiff(candidates, best_k)
+  }
+
+  stopifnot(setequal(order_idx, 1:K_max))
+
+  list(order_idx = order_idx, reduction = reduction)
+}
+
 q_pca <- function(Q_obs, E, Q_center, sqrt_w) {
   Q_centered <- (Q_obs - Q_center) * sqrt_w
   c_i <- drop(t(E*sqrt_w) %*% Q_centered)
@@ -275,33 +397,60 @@ choose_near_lossless_K_qg_pca <- function(
     sqrt_w = NULL,
     supp_Y = NULL,
     lambda = 0,
+    order_by = "variance",
     seed = 12345
 ) {
 
   ## Set parameters
   N <- length(G_list)
-  
+
   ## Assign folds
   set.seed(seed)
   folds <- sample(rep(1:V, length.out = N))
-  
+
+  ## When order_by == "importance", precompute the full K_max basis and its
+  ## importance order ONCE per fold (using idx_train only, keeping CV honest
+  ## and mirroring how E itself is already train-fold-only), instead of
+  ## recomputing compute_quantlets from scratch at every (K, fold) pair.
+  fold_basis <- NULL
+  if (order_by == "importance") {
+    fold_basis <- vector("list", V)
+    for (v in 1:V) {
+      idx_train <- which(folds != v)
+      out <- compute_quantlets(G_list[idx_train], K_max, sqrt_w)
+      ord <- order_quantlets_by_importance(
+        Q_list = Q_list[idx_train], E = out$E, G_center = out$G_center,
+        p_grid = p_grid, p_star = p_star, Q_star = Q_star,
+        sqrt_w = sqrt_w, lambda = lambda
+      )
+      fold_basis[[v]] <- list(
+        E_full = out$E, G_center = out$G_center, order_idx = ord$order_idx
+      )
+    }
+  }
+
   K <- 1
   while (K <= K_max) {
     message(str_glue("---------- K = {K} ----------"))
-    
+
     losses <- vector(mode = "numeric", length = N)
     converged <- vector(length = N)
     for (v in 1:V) {
-      
+
       ## Get train/valid indices
       idx_train <- which(folds != v)
       idx_valid <- which(folds == v)
-      
+
       ## Compute quantlets E from training data
-      out <- compute_quantlets(G_list[idx_train], K, sqrt_w)
-      E <- out$E
-      G_center <- out$G_center
-      
+      if (order_by == "importance") {
+        E <- fold_basis[[v]]$E_full[, fold_basis[[v]]$order_idx[1:K], drop = FALSE]
+        G_center <- fold_basis[[v]]$G_center
+      } else {
+        out <- compute_quantlets(G_list[idx_train], K, sqrt_w)
+        E <- out$E
+        G_center <- out$G_center
+      }
+
       for (i in idx_valid) {
         
         ## Compute c
@@ -1205,18 +1354,34 @@ fit_fun_qg_pca <- function(context, state, ...) {
       sqrt_w = sqrt_w,
       supp_Y = supp_Y,
       lambda = state$lambda,
+      order_by = state$order_by,
       seed = state$seed
     )
     state$K <- out$K
     state$idx_outliers <- out$idx_outliers
   }
 
-  ## Compute E (weighted PCs of G)
-  out <- compute_quantlets(G_list, state$K, sqrt_w)
-
-  state$G_center <- out$G_center
-  state$E <- out$E
-  state$sd_k <- out$sd_k
+  ## Compute E (weighted PCs of G), optionally reordered by importance
+  if (state$order_by == "importance") {
+    ## Permissive w.r.t. a caller-supplied K > K_max, matching today's
+    ## behavior when state$K is passed in directly (bypassing K-selection).
+    K_max_eff <- max(state$K, state$K_max)
+    out <- compute_quantlets(G_list, K_max_eff, sqrt_w)
+    ord <- order_quantlets_by_importance(
+      Q_list = Q_list, E = out$E, G_center = out$G_center,
+      p_grid = p_grid, p_star = p_star, Q_star = Q_star,
+      sqrt_w = sqrt_w, lambda = state$lambda
+    )
+    state$order_idx <- ord$order_idx
+    state$G_center <- out$G_center
+    state$E <- out$E[, ord$order_idx[1:state$K], drop = FALSE]
+    state$sd_k <- out$sd_k[ord$order_idx[1:state$K]]
+  } else {
+    out <- compute_quantlets(G_list, state$K, sqrt_w)
+    state$G_center <- out$G_center
+    state$E <- out$E
+    state$sd_k <- out$sd_k
+  }
   state
 }
 
@@ -1273,10 +1438,12 @@ stage_qg_pca <- function(
     alpha = 0.05,
     V = 5,
     lambda = 0,
+    order_by = c("variance", "importance"),
     min_dQ = 1e-8,
     loss = "wasserstein",
     seed = gen_seed()
 ) {
+  order_by <- match.arg(order_by)
   new_stage(
     name = "qg_pca",
     input_space = "G",
@@ -1289,6 +1456,7 @@ stage_qg_pca <- function(
       alpha = alpha,
       V = V,
       lambda = lambda,
+      order_by = order_by,
       min_dQ = min_dQ,
       loss = loss,
       seed = seed
@@ -1334,14 +1502,17 @@ stage_wame <- function(
     alpha = 0.05,
     V = 5,
     lambda = 0,
+    order_by = c("variance", "importance"),
     loss = "wasserstein",
     seed = gen_seed()
 ) {
+  order_by <- match.arg(order_by)
   child_lqd    <- stage_lqd(min_dQ = min_dQ)
   child_qg_pca <- stage_qg_pca(
     K = K, K_max = K_max,
     epsilon = epsilon, alpha = alpha, V = V,
     lambda = lambda,
+    order_by = order_by,
     min_dQ = min_dQ,
     loss = loss,
     seed = seed
