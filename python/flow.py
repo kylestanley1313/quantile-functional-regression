@@ -111,7 +111,7 @@ def train_flow(C, n_layers, max_epochs=200, lr=1e-3, seed=12345, print_epoch=Non
         #     # get s-net weights
         #     for p in layer.s_net.parameters():
         #         reg = reg + p.pow(2).sum()
-        # loss = -log_prob.mean() + 1e-2 * reg
+        # loss = -log_prob.mean() + 1e-1 * reg
 
         loss = -log_prob.mean()
         loss.backward()

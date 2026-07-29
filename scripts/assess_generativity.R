@@ -10,24 +10,29 @@ source('src/utils.R')
 
 ## ==================== Fit Pipelines ==================== ##
 
+## Quantlet ordering for the WAME/QG-PCA stage: "variance" (default, PCA
+## explained-variance order) or "importance" (linearized loss-reduction
+## order -- see stage_wame()'s order_by argument in src/cot.R).
+order_by <- "importance"
+
 ## Candidate lambdas
 # lambdas    <- c(0, 0.001,  0.01, 0.1, 1, 10)
 lambdas <- c(
-  # 0,
-  # sqrt(10)^-6,
+  0,
+  sqrt(10)^-6,
   sqrt(10)^-5,
-  # sqrt(10)^-4,
+  sqrt(10)^-4,
   sqrt(10)^-3,
-  # sqrt(10)^-2,
+  sqrt(10)^-2,
   sqrt(10)^-1,
-  # sqrt(10)^0,
-  sqrt(10)^1
-  # sqrt(10)^2
+  sqrt(10)^0,
+  sqrt(10)^1,
+  sqrt(10)^2
 )
 
 ## Load data
 path <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
-dir_art <- file.path('artifacts', 'demo_nhanes_v4', 'generativity')
+dir_art <- file.path('artifacts', 'demo_nhanes_v5', 'generativity')
 y_list <- readRDS(path)
 # y_list <- y_list[1:1000]
 N <- length(y_list)
@@ -52,17 +57,18 @@ for (lambda in lambdas) {
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
       stage_wame(
-        K_max = 30,
-        epsilon = 1.86,
+        K_max = 20,
+        epsilon = 1.45,
         alpha = 0.05,
         V = 5,
-        lambda = lambda
+        lambda = lambda,
+        order_by = order_by
       ),
       stage_flow(
         n_layers = 16,
         max_epochs = 1000,
         lr = 1e-3,
-        path = file.path(dir_art, str_glue('flow_lambda-{lambda}.pth'))
+        path = file.path(dir_art, str_glue('flow_lambda-{lambda}_order-{order_by}.pth'))
       )
     ),
     supp_Y = c(0, seq(0.006, 500, by = 0.001)),
@@ -74,7 +80,7 @@ for (lambda in lambdas) {
 
   ## Fitting
   pipeline <- fit(pipeline, y_list)
-  path <- file.path(dir_art, str_glue('pipe_lambda-{lambda}.rds'))
+  path <- file.path(dir_art, str_glue('pipe_lambda-{lambda}_order-{order_by}.rds'))
   saveRDS(pipeline, path)
 
 }
@@ -120,7 +126,7 @@ gen_list <- list()
 for (lambda in lambdas) {
   print(str_glue("lambda = {lambda}"))
 
-  path_pipe <- file.path(dir_art, str_glue('pipe_lambda-{lambda}.rds'))
+  path_pipe <- file.path(dir_art, str_glue('pipe_lambda-{lambda}_order-{order_by}.rds'))
   pipeline <- readRDS(path_pipe)
 
   start <- Sys.time()
@@ -137,23 +143,6 @@ for (lambda in lambdas) {
   print(Sys.time() - start)
 }
 
-
-###################
-tmp <- readRDS("artifacts/demo_nhanes_v4/generativity/gen_res_old.rds")
-tmp2 <- vector('list', 10)
-tmp2[[1]] <- tmp[[1]]
-tmp2[[2]] <- tmp[[2]]
-tmp2[[3]] <- gen_list[[1]]
-tmp2[[4]] <- tmp[[3]]
-tmp2[[5]] <- gen_list[[2]]
-tmp2[[6]] <- tmp[[4]]
-tmp2[[7]] <- gen_list[[3]]
-tmp2[[8]] <- tmp[[5]]
-tmp2[[9]] <- gen_list[[4]]
-tmp2[[10]] <- tmp[[6]]
-names(tmp2) <- as.character(lambdas)
-gen_list_old <- gen_list
-###################
 
 path_gen <- file.path(dir_art, 'gen_res.rds')
 saveRDS(gen_list, path_gen)
@@ -176,7 +165,7 @@ lambdas <- c(
   sqrt(10)^2
 )
 Ks <- sapply(lambdas, function(lambda) {
-  pipe <- readRDS(file.path(dir_art, str_glue('pipe_lambda-{lambda}.rds')))
+  pipe <- readRDS(file.path(dir_art, str_glue('pipe_lambda-{lambda}_order-{order_by}.rds')))
   pipe$stages[[3]]$state$child_qg_pca$state$K
 })
 gen_res <- readRDS(path_gen)

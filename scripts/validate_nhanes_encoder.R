@@ -7,8 +7,8 @@ source('src/utils.R')
 
 
 ## Globals
-dir_art <- 'demo_nhanes_v4'
-epsilon <- 1.86  ## TODO: Change this!!!
+dir_art <- 'demo_nhanes_v5'
+epsilon <- 1.45  ## TODO: Change this!!!
 
 ## Canonical pipeline (the one demo_nhanes.R chose). K_star follows.
 path_pipe_star <- file.path('artifacts', dir_art, 'pipe_nhanes.rds')
@@ -68,7 +68,7 @@ plot_losslessness_groups(
 ## ---------- Embedding plots at K_star ---------- ##
 
 k_start   <- 1
-k_stop    <- 3
+k_stop    <- 5
 col_train <- rgb(0, 0, 0, alpha = 0.25)
 col_flag <- rgb(1, 0, 0)
 

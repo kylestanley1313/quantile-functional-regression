@@ -258,11 +258,11 @@ plot_losslessness <- function(
 ## Stage-list builders. Only the LAST stage in each list depends on K --
 ## compute_cv_losses() relies on this to split off a K-independent "prefix"
 ## it can fit once per CV fold and reuse across the whole K sweep.
-stages_qg_pca <- function(K, p_grid = NULL, lambda = NULL, loss = 'wasserstein') {
+stages_qg_pca <- function(K, p_grid = NULL, lambda = NULL, order_by = 'variance', loss = 'wasserstein') {
   list(
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid),
-    stage_wame(K = K, lambda = lambda, loss = loss)
+    stage_wame(K = K, lambda = lambda, order_by = order_by, loss = loss)
   )
 }
 
@@ -293,11 +293,12 @@ fit_pipeline_qg_pca <- function(
     y_min = NULL,
     loss = 'wasserstein',
     seed = 12345,
-    lambda = NULL
+    lambda = NULL,
+    order_by = 'variance'
 ) {
 
   pipeline <- construct_pipeline(
-    stages = stages_qg_pca(K, p_grid = p_grid, lambda = lambda, loss = loss),
+    stages = stages_qg_pca(K, p_grid = p_grid, lambda = lambda, order_by = order_by, loss = loss),
     supp_Y = supp_Y,
     p_star = p_star,
     y_star = y_star,
@@ -363,14 +364,14 @@ fit_pipeline_g_pca <- function(
 
 ## ----- Globals 
 
-dir_art <- file.path('artifacts', 'demo_nhanes_v4', 'losslessness')
+dir_art <- file.path('artifacts', 'demo_nhanes_v5', 'losslessness')
 
 
 ## ----- Create YAML configs
 
 ## Dataset specs
 datasets <- list(
-  nhanes_v3 = list(
+  nhanes = list(
     path = file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'),
     p_grid = p_grid_fun(
       breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
@@ -380,7 +381,8 @@ datasets <- list(
     y_star = 0,
     y_min = 0,
     pairwise_samp_rate = 0.05,
-    lambda = sqrt(10)^-1
+    lambda = 0, # sqrt(10)^-1,
+    order_by = 'importance'
   )
 )
 
@@ -429,12 +431,14 @@ for (i in 1:n_configs) {
       y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min,
       lambda = datasets[[config$dataset]]$lambda,
+      order_by = datasets[[config$dataset]]$order_by %||% 'variance',
       loss = 'wasserstein'
     )
     stages_fun <- partial(
       stages_qg_pca,
       p_grid = datasets[[config$dataset]]$p_grid,
       lambda = datasets[[config$dataset]]$lambda,
+      order_by = datasets[[config$dataset]]$order_by %||% 'variance',
       loss = 'wasserstein'
     )
   } else if (config$model_type == 'q_pca') {
@@ -515,7 +519,7 @@ for (i in 1:n_configs) {
 ## skipped (no file written), and plot_losslessness will fall back to
 ## drawing no annotation box for that config.
 
-K_stars <- c(10)
+K_stars <- c(5)
 for (i in 1:n_configs) {
   message(str_glue("========== Concordance for CONFIG {i} of {n_configs} =========="))
 
@@ -540,6 +544,7 @@ for (i in 1:n_configs) {
       y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min,
       lambda = datasets[[config$dataset]]$lambda,
+      order_by = datasets[[config$dataset]]$order_by %||% 'variance',
       loss = 'wasserstein'
     )
   } else if (config$model_type == 'q_pca') {
@@ -612,7 +617,7 @@ for (i in 1:n_configs) {
   plot_losslessness(
     loss_valid, NULL,
     jitter_width = 0.2,
-    epsilon = c(1.86),
+    epsilon = c(1.45),
     alpha = 0.05,
     plot_mean = FALSE,
     # ylim = c(0, 15), #c(0, 20),
