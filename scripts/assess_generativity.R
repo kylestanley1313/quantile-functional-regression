@@ -13,20 +13,21 @@ source('src/utils.R')
 ## Candidate lambdas
 # lambdas    <- c(0, 0.001,  0.01, 0.1, 1, 10)
 lambdas <- c(
-  0,
-  sqrt(10)^-6,
+  # 0,
+  # sqrt(10)^-6,
   sqrt(10)^-5,
-  sqrt(10)^-4,
+  # sqrt(10)^-4,
   sqrt(10)^-3,
-  sqrt(10)^-2,
+  # sqrt(10)^-2,
   sqrt(10)^-1,
-  sqrt(10)^0,
-  sqrt(10)^1,
-  sqrt(10)^2
+  # sqrt(10)^0,
+  sqrt(10)^1
+  # sqrt(10)^2
 )
 
 ## Load data
-path <- file.path('data', 'processed', 'nhanes_cdc_v2.rds')
+path <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
+dir_art <- file.path('artifacts', 'demo_nhanes_v4', 'generativity')
 y_list <- readRDS(path)
 # y_list <- y_list[1:1000]
 N <- length(y_list)
@@ -39,7 +40,7 @@ path_plot_tmp = "scratch/plots/tmp_plot.png"
 
 ## Define grid
 p_grid <- p_grid_fun(
-  breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
+  breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
   interval_counts = c(51, 50)
 )
 
@@ -51,8 +52,8 @@ for (lambda in lambdas) {
       stage_eqf_sgrid(),
       stage_eqf_cgrid(p_grid = p_grid),
       stage_wame(
-        K_max = 20,
-        epsilon = 1.43,
+        K_max = 30,
+        epsilon = 1.86,
         alpha = 0.05,
         V = 5,
         lambda = lambda
@@ -61,7 +62,7 @@ for (lambda in lambdas) {
         n_layers = 16,
         max_epochs = 1000,
         lr = 1e-3,
-        path = str_glue('artifacts/demo_nhanes_v2/generativity/flow_lambda-{lambda}.pth')
+        path = file.path(dir_art, str_glue('flow_lambda-{lambda}.pth'))
       )
     ),
     supp_Y = c(0, seq(0.006, 500, by = 0.001)),
@@ -73,7 +74,7 @@ for (lambda in lambdas) {
 
   ## Fitting
   pipeline <- fit(pipeline, y_list)
-  path <- file.path('artifacts', 'demo_nhanes_v2', 'generativity', str_glue('pipe_lambda-{lambda}.rds'))
+  path <- file.path(dir_art, str_glue('pipe_lambda-{lambda}.rds'))
   saveRDS(pipeline, path)
 
 }
@@ -106,13 +107,12 @@ lambdas <- c(
   sqrt(10)^1,
   sqrt(10)^2
 )
-lambda_star <- 0.1   # tuned lambda for the vertical reference line
 S          <- 5
 R          <- 20
 n_cores <- min(4, R)
 
 ## Load data
-path_y <- file.path('data', 'processed', 'nhanes_cdc_v2.rds')
+path_y <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
 y_list <- readRDS(path_y)
 
 ## Compute split-normalized generativity per lambda
@@ -120,10 +120,7 @@ gen_list <- list()
 for (lambda in lambdas) {
   print(str_glue("lambda = {lambda}"))
 
-  path_pipe <- file.path(
-    'artifacts', 'demo_nhanes_v2', 'generativity',
-    str_glue('pipe_lambda-{lambda}.rds')
-  )
+  path_pipe <- file.path(dir_art, str_glue('pipe_lambda-{lambda}.rds'))
   pipeline <- readRDS(path_pipe)
 
   start <- Sys.time()
@@ -140,13 +137,32 @@ for (lambda in lambdas) {
   print(Sys.time() - start)
 }
 
-path_gen <- file.path('artifacts', 'demo_nhanes_v2', 'generativity', 'gen_res.rds')
+
+###################
+tmp <- readRDS("artifacts/demo_nhanes_v4/generativity/gen_res_old.rds")
+tmp2 <- vector('list', 10)
+tmp2[[1]] <- tmp[[1]]
+tmp2[[2]] <- tmp[[2]]
+tmp2[[3]] <- gen_list[[1]]
+tmp2[[4]] <- tmp[[3]]
+tmp2[[5]] <- gen_list[[2]]
+tmp2[[6]] <- tmp[[4]]
+tmp2[[7]] <- gen_list[[3]]
+tmp2[[8]] <- tmp[[5]]
+tmp2[[9]] <- gen_list[[4]]
+tmp2[[10]] <- tmp[[6]]
+names(tmp2) <- as.character(lambdas)
+gen_list_old <- gen_list
+###################
+
+path_gen <- file.path(dir_art, 'gen_res.rds')
 saveRDS(gen_list, path_gen)
 
 
 ## ---------- Plot Generativity and K against Lambda
 
 # lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+lambda_star <- 0.1   # tuned lambda for the vertical reference line
 lambdas <- c(
   0,
   sqrt(10)^-6,
@@ -160,10 +176,7 @@ lambdas <- c(
   sqrt(10)^2
 )
 Ks <- sapply(lambdas, function(lambda) {
-  pipe <- readRDS(file.path(
-    'artifacts', 'demo_nhanes_v2', 'generativity',
-    str_glue('pipe_lambda-{lambda}.rds')
-  ))
+  pipe <- readRDS(file.path(dir_art, str_glue('pipe_lambda-{lambda}.rds')))
   pipe$stages[[3]]$state$child_qg_pca$state$K
 })
 gen_res <- readRDS(path_gen)
@@ -175,9 +188,7 @@ scores_by_lambda <- lapply(lambdas, function(lambda) {
 
 ## Trim lambda = 0 (often pathological) -- mirrors prior behavior.
 plot_idx   <- seq(1, length(lambdas))
-path_plot <- file.path(
-  'artifacts', 'demo_nhanes_v2', 'generativity', 'gen_score_vs_lambda.png'
-)
+path_plot <- file.path(dir_art, 'gen_score_vs_lambda.png')
 plot_generativity_boxes(
   groups      = as.character(lambdas[plot_idx]),
   scores      = scores_by_lambda[plot_idx],

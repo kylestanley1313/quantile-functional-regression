@@ -7,18 +7,17 @@ source('src/utils.R')
 
 
 ## Globals
-art_dir_nhanes <- 'demo_nhanes_v2'
-art_dir <- 'validate_nhanes_v2'
-epsilon <- 1.5  ## TODO: Change this!!!
+dir_art <- 'demo_nhanes_v4'
+epsilon <- 1.86  ## TODO: Change this!!!
 
 ## Canonical pipeline (the one demo_nhanes.R chose). K_star follows.
-path_pipe_star <- file.path('artifacts', art_dir_nhanes, 'pipe_nhanes.rds')
+path_pipe_star <- file.path('artifacts', dir_art, 'pipe_nhanes.rds')
 pipeline_star  <- readRDS(path_pipe_star)
 K_star         <- pipeline_star$stages[[3]]$state$child_qg_pca$state$K
 
 ## Load datasets used by every section below.
-y_nhanes <- readRDS(file.path('data', 'processed', 'nhanes_cdc_v2.rds'))
-y_chop   <- readRDS(file.path('data', 'processed', 'chop-mims_v6.rds'))
+y_nhanes <- readRDS(file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'))
+y_chop   <- readRDS(file.path('data', 'processed', 'chop-mims_v7.rds'))
 
 
 
@@ -56,7 +55,7 @@ plot_losslessness_groups(
   jitter_width = 0.1,
   ylab         = "Wasserstein Error",
   main         = str_glue("Reconstruction Error (K = {K_star})"),
-  path         = file.path('artifacts', art_dir,
+  path         = file.path('artifacts', dir_art, 'validation',
                            str_glue('chop-losses_K-{K_star}.png'))
 )
 
@@ -84,7 +83,7 @@ c_chop <- do.call(rbind,
 z_chop <- do.call(rbind,
   encode(pipeline_star, y_ctx_chop, from = 0, to = 4)$payload)
 
-png(file.path('artifacts', art_dir, str_glue('chop-z_K-{K_star}.png')),
+png(file.path('artifacts', dir_art, 'validation', str_glue('chop-z_K-{K_star}.png')),
     width = 960, height = 960, pointsize = 18)
 plot_embeddings(
   z_chop[, k_start:k_stop],
@@ -93,7 +92,7 @@ plot_embeddings(
 )
 dev.off()
 
-png(file.path('artifacts', art_dir, str_glue('chop-c_K-{K_star}.png')),
+png(file.path('artifacts', dir_art, 'validation', str_glue('chop-c_K-{K_star}.png')),
     width = 960, height = 960, pointsize = 18)
 plot_embeddings(
   c_chop[, k_start:k_stop],
@@ -134,7 +133,7 @@ gen_chop <- evaluate_pipeline_generativity(
 )
 saveRDS(
   list(nhanes = gen_nhanes, chop = gen_chop),
-  file.path('artifacts', art_dir,
+  file.path('artifacts', dir_art, 'validation',
             str_glue('gen_nhanes_vs_chop_K-{K_star}.rds'))
 )
 
@@ -149,7 +148,7 @@ plot_generativity_boxes(
   hline       = 0,
   ylab        = "log normalized generativity",
   main        = str_glue("Generativity (K = {K_star})"),
-  path        = file.path('artifacts', art_dir,
+  path        = file.path('artifacts', dir_art, 'validation',
                           str_glue('chop-gen_K-{K_star}.png'))
 )
 
@@ -180,6 +179,12 @@ for (label in c("nhanes", "chop")) {
   idx_val <- perm[(n_train + 1):N_d]
 
   fit      <- fit_mean_cov(encode_y_to_z(pipeline_star, y_data[idx_tr]), ridge = 0)
+  ############
+  # Z <- encode_y_to_z(pipeline_star, y_chop[idx_tr])
+  # z_norms <- apply(Z, MARGIN = 1, function(z) sqrt(sum(z^2)))
+  # mask <- z_norms < 15
+  # fit <- fit_mean_cov(Z[mask,], ridge = 0)
+  ############
   z_draws  <- draw_mean_cov(length(idx_val), fit)
   Qi_draws <- decode_z_to_Qi(pipeline_star, z_draws, Ji = Ji)
 
@@ -228,7 +233,7 @@ for (label in names(plot_data)) {
     type  = c(1, 1),
     label = c('real (val)', 'synth')
   )
-  png(file.path('artifacts', art_dir,
+  png(file.path('artifacts', dir_art, 'validation',
                 str_glue('synth_qi_{label}_K-{K_star}.png')),
       width = 960, height = 960, pointsize = 18)
   plot_funs(
@@ -244,6 +249,12 @@ for (label in names(plot_data)) {
   dev.off()
 }
 
+
+##########################
+# Z <- encode_y_to_z(pipeline_star, y_chop[idx_tr])
+# z_norms <- apply(Z, MARGIN = 1, function(z) sqrt(sum(z^2)))
+# hist(z_norms)
+##########################
 
 
 ##### Concordance Computation for Jeff #####

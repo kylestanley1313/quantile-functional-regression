@@ -346,7 +346,7 @@ choose_near_lossless_K_qg_pca <- function(
       "converged = {sum(converged)} of {N}\n",
       "mean loss = {mean(losses)}\n",
       "max loss  = {max(losses)}\n",
-      "alpha loss = {quantile(losses, c(1-alpha))}\n",
+      "{round(100*(1 - alpha), 1)}% loss = {quantile(losses, c(1-alpha))}\n",
       "prop tol  = {prop_tol}"
     )
     message(msg)
@@ -433,7 +433,7 @@ choose_near_lossless_K_q_pca <- function(
     msg <- glue(
       "mean loss = {mean(losses)}\n",
       "max loss  = {max(losses)}\n",
-      "alpha loss = {quantile(losses, c(1-alpha))}\n",
+      "{round(100*(1 - alpha), 1)}% loss = {quantile(losses, c(1-alpha))}\n",
       "prop tol  = {prop_tol}"
     )
     message(msg)
@@ -520,7 +520,7 @@ choose_near_lossless_K_g_pca <- function(
     msg <- glue(
       "mean loss = {mean(losses)}\n",
       "max loss  = {max(losses)}\n",
-      "alpha loss = {quantile(losses, c(1-alpha))}\n",
+      "{round(100*(1 - alpha), 1)}% loss = {quantile(losses, c(1-alpha))}\n",
       "prop tol  = {prop_tol}"
     )
     message(msg)
@@ -1248,7 +1248,7 @@ encode_fun_qg_pca <- function(context, state) {
     Q_star_list[[i]] <- out$Q_star
   }
   message(str_glue("converged = {sum(converged)} of {N}"))
-  
+
   context$meta$idx_outliers <- state$idx_outliers
   context$payload = list(
     c_list = c_list,
@@ -1368,14 +1368,14 @@ stage_wame <- function(
 fit_fun_flow <- function(context, state, ...) {
   c_list <- context$payload$c_list
   Q_star_list <- context$payload$Q_star_list
-  
+
   ## Get c-embeddings
   c_mat <- do.call(rbind, c_list)
   Q_star <- context$cache$Q_star
   if (is.null(Q_star)) {  ## append Q_star to c-embeddings
     c_mat <- cbind(c_mat, unlist(Q_star_list))
   }
-  
+
   ## Train flow (in Python via reticulate)
   flow <- py_pkg$train_flow(
     C = c_mat,
@@ -1385,7 +1385,7 @@ fit_fun_flow <- function(context, state, ...) {
     print_epoch = 50
   )
   py_pkg$save_flow(flow, state$path)
-  
+
   state
 }
 

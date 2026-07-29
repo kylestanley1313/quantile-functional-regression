@@ -7,119 +7,99 @@ source('src/utils.R')
 
 ## ---------- Utilities ---------- ##
 
+## Computes cross-validated reconstruction losses (validation only) across a
+## grid of K values. `stages_fun(K)` must return a list of unfit stages in
+## which only the LAST stage depends on K (true of stages_qg_pca/_q_pca/
+## _g_pca above) -- everything before it is fit once per CV fold and reused
+## across the whole K sweep, since fold membership doesn't depend on K.
 compute_cv_losses <- function(
     y_list,
-    fit_pipeline,
+    stages_fun,
+    supp_Y = NULL,
+    p_star = 0,
+    y_star = NULL,
+    y_min = NULL,
+    pipeline_seed = 12345,
     K_from = 1,
     K_to = 50,
     K_by = 1,
-    stage_from = 0,
-    stage_to = NULL,
     V = 5,
     seed = gen_seed(),
-    quantile_levels = NULL,
-    compute_train_losses = FALSE,
     verbose = TRUE
 ) {
 
   ## Set parameters
   N <- length(y_list)
   Ks <- seq(K_from, K_to, K_by)
-  valid_losses_by_K <- list()
-  train_losses_by_K <- if (compute_train_losses) list() else NULL
+  n_stages <- length(stages_fun(Ks[1]))
+  loss_fun <- loss_to_fun[[stages_fun(Ks[1])[[n_stages]]$state$loss]]
 
-  ## Initialize per-quantile residual container: q -> K -> length-N vector
-  valid_quantile_resid_by_K <- NULL
-  if (!is.null(quantile_levels)) {
-    valid_quantile_resid_by_K <- vector("list", length(quantile_levels))
-    names(valid_quantile_resid_by_K) <- as.character(quantile_levels)
-    for (q_name in names(valid_quantile_resid_by_K)) {
-      valid_quantile_resid_by_K[[q_name]] <- list()
-    }
-  }
+  valid_losses_by_K <- setNames(
+    replicate(length(Ks), numeric(N), simplify = FALSE),
+    as.character(Ks)
+  )
 
   ## Assign folds
   set.seed(seed)
   folds <- sample(rep(1:V, length.out = N))
 
-  for (K in Ks) {
-    message(str_glue("---------- K = {K} ----------"))
+  for (v in 1:V) {
+    message(str_glue("---------- Fold {v} of {V} ----------"))
 
-    valid_losses <- vector(mode = "numeric", length = N)
-    train_losses <- if (compute_train_losses) matrix(nrow = N, ncol = V) else NULL
-    valid_q_resid <- NULL
-    if (!is.null(quantile_levels)) {
-      valid_q_resid <- matrix(
-        NA_real_, nrow = N, ncol = length(quantile_levels),
-        dimnames = list(NULL, as.character(quantile_levels))
-      )
-    }
-    for (v in 1:V) {
-      
-      ## Get train/valid indices
-      idx_train <- which(folds != v)
-      idx_valid <- which(folds == v)
-      
-      ## Fit pipeline
-      pipeline <- fit_pipeline(y_list[idx_train], K)
-      stage_to <- stage_to %||% pipeline$n_stages
-      loss_fun <- loss_to_fun[[pipeline$stages[[pipeline$n_stages]]$state$loss]]
+    idx_train <- which(folds != v)
+    idx_valid <- which(folds == v)
 
-      ## Fast forward to stage_from data (get data_list)
-      ctx <- new_context(
-        payload = y_list,
-        cache = pipeline$training$cache,
-        meta = list()
-      )
-      if (stage_from > 0) {
-        ctx <- encode(pipeline, ctx, from = 0, to = stage_from)
-      } 
-      data_list <- ctx$payload
-      
-      ## Encode/Decode (get reco_list)
-      ctx <- encode(pipeline, ctx, from = stage_from, to = stage_to)
-      ctx <- decode(pipeline, ctx, from = stage_to, to = stage_from)
-      reco_list <- ctx$payload
-      
-      ## Compute train/valid losses
-      for (i in 1:N) {
-        is_valid <- folds[i] == v
-        if (!is_valid && !compute_train_losses) next
-        dp <- 1 / (length(data_list[[i]]) + 1)
-        loss_i <- loss_fun(data_list[[i]], reco_list[[i]], dp)
-        if (is_valid) {
-          valid_losses[i] <- loss_i
-          if (!is.null(quantile_levels)) {
-            q_data <- quantile(data_list[[i]], probs = quantile_levels, names = FALSE)
-            q_reco <- quantile(reco_list[[i]], probs = quantile_levels, names = FALSE)
-            valid_q_resid[i, ] <- q_data - q_reco
-          }
-        } else {
-          train_losses[i,v] <- loss_i
-        }
-      }
-    }
+    ## Fit the K-independent prefix (all stages but the last) ONCE per fold.
+    prefix_stages <- stages_fun(Ks[1])[1:(n_stages - 1)]
+    prefix <- construct_pipeline(
+      stages = prefix_stages,
+      supp_Y = supp_Y,
+      p_star = p_star,
+      y_star = y_star,
+      y_min = y_min,
+      seed = pipeline_seed
+    )
+    prefix <- fit(prefix, y_list[idx_train])
 
-    valid_losses_by_K[[as.character(K)]] <- valid_losses
-    if (compute_train_losses) {
-      train_losses_by_K[[as.character(K)]] <- train_losses
-    }
+    ## Encode training data through the prefix once; reused to fit the
+    ## K-dependent final stage for every K below.
+    ctx_train <- encode(
+      prefix,
+      new_context(payload = y_list[idx_train], cache = prefix$training$cache),
+      from = 0, to = n_stages - 1
+    )
 
-    if (!is.null(quantile_levels)) {
+    ## Encode validation data through the prefix once: keep the Qi-space
+    ## loss target (right after the first stage) and the prefix output
+    ## (input to the final stage).
+    ctx0_valid <- new_context(payload = y_list[idx_valid], cache = prefix$training$cache)
+    ctx1_valid <- encode(prefix, ctx0_valid, from = 0, to = 1)
+    data_list_valid <- ctx1_valid$payload
+    ctx_valid <- encode(prefix, ctx1_valid, from = 1, to = n_stages - 1)
+
+    for (K in Ks) {
+      message(str_glue("---------- K = {K} ----------"))
       K_name <- as.character(K)
-      for (q_idx in seq_along(quantile_levels)) {
-        q_name <- as.character(quantile_levels[q_idx])
-        valid_quantile_resid_by_K[[q_name]][[K_name]] <- valid_q_resid[, q_idx]
+
+      ## Fit only the K-dependent final stage on the (already-encoded) training data.
+      final_stage <- stages_fun(K)[[n_stages]]
+      final_stage <- fit(final_stage, ctx_train)
+
+      ## Encode/decode only the validation subjects.
+      ctx_v <- encode(final_stage, ctx_valid)
+      ctx_v <- decode(final_stage, ctx_v)
+      ctx_v <- decode(prefix, ctx_v, from = n_stages - 1, to = 1)
+      reco_list_valid <- ctx_v$payload
+
+      for (j in seq_along(idx_valid)) {
+        i <- idx_valid[j]
+        dp <- 1 / (length(data_list_valid[[j]]) + 1)
+        valid_losses_by_K[[K_name]][i] <- loss_fun(data_list_valid[[j]], reco_list_valid[[j]], dp)
       }
     }
-
   }
 
-  list(
-    valid_losses_by_K = valid_losses_by_K,
-    train_losses_by_K = train_losses_by_K,
-    valid_quantile_resid_by_K = valid_quantile_resid_by_K
-  )
+  valid_losses_by_K
 }
 
 
@@ -275,6 +255,35 @@ plot_losslessness <- function(
 ## ---------- Pipeline Fitting Functions ---------- ##
 
 
+## Stage-list builders. Only the LAST stage in each list depends on K --
+## compute_cv_losses() relies on this to split off a K-independent "prefix"
+## it can fit once per CV fold and reuse across the whole K sweep.
+stages_qg_pca <- function(K, p_grid = NULL, lambda = NULL, loss = 'wasserstein') {
+  list(
+    stage_eqf_sgrid(),
+    stage_eqf_cgrid(p_grid = p_grid),
+    stage_wame(K = K, lambda = lambda, loss = loss)
+  )
+}
+
+stages_q_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
+  list(
+    stage_eqf_sgrid(),
+    stage_eqf_cgrid(p_grid = p_grid),
+    stage_q_pca(K = K, loss = loss)
+  )
+}
+
+stages_g_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
+  list(
+    stage_eqf_sgrid(),
+    stage_eqf_cgrid(p_grid = p_grid),
+    stage_lqd(),
+    stage_g_pca(K = K, loss = loss)
+  )
+}
+
+
 fit_pipeline_qg_pca <- function(
     y_list, K,
     p_grid = NULL,
@@ -288,11 +297,7 @@ fit_pipeline_qg_pca <- function(
 ) {
 
   pipeline <- construct_pipeline(
-    stages = list(
-      stage_eqf_sgrid(),
-      stage_eqf_cgrid(p_grid = p_grid),
-      stage_wame(K = K, lambda = lambda, loss = loss)
-    ),
+    stages = stages_qg_pca(K, p_grid = p_grid, lambda = lambda, loss = loss),
     supp_Y = supp_Y,
     p_star = p_star,
     y_star = y_star,
@@ -300,7 +305,7 @@ fit_pipeline_qg_pca <- function(
     seed = seed
   )
   pipeline <- fit(pipeline, y_list)
-  
+
   pipeline
 }
 
@@ -316,11 +321,7 @@ fit_pipeline_q_pca <- function(
 ) {
 
   pipeline <- construct_pipeline(
-    stages = list(
-      stage_eqf_sgrid(),
-      stage_eqf_cgrid(p_grid = p_grid),
-      stage_q_pca(K = K, loss = loss)
-    ),
+    stages = stages_q_pca(K, p_grid = p_grid, loss = loss),
     supp_Y = supp_Y,
     y_star = y_star,
     y_min = y_min,
@@ -330,7 +331,6 @@ fit_pipeline_q_pca <- function(
 
   pipeline
 }
-
 
 fit_pipeline_g_pca <- function(
     y_list, K,
@@ -344,12 +344,7 @@ fit_pipeline_g_pca <- function(
 ) {
 
   pipeline <- construct_pipeline(
-    stages = list(
-      stage_eqf_sgrid(),
-      stage_eqf_cgrid(p_grid = p_grid),
-      stage_lqd(),
-      stage_g_pca(K = K, loss = loss)
-    ),
+    stages = stages_g_pca(K, p_grid = p_grid, loss = loss),
     supp_Y = supp_Y,
     p_star = p_star,
     y_star = y_star,
@@ -365,179 +360,16 @@ fit_pipeline_g_pca <- function(
 
 ## ---------- EXECUTION ---------- ##
 
-####################################################
-# ## Q: What percentage of pairwise distances have concordance > 0.99?
-# path <- 'artifacts/demo_nhanes/pipe_nhanes.rds'
-# pipeline <- readRDS(path)
-
-# seed <- 12347
-# samp_rate <- 0.05
-# Qi_list <- pipeline$training$meta$Qi_list
-# N <- length(Qi_list)
-# set.seed(seed)
-# N_samp <- floor(samp_rate * N)
-# idx_samp <- sample(1:N, size = N_samp)
-# Qi_list_samp <- Qi_list[idx_samp]
-# pw_dists <- list()
-# cnt <- 1
-# start <- Sys.time()
-# for (i in 1:(N_samp-1)) {
-#   for (j in (i+1):N_samp) {
-#     pw_dists[[cnt]] <- sqrt(1 - one_minus_sqconc(Qi_list_samp[[i]], Qi_list_samp[[j]]))
-#     cnt <- cnt + 1
-#   }
-# }
-# stop <- Sys.time()
-# print(stop - start)
-
-# pw_dists <- unlist(pw_dists)
-# hist(pw_dists)
-# print(mean(pw_dists > 0.99))
-####################################################
 
 ## ----- Globals 
 
-dir_art <- file.path('artifacts', 'demo_nhanes_v3', 'losslessness')
+dir_art <- file.path('artifacts', 'demo_nhanes_v4', 'losslessness')
 
 
 ## ----- Create YAML configs
 
 ## Dataset specs
 datasets <- list(
-  # multi_250 = list(
-  #   path = file.path('data', 'processed', 'multinomial-250.rds'),
-  #   p_grid_fun = partial(p_grid_fun, J = 100),
-  #   supp_Y = 1:10,
-  #   y_star = 1,
-  #   y_min = 1,
-  #   y_trans = 'identity',
-  #   y_shift = 0
-  # )#,
-  # multi_500 = list(
-  #   path = file.path('data', 'processed', 'multinomial-500.rds'),
-  #   p_grid_fun = partial(p_grid_fun, J = 100),
-  #   supp_Y = 1:10,
-  #   y_star = 1,
-  #   y_min = 1,
-  #   y_trans = 'identity',
-  #   y_shift = 0
-  # ),
-  # multi_1000 = list(
-  #   path = file.path('data', 'processed', 'multinomial-1000.rds'),
-  #   p_grid_fun = partial(p_grid_fun, J = 100),
-  #   supp_Y = 1:10,
-  #   y_star = 1,
-  #   y_min = 1,
-  #   y_trans = 'identity',
-  #   y_shift = 0
-  # ),
-  # multi_5000 = list(
-  #   path = file.path('data', 'processed', 'multinomial-5000.rds'),
-  #   p_grid_fun = partial(p_grid_fun, J = 100),
-  #   supp_Y = 1:10,
-  #   y_star = 1,
-  #   y_min = 1,
-  #   y_trans = 'identity',
-  #   y_shift = 0
-  # ),
-  # enmo = list(
-  #   path = file.path('data', 'processed', 'chop-enmo-5_v1.rds'),
-  #   p_grid_fun = partial(
-  #     p_grid_fun, J = 150,
-  #     p_left = 0.05, J_left = 50,
-  #     p_right = 0.95, J_right = 50
-  #   ),
-  #   supp_Y = seq(0, 12, by = 0.0001),
-  #   y_star = 0,
-  #   y_min = 0,
-  #   y_trans = 'boxcox',
-  #   y_shift = 1e-4
-  # ),
-  # mims = list(
-  #   path = file.path('data', 'processed', 'chop-mims_v1.rds'),
-  #   p_grid = p_grid_fun(
-  #     breaks = c(1/10001, 0.95, 10000/10001),
-  #     interval_counts = c(51, 50)
-  #   ),
-  #   supp_Y = c(0, 0.6, seq(0.601, 2000, by = 0.001)),
-  #   y_star = 0,
-  #   y_min = 0,
-  #   y_trans = 'identity',
-  #   y_shift = 0,
-  #   loss_scale_samp_rate = 1.0,
-  #   lambda = 1e-6
-  # )
-  # tean = list(
-  #   path = file.path('data', 'processed', 'tean_v2.rds'),
-  #   # p_grid_fun = partial(
-  #   #   p_grid_fun, J = 100,
-  #   #   p_right = 0.95, J_right = 50
-  #   # ),
-  #   p_grid_fun = partial(
-  #     p_grid_fun, J = 100,
-  #     p_right = 0.95, J_right = 50
-  #   ),
-  #   supp_Y = 0:50000,
-  #   y_star = 0,
-  #   y_min = 0,
-  #   y_trans = 'log',
-  #   y_shift = 1,
-  #   loss_scale_samp_rate = 0.1,
-  #   lambda = 0
-  # ),
-  # nhanes_1000 = list(
-  #   path = file.path('data', 'processed', 'nhanes_v1_nofilter_N-1000.rds'),
-  #   p_grid_fun = partial(
-  #     p_grid_fun, J = 100,
-  #     p_right = 0.95, J_right = 50
-  #   ),
-  #   supp_Y = c(0, seq(0.006, 400, by = 0.001)),
-  #   y_star = -0.01,
-  #   y_min = -0.01,
-  #   y_trans = 'log',
-  #   y_shift = 100,
-  #   loss_scale_samp_rate = 0.1,
-  #   lambda = 0
-  # ),
-  # nhanes = list(
-  #   path = file.path('data', 'processed', 'nhanes_v1_nofilter.rds'),
-  #   p_grid = p_grid_fun(
-  #     breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
-  #     interval_counts = c(51, 50)
-  #   ),
-  #   supp_Y = c(0, seq(0.006, 400, by = 0.001)),
-  #   y_star = 0,
-  #   y_min = 0,
-  #   y_trans = 'identity', #'identity',
-  #   y_shift = 0,
-  #   loss_scale_samp_rate = 1.0, # 0.05,
-  #   p_scale = NULL, # 0.025,
-  #   lambda = 0
-  # ),
-  # nhanes_2 = list(
-  #   path = file.path('data', 'processed', 'nhanes_v1_nofilter_N-1000.rds'),
-  #   p_grid = p_grid_fun(
-  #     breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
-  #     interval_counts = c(51, 50)
-  #   ),
-  #   supp_Y = c(0, seq(0.006, 400, by = 0.001)),
-  #   y_star = 0,
-  #   y_min = 0,
-  #   pairwise_samp_rate = 1.0, # 0.05,
-  #   lambda = 0.1 # 0
-  # )
-  # nhanes_v2 = list(
-  #   path = file.path('data', 'processed', 'nhanes_cdc_v2.rds'),
-  #   p_grid = p_grid_fun(
-  #     breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
-  #     interval_counts = c(51, 50)
-  #   ),
-  #   supp_Y = c(0, seq(0.006, 500, by = 0.001)),
-  #   y_star = 0,
-  #   y_min = 0,
-  #   pairwise_samp_rate = 0.05,
-  #   lambda = 0
-  # )
   nhanes_v3 = list(
     path = file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'),
     p_grid = p_grid_fun(
@@ -548,7 +380,7 @@ datasets <- list(
     y_star = 0,
     y_min = 0,
     pairwise_samp_rate = 0.05,
-    lambda = 1.0
+    lambda = sqrt(10)^-1
   )
 )
 
@@ -558,15 +390,13 @@ models <- c('qg_pca')
 i <- 1
 for (dataset in names(datasets)) {
   for (model in models) {
-    path <- file.path(dir_art, 'configs', str_glue('config-{i}.yml'))
+    path <- file.path(dir_art, str_glue('config-{i}.yml'))
     config <- list(
       dataset = dataset,
       model_type = model,
-      path_loss_valid = file.path(dir_art, 'losses', str_glue('config-{i}_loss-valid.rds')),
-      path_loss_train = file.path(dir_art, 'losses', str_glue('config-{i}_loss-train.rds')),
-      path_quantile_resid_valid = file.path(dir_art, 'losses', str_glue('config-{i}_quantile-resid-valid.rds')),
-      path_pairwise_dist_norm = file.path(dir_art, 'losses', str_glue('config-{i}_pairwise-dist-norm.rds')),
-      path_concordances = file.path(dir_art, 'losses', str_glue('config-{i}_concordances.rds'))
+      path_loss_valid = file.path(dir_art, str_glue('config-{i}_loss-valid.rds')),
+      path_pairwise_dist_norm = file.path(dir_art, str_glue('config-{i}_pairwise-dist-norm.rds')),
+      path_concordances = file.path(dir_art, str_glue('config-{i}_concordances.rds'))
     )
     write_yaml(config, path)
     i <- i + 1  
@@ -583,13 +413,14 @@ for (i in 1:n_configs) {
   message(str_glue("========== CONFIG {i} of {n_configs} =========="))
   
   ## Load config
-  path <- file.path(dir_art, 'configs', str_glue('config-{i}.yml'))
+  path <- file.path(dir_art, str_glue('config-{i}.yml'))
   config <- read_yaml(path)
   
   ## Load data
   y_list <- readRDS(datasets[[config$dataset]]$path)
   
-  ## Create fit_pipeline function
+  ## Create fit_pipeline function (used below for the one-off pairwise-distance fit)
+  ## and stages_fun (used by compute_cv_losses for the fast CV sweep).
   if (config$model_type == 'qg_pca') {
     fit_pipeline <- partial(
       fit_pipeline_qg_pca,
@@ -597,6 +428,12 @@ for (i in 1:n_configs) {
       supp_Y = datasets[[config$dataset]]$supp_Y,
       y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min,
+      lambda = datasets[[config$dataset]]$lambda,
+      loss = 'wasserstein'
+    )
+    stages_fun <- partial(
+      stages_qg_pca,
+      p_grid = datasets[[config$dataset]]$p_grid,
       lambda = datasets[[config$dataset]]$lambda,
       loss = 'wasserstein'
     )
@@ -608,6 +445,11 @@ for (i in 1:n_configs) {
       y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min
     )
+    stages_fun <- partial(
+      stages_q_pca,
+      p_grid = datasets[[config$dataset]]$p_grid,
+      loss = 'wasserstein'
+    )
   } else if (config$model_type == 'g_pca') {
     fit_pipeline <- partial(
       fit_pipeline_g_pca,
@@ -616,24 +458,29 @@ for (i in 1:n_configs) {
       y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min
     )
+    stages_fun <- partial(
+      stages_g_pca,
+      p_grid = datasets[[config$dataset]]$p_grid,
+      loss = 'wasserstein'
+    )
   } else {
     stop(str_glue("Config {i} has invalid model_type!"))
   }
-  
+
   out <- compute_cv_losses(
     y_list = y_list,
-    fit_pipeline = fit_pipeline,
+    stages_fun = stages_fun,
+    supp_Y = datasets[[config$dataset]]$supp_Y,
+    y_star = datasets[[config$dataset]]$y_star,
+    y_min = datasets[[config$dataset]]$y_min,
     K_from = 1,
     K_to = 15,
     K_by = 1,
-    stage_from = 1,
     V = 5,
     seed = gen_seed(),
     verbose = FALSE
   )
-  saveRDS(out$valid_losses_by_K, config$path_loss_valid)
-  saveRDS(out$train_losses_by_K, config$path_loss_train)
-  saveRDS(out$valid_quantile_resid_by_K, config$path_quantile_resid_valid)
+  saveRDS(out, config$path_loss_valid)
 
   ## Compute normalized pairwise distances on a subsample of the training data
   ## TOOD: This no longer works given new pairwise distance computation!
@@ -668,7 +515,7 @@ for (i in 1:n_configs) {
 ## skipped (no file written), and plot_losslessness will fall back to
 ## drawing no annotation box for that config.
 
-K_stars <- c(13)
+K_stars <- c(10)
 for (i in 1:n_configs) {
   message(str_glue("========== Concordance for CONFIG {i} of {n_configs} =========="))
 
@@ -680,7 +527,7 @@ for (i in 1:n_configs) {
   }
 
   ## Load config + data
-  path_config <- file.path(dir_art, 'configs', str_glue('config-{i}.yml'))
+  path_config <- file.path(dir_art, str_glue('config-{i}.yml'))
   config      <- read_yaml(path_config)
   y_list      <- readRDS(datasets[[config$dataset]]$path)
 
@@ -749,15 +596,12 @@ for (i in 1:n_configs) {
 set.seed(12345)
 for (i in 1:n_configs) {
   print(i)
-  path_config <- file.path(dir_art, 'configs', str_glue('config-{i}.yml'))
-  path_plot <- file.path(dir_art, 'plots', str_glue('config-{i}.png'))
+  path_config <- file.path(dir_art, str_glue('config-{i}.yml'))
+  path_plot <- file.path(dir_art, str_glue('config-{i}.png'))
   
   ## Extract losses
   config <- read_yaml(path_config)
   loss_valid <- readRDS(config$path_loss_valid)
-  loss_train <- readRDS(config$path_loss_train)
-  loss_train <- lapply(loss_train, function(mat) rowMeans(mat, na.rm = TRUE))  ## avg. loss
-  quantile_resid_valid <- readRDS(config$path_quantile_resid_valid)
   pairwise_dist_norm <- readRDS(config$path_pairwise_dist_norm)
   concordances <- if (!is.null(config$path_concordances) &&
                       file.exists(config$path_concordances)) {
@@ -768,7 +612,7 @@ for (i in 1:n_configs) {
   plot_losslessness(
     loss_valid, NULL,
     jitter_width = 0.2,
-    epsilon = c(1.5),
+    epsilon = c(1.86),
     alpha = 0.05,
     plot_mean = FALSE,
     # ylim = c(0, 15), #c(0, 20),
