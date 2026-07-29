@@ -18,10 +18,10 @@ source('src/utils.R')
 ## ========== Representation Learning ========== ##
 
 ## Globals
-dir_art <- 'demo_nhanes_v2'
+dir_art <- 'demo_nhanes_v4'
 
 ## Load data
-path <- file.path('data', 'processed', 'nhanes_cdc_v2.rds')
+path <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
 y_list <- readRDS(path)
 # y_list <- y_list[1:500]
 N <- length(y_list)
@@ -33,7 +33,7 @@ path_plot_tmp = "scratch/plots/tmp_plot.png"
 
 ## Define grid (v1: 7500, v2: 10080)
 p_grid <- p_grid_fun(
-  breaks = c(1/(10080 + 1), 0.95, 10080/(10080 + 1)),
+  breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
   interval_counts = c(51, 50)
 )
 
@@ -44,10 +44,10 @@ pipeline <- construct_pipeline(
     stage_eqf_cgrid(p_grid = p_grid, Ji_min = 100),
     stage_wame(
       K_max = 20,
-      epsilon = 1.5, # 1.4, # 0.25,
+      epsilon = 1.86,
       alpha = 0.05,
       V = 5,
-      lambda = 0.1
+      lambda = sqrt(10)^-1
     ),
     stage_flow(
       n_layers = 16,
@@ -327,7 +327,7 @@ dev.off()
 
 ## Globals
 K  <- pipeline$stages[[3]]$state$child_qg_pca$state$K
-Ji <- 10080
+Ji <- 7350
 
 ## Train/val split (same convention as evaluate_pipeline_generativity): fit the
 ## latent mean-cov model on the train half, then draw |val| synthetic z's
@@ -623,7 +623,7 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'old'
+bin_pred <- 'low_income'
 run_diagnostics <- FALSE
 
 
