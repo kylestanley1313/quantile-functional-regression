@@ -1551,8 +1551,14 @@ fit_fun_flow <- function(context, state, ...) {
   flow <- py_pkg$train_flow(
     C = c_mat,
     n_layers = state$n_layers,
+    hidden = state$hidden,
     max_epochs = state$max_epochs,
     lr = state$lr,
+    weight_decay = state$weight_decay,
+    val_frac = state$val_frac,
+    patience = state$patience,
+    min_delta = state$min_delta,
+    seed = state$seed,
     print_epoch = 50
   )
   py_pkg$save_flow(flow, state$path)
@@ -1575,9 +1581,10 @@ encode_fun_flow <- function(context, state) {
   flow <- py_pkg$load_flow(
     dim = ncol(c_mat),
     n_layers = state$n_layers,
+    hidden = state$hidden,
     path = state$path
   )
-  
+
   ## Pass C through flow
   z_mat <- py_pkg$flow_encode(c_mat, flow)
   z_list <- split(z_mat, seq_len(nrow(z_mat)))
@@ -1599,9 +1606,10 @@ decode_fun_flow <- function(context, state) {
   flow <- py_pkg$load_flow(
     dim = ncol(z_mat),
     n_layers = state$n_layers,
+    hidden = state$hidden,
     path = state$path
   )
-  
+
   ## Pass z_mat through inverse flow
   c_mat <- py_pkg$flow_decode(z_mat, flow)
   if (K > 1) {
@@ -1635,9 +1643,14 @@ decode_fun_flow <- function(context, state) {
 }
 
 stage_flow <- function(
-  n_layers = 16,
-  max_epochs = 200,
+  n_layers = 8,
+  hidden = 64,
+  max_epochs = 1000,
   lr = 1e-3,
+  weight_decay = 0,
+  val_frac = 0.2,
+  patience = 20,
+  min_delta = 1e-4,
   path = "flow.pth",
   seed = gen_seed()
 ) {
@@ -1648,8 +1661,13 @@ stage_flow <- function(
     requires_fit = TRUE,
     init_state = list(
       n_layers = as.integer(n_layers),
+      hidden = as.integer(hidden),
       max_epochs = as.integer(max_epochs),
       lr = lr,
+      weight_decay = weight_decay,
+      val_frac = val_frac,
+      patience = as.integer(patience),
+      min_delta = min_delta,
       path = path,
       seed = seed
     ),
