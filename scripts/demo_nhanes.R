@@ -18,7 +18,7 @@ source('src/utils.R')
 ## ========== Representation Learning ========== ##
 
 ## Globals
-dir_art <- 'demo_nhanes_v4'
+dir_art <- 'demo_nhanes_jsm_2026'
 
 ## Load data
 path <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
@@ -43,14 +43,17 @@ pipeline <- construct_pipeline(
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid, Ji_min = 100),
     stage_wame(
+      K = 5,
       K_max = 20,
-      epsilon = 1.86,
+      epsilon = 1.45,
       alpha = 0.05,
       V = 5,
-      lambda = sqrt(10)^-1
+      lambda = 0,
+      order_by = 'importance'
     ),
     stage_flow(
-      n_layers = 16,
+      n_layers = 16, # 4 (good for K = 5),
+      hidden = 64, # 32 (good for K = 5),
       max_epochs = 1000,
       lr = 1e-3,
       path = str_glue('artifacts/{dir_art}/flow_nhanes.pth')
@@ -134,10 +137,15 @@ plot_qi_recon_grid(
 ## ----- Visualize data in different spaces
 
 ## Plotting globals
+mark_outliers <- FALSE
+include_legend <- FALSE
+k_from <- 1
+k_to <- 2
 idx_outliers <- pipeline$training$meta$idx_outliers
 N_outlier <- length(idx_outliers)
+idx_train <- if (N_outlier > 0) -idx_outliers else seq_len(N)
 col_train <- rgb(0, 0, 0, alpha = 0.25)
-col_outlier <- rgb(1, 0.8, 0.5, alpha = 0.25)
+col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
 
 ## Plot z-rot-embeddings
 path_plot <- file.path(
@@ -146,8 +154,8 @@ path_plot <- file.path(
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 Z_plot <- rbind(
-  do.call(rbind, z_rot_ctx$payload)[-idx_outliers,1:3],
-  do.call(rbind, z_rot_ctx$payload)[idx_outliers,1:3]
+  do.call(rbind, z_rot_ctx$payload)[idx_train,k_from:k_to],
+  do.call(rbind, z_rot_ctx$payload)[idx_outliers,k_from:k_to]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -159,12 +167,16 @@ shapes <- c(
 sizes <- c(
   rep(0.5, length.out = nrow(Z_plot))
 )
-color_shape_size_labels = data.frame(
-  color = c(col_train, col_outlier),
-  shape = c(19, 19),
-  size = c(0.5, 0.5),
-  label = c('non-outlier', 'outlier')
-)
+if (include_legend) {
+  color_shape_size_labels <- data.frame(
+    color = c(col_train, col_outlier),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_shape_size_labels <- NULL
+}
 plot_embeddings(
   Z_plot, 
   colors = colors,
@@ -182,8 +194,8 @@ path_plot <- file.path(
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 Z_plot <- rbind(
-  do.call(rbind, z_ctx$payload)[-idx_outliers,1:3],
-  do.call(rbind, z_ctx$payload)[idx_outliers,1:3]
+  do.call(rbind, z_ctx$payload)[idx_train,k_from:k_to],
+  do.call(rbind, z_ctx$payload)[idx_outliers,k_from:k_to]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -195,12 +207,16 @@ shapes <- c(
 sizes <- c(
   rep(0.5, length.out = nrow(Z_plot))
 )
-color_shape_size_labels = data.frame(
-  color = c(col_train, col_outlier),
-  shape = c(19, 19),
-  size = c(0.5, 0.5),
-  label = c('non-outlier', 'outlier')
-)
+if (include_legend) {
+  color_shape_size_labels = data.frame(
+    color = c(col_train, col_outlier),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_shape_size_labels <- NULL
+}
 plot_embeddings(
   Z_plot, 
   colors = colors,
@@ -218,8 +234,8 @@ path_plot <- file.path(
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 C_plot <- rbind(
-  do.call(rbind, c_ctx$payload$c_list)[-idx_outliers,1:3],
-  do.call(rbind, c_ctx$payload$c_list)[idx_outliers,1:3]
+  do.call(rbind, c_ctx$payload$c_list)[idx_train,k_from:k_to],
+  do.call(rbind, c_ctx$payload$c_list)[idx_outliers,k_from:k_to]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -231,12 +247,16 @@ shapes <- c(
 sizes <- c(
   rep(0.5, length.out = nrow(C_plot))
 )
-color_shape_size_labels = data.frame(
-  color = c(col_train, col_outlier),
-  shape = c(19, 19),
-  size = c(0.5, 0.5),
-  label = c('non-outlier', 'outlier')
-)
+if (include_legend) {
+  color_shape_size_labels = data.frame(
+    color = c(col_train, col_outlier),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_shape_size_labels <- NULL
+}
 plot_embeddings(
   C_plot, 
   colors = colors,
@@ -255,7 +275,7 @@ path_plot <- file.path(
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 fun_list <- c(
-  Q_ctx$payload[-idx_outliers],
+  Q_ctx$payload[idx_train],
   Q_ctx$payload[idx_outliers]
 )
 grid_list <- rep(list(p_grid), length(fun_list))
@@ -267,12 +287,16 @@ widths <- c(
   rep(0.25, length.out = length(fun_list))
 )
 types <- rep(1, length(fun_list))
-color_width_type_labels <- data.frame(
-  color = c(col_train, col_outlier),
-  width = c(2.5, 2.5),
-  type  = c(1, 1),
-  label = c('non-outlier', 'outlier')
-)
+if (include_legend) {
+  color_width_type_labels <- data.frame(
+    color = c(col_train, col_outlier),
+    width = c(2.5, 2.5),
+    type  = c(1, 1),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_width_type_labels <- NULL
+}
 plot_funs(
   fun_list = fun_list,
   grid_list = grid_list,
@@ -291,11 +315,11 @@ path_plot <- file.path(
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 fun_list <- c(
-  Qi_ctx$payload[-idx_outliers],
+  Qi_ctx$payload[idx_train],
   Qi_ctx$payload[idx_outliers]
 )
 grid_list <- c(
-  lapply(Ji_vec[-idx_outliers], pi_grid_fun), 
+  lapply(Ji_vec[idx_train], pi_grid_fun), 
   lapply(Ji_vec[idx_outliers], pi_grid_fun)
 )
 colors <- c(
@@ -306,12 +330,17 @@ widths <- c(
   rep(0.25, length.out = length(fun_list))
 )
 types <- rep(1, length(fun_list))
-color_width_type_labels <- data.frame(
-  color = c(col_train, col_outlier),
-  width = c(2.5, 2.5),
-  type  = c(1, 1),
-  label = c('non-outlier', 'outlier')
-)
+
+if (include_legend) {
+  color_width_type_labels <- data.frame(
+    color = c(col_train, col_outlier),
+    width = c(2.5, 2.5),
+    type  = c(1, 1),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_width_type_labels <- NULL
+}
 plot_funs(
   fun_list = fun_list,
   grid_list = grid_list,
@@ -319,6 +348,39 @@ plot_funs(
   widths = widths,
   types = types,
   color_width_type_labels = color_width_type_labels
+)
+dev.off()
+
+
+## Plot Qi vs. Q (one subject)
+i <- 1
+path_plot <- file.path(
+  'artifacts', dir_art, 'plots',
+  str_glue('data_qi-v-q_i-{i}.png')
+)
+pi_grid <- pi_grid_fun(Ji_vec[i])
+Qi <- Qi_ctx$payload[[i]]
+Q <- Q_ctx$payload[[i]]
+png(path_plot, width = 960, height = 960, pointsize = 18)
+plot(
+  pi_grid, Qi,
+  type = 'l',
+  lwd = 4,
+  xlim = c(0, 1),
+  xlab = "p",
+  ylab = "Q(p)",
+  main = str_glue("Subject {i}")
+)
+lines(
+  p_grid, Q,
+  lwd = 4,
+  col = rgb(0.9, 0, 0)
+)
+points(
+  x = p_grid,
+  y = rep(0, length(p_grid)),
+  pch = 16,
+  col = rgb(0, 0.9, 0)
 )
 dev.off()
 
@@ -472,6 +534,9 @@ df_cov$male <- sapply(df_cov$gender, function(g) ifelse(g == 'Male', 1, 0))
 ## Plot QFs color-coded by covariate level
 for (bin_pred in c('old', 'male', 'low_income')) {
 
+  k_from <- 1
+  k_to <- 2
+
   ## Plot: QF
   set.seed(12345)
   path_plot <- file.path(
@@ -495,7 +560,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
   types <- rep(1, length(fun_list))
   color_width_type_labels <- data.frame(
     color = c(col_0, col_1),
-    width = c(1, 1),
+    width = c(2.5, 2.5),
     type  = c(1, 1),
     label = c('0', '1')
   )
@@ -506,6 +571,43 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     widths = widths[idx],
     types = types[idx],
     color_width_type_labels = color_width_type_labels
+  )
+  dev.off()
+
+  ## Plot: z-embeddings
+  set.seed(12345)
+  path_plot <- file.path(
+    'artifacts', dir_art, 'plots',
+    str_glue('eda_z_{bin_pred}.png')
+  )
+  png(path_plot, width = 960, height = 960, pointsize = 18)
+  col_0 <- rgb(0, 0, 0, alpha = 0.25)
+  col_1 <- rgb(1, 0, 0, alpha = 0.25)
+  mask <- !is.na(df_cov[bin_pred])
+  idx <- sample(1:sum(mask))
+  Z_plot <- do.call(rbind, z_ctx$payload)[mask,k_from:k_to]
+  df_cov_to_plot <- df_cov[mask,]
+  colors = rep(col_0, length.out = nrow(Z_plot))
+  colors[df_cov_to_plot[bin_pred] == 1] <- col_1
+  shapes <- c(
+    rep(19, length.out = nrow(Z_plot))
+  )
+  sizes <- c(
+    rep(0.5, length.out = nrow(Z_plot))
+  )
+  color_shape_size_labels = data.frame(
+    color = c(col_0, col_1),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('0', '1')
+  )
+  plot_embeddings(
+    Z_plot, 
+    colors = colors,
+    shapes = shapes,
+    sizes = sizes,
+    color_shape_size_labels = color_shape_size_labels,
+    stats = FALSE
   )
   dev.off()
 
@@ -520,7 +622,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
   col_1 <- rgb(1, 0, 0, alpha = 0.25)
   mask <- !is.na(df_cov[bin_pred])
   idx <- sample(1:sum(mask))
-  Z_plot <- do.call(rbind, z_rot_ctx$payload)[mask,1:3]
+  Z_plot <- do.call(rbind, z_rot_ctx$payload)[mask,k_from:k_to]
   df_cov_to_plot <- df_cov[mask,]
   colors = rep(col_0, length.out = nrow(Z_plot))
   colors[df_cov_to_plot[bin_pred] == 1] <- col_1
@@ -623,7 +725,7 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'low_income'
+bin_pred <- 'male'
 run_diagnostics <- FALSE
 
 
