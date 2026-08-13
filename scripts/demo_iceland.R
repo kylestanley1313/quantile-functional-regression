@@ -1,10 +1,10 @@
-source('src/cot.R')
+source('src/cot.R') 
 source('src/model.R')
 source('src/utils.R')
 
 
 ## Globals
-dir_art <- 'demo_iceland'
+dir_art <- 'demo_iceland_2'
 
 ## ========== Data Processing ========== ##
 
@@ -71,17 +71,21 @@ pipeline <- construct_pipeline(
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid, Ji_min = Ji_min),
     stage_wame( 
-      K_max = 20,     ## Automatically finds the smallest K < K_max that satisfies near-losslessness
-      epsilon = 0.5,  ## Tuned tolerance level
-      alpha = 0.01,   ## Tuned slippage rate
+      K = 7,
+      K_max = 40,               ## Automatically finds the smallest K < K_max that satisfies near-losslessness
+      epsilon = 0.5,            ## Tuned tolerance level
+      alpha = 0.01,             ## Tuned slippage rate
       V = 5,
-      lambda = 0      ## Tuned shrinkage parameter
+      order_by = 'importance',  ## Change to order_by = "variance" to get old embeddings
+      lambda = 0                ## Tuned shrinkage parameter
     ),
     stage_flow(
       n_layers = 16,
+      hidden = 64,
       max_epochs = 1000,
       lr = 1e-3,
-      path = 'artifacts/demo_iceland/flow_iceland.pth'
+      val_frac = 0.25,
+      path = str_glue('artifacts/{dir_art}/flow_iceland.pth')
     )
   ),
   supp_Y = seq(-30, 20, by = 0.0001),
@@ -93,7 +97,7 @@ pipeline <- construct_pipeline(
 
 ## Fitting
 pipeline <- fit(pipeline, y_list)
-path <- 'artifacts/demo_iceland/pipe.rds'
+path <- str_glue('artifacts/{dir_art}/pipe.rds')
 saveRDS(pipeline, path)
 
 
@@ -150,7 +154,7 @@ plot_qi_recon_grid(
   recon_losses  = recon_losses,
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
-  path          = file.path('artifacts', 'demo_iceland', 'plots',
+  path          = file.path('artifacts', dir_art, 'plots',
                             'Qi-recon_grid_3x5.png')
 )
 
@@ -159,20 +163,25 @@ plot_qi_recon_grid(
 ## ---------- Visualize data in different spaces
 
 ## Plotting globals
+mark_outliers <- TRUE
+include_legend <- TRUE
+k_from <- 1
+k_to <- 3
 idx_outliers <- pipeline$training$meta$idx_outliers
 N_outlier <- length(idx_outliers)
+idx_train <- if (N_outlier > 0) -idx_outliers else seq_len(N)
 col_train <- rgb(0, 0, 0, alpha = 0.25)
-col_outlier <- rgb(1, 0.8, 0.5, alpha = 0.25)
+col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
 
 ## Plot z-embeddings
 path_plot <- file.path(
-  'artifacts', 'demo_iceland', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('data_z.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 Z_plot <- rbind(
-  do.call(rbind, z_ctx$payload)[-idx_outliers,1:3],
-  do.call(rbind, z_ctx$payload)[idx_outliers,1:3]
+  do.call(rbind, z_ctx$payload)[idx_train,k_from:k_to],
+  do.call(rbind, z_ctx$payload)[idx_outliers,k_from:k_to]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -184,12 +193,16 @@ shapes <- c(
 sizes <- c(
   rep(0.5, length.out = nrow(Z_plot))
 )
-color_shape_size_labels = data.frame(
-  color = c(col_train, col_outlier),
-  shape = c(19, 19),
-  size = c(0.5, 0.5),
-  label = c('non-outlier', 'outlier')
-)
+if (include_legend) {
+  color_shape_size_labels = data.frame(
+    color = c(col_train, col_outlier),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_shape_size_labels <- NULL
+}
 plot_embeddings(
   Z_plot, 
   colors = colors,
@@ -202,13 +215,13 @@ dev.off()
 
 ## Plot c-embeddings
 path_plot <- file.path(
-  'artifacts', 'demo_iceland', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('data_c.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 C_plot <- rbind(
-  do.call(rbind, c_ctx$payload$c_list)[-idx_outliers,1:3],
-  do.call(rbind, c_ctx$payload$c_list)[idx_outliers,1:3]
+  do.call(rbind, c_ctx$payload$c_list)[idx_train,k_from:k_to],
+  do.call(rbind, c_ctx$payload$c_list)[idx_outliers,k_from:k_to]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -220,12 +233,16 @@ shapes <- c(
 sizes <- c(
   rep(0.5, length.out = nrow(C_plot))
 )
-color_shape_size_labels = data.frame(
-  color = c(col_train, col_outlier),
-  shape = c(19, 19),
-  size = c(0.5, 0.5),
-  label = c('non-outlier', 'outlier')
-)
+if (include_legend) {
+  color_shape_size_labels = data.frame(
+    color = c(col_train, col_outlier),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_shape_size_labels <- NULL
+}
 plot_embeddings(
   C_plot, 
   colors = colors,
@@ -239,12 +256,12 @@ dev.off()
 
 ## Plot Q
 path_plot <- file.path(
-  'artifacts', 'demo_iceland', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('data_q.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 fun_list <- c(
-  Q_ctx$payload[-idx_outliers],
+  Q_ctx$payload[idx_train],
   Q_ctx$payload[idx_outliers]
 )
 grid_list <- rep(list(p_grid), length(fun_list))
@@ -256,12 +273,16 @@ widths <- c(
   rep(0.25, length.out = length(fun_list))
 )
 types <- rep(1, length(fun_list))
-color_width_type_labels <- data.frame(
-  color = c(col_train, col_outlier),
-  width = c(2.5, 2.5),
-  type  = c(1, 1),
-  label = c('non-outlier', 'outlier')
-)
+if (include_legend) {
+  color_width_type_labels <- data.frame(
+    color = c(col_train, col_outlier),
+    width = c(2.5, 2.5),
+    type  = c(1, 1),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_width_type_labels <- NULL
+}
 plot_funs(
   fun_list = fun_list,
   grid_list = grid_list,
@@ -280,8 +301,8 @@ dev.off()
 ## mean-covariance model
 set.seed(12345)
 Z <- do.call(rbind, z_ctx$payload)
-fit <- fit_mean_cov(Z)
-z_draws <- draw_mean_cov(N, fit)
+mod <- fit_mean_cov(Z)
+z_draws <- draw_mean_cov(N, mod)
 Qi_draws <- decode_z_to_Qi(pipeline, z_draws, Ji = Ji_max)
 
 ## Plot Q
@@ -289,7 +310,7 @@ idx_shuff <- sample(1:(2*N))
 col_data <- rgb(0, 0, 0, alpha = 0.25)
 col_draws <- rgb(1, 0, 0, alpha = 0.25)
 path_plot <- file.path(
-  'artifacts', 'demo_iceland', 'plots',
+  'artifacts', dir_art, 'plots',
   str_glue('draws_q.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -335,11 +356,11 @@ dev.off()
 set.seed(12345)
 Z <- do.call(rbind, z_ctx$payload) ## Z-embeddings ("normalized" LQD scores)
 x <- sample(0:1, size = nrow(Z), replace = TRUE)  ## binary covariate
-fit <- lm(Z ~ x)
+mod <- lm(Z ~ x)
 
 ## Latent conditional means
-z_hat_0 <- coef(fit)[1,]                 ## predicted value for x == 0
-z_hat_1 <- coef(fit)[1,] + coef(fit)[2,] ## predicted value for x == 1
+z_hat_0 <- coef(mod)[1,]                 ## predicted value for x == 0
+z_hat_1 <- coef(mod)[1,] + coef(mod)[2,] ## predicted value for x == 1
 
 ## Decode z_hats
 z_hat_list <- list(
@@ -354,65 +375,38 @@ plot(pi_grid, Qi_hat_list[[1]], type = 'l')
 lines(pi_grid, Qi_hat_list[[2]], col = 'red')
 
 
-## ========== Hyperparameter Tuning ========== ##
+## ========== Dimension Selection ========== ##
 
-## Now let's see how we tuned those hyperparameters.
-## We tune in two stages: 
-##  (1) Inspect plot of cross-validated losses) to choose suitable epsilon and alpha for lambda = 0.
-##  (2) For fixed epsilon and alpha, use generativity scoring to choose lambda.
+## Before tuning epsilon/alpha/lambda in the next section, inspect how
+## cross-validated reconstruction error and generativity vary with the
+## latent dimension K. This mirrors scripts/assess_losslessness.R (CV loss
+## by K) and scripts/assess_generativity_for_K.R (generativity by K), but
+## is self-contained here and does not rely on anything defined below
+## under Hyperparameter Tuning.
 
-## Returns fitted Iceland pipeline.
-## We will reuse this wrapper throughout tuning. 
-## Use Cases: 
-##  1. Create pipeline with fixed K --> pass y_list, K, lambda (opt)
-##  2. Create pipeline with auto-chosen K --> pass y_list, epsilon, alpha, lambda (opt)
-fit_pipeline_iceland <- function(
-  y_list,
-  epsilon = NULL, 
-  alpha = NULL, 
-  lambda = NULL, 
-  K = NULL, 
-  K_max = 20, 
-  path_flow = NULL
-) {
-  ## Validate arguments
-  if (is.null(epsilon) && is.null(alpha) && is.null(K)) {
-    stop("If epsilon and alpha are NULL, must pass K.")
-  }
-  if (!is.null(epsilon) && !is.null(alpha) && !is.null(K)) {
-    warning("Passed K will override dimension derived from passed epsilon and alpha.")
-  }
+## Candidate K's
+Ks <- 1:15
 
-  ## Stages
+## Fits a fixed-K Iceland pipeline (no auto K-selection). Only attaches a
+## flow stage when path_flow is supplied, since the CV loss sweep never
+## needs one.
+fit_pipeline_iceland <- function(y_list, K, path_flow = NULL) {
   stages <- list(
     stage_eqf_sgrid(),
-    stage_eqf_cgrid(
-      p_grid = p_grid_fun(
-        breaks = c(1/(91 + 1), 91/(91 + 1)),
-        interval_counts = c(91)
-      ), 
-      Ji_min = 28
-    ),
-    stage_wame(
-      epsilon = epsilon,
-      alpha = alpha,
-      lambda = lambda, 
-      K = K, 
-      K_max = K_max,
-      loss = 'wasserstein'
-    )
+    stage_eqf_cgrid(p_grid = p_grid, Ji_min = Ji_min),
+    stage_wame(K = K, K_max = 40, lambda = 0, order_by = 'importance', loss = 'wasserstein')
   )
   if (!is.null(path_flow)) {
     stages[[4]] <- stage_flow(
       n_layers = 16,
+      hidden = 64,
       max_epochs = 1000,
       lr = 1e-3,
+      val_frac = 0.25,
       path = path_flow
     )
   }
-
-  ## Fit pipeline
-  pipeline <- construct_pipeline(
+  pipeline_K <- construct_pipeline(
     stages = stages,
     supp_Y = seq(-30, 20, by = 0.0001),
     p_star = 0.5,
@@ -420,27 +414,25 @@ fit_pipeline_iceland <- function(
     y_min = NULL,
     seed = 12345
   )
-  pipeline <- fit(pipeline, y_list)
-  pipeline
+  fit(pipeline_K, y_list)
 }
 
 
-## ---------- Choose epsilon and alpha via near-losslessness
+## ---------- Cross-validated reconstruction error by K
 
-## Compute validation losses for candidate K
 valid_losses_by_K <- compute_cv_losses(
-  y_list, fit_pipeline_iceland, 
-  K_from = 1, 
-  K_to = 20, 
-  V = 5, 
+  y_list,
+  fit_pipeline_iceland,
+  K_from = min(Ks),
+  K_to = max(Ks),
+  V = 5,
   seed = 12345
 )
-path <- file.path('artifacts', dir_art, 'valid_losses.rds')
+path <- file.path('artifacts', dir_art, 'dimension_selection', 'valid_losses_by_K.rds')
 saveRDS(valid_losses_by_K, path)
 
-## Wasserstein losses are not themselves interpretable.
-## Compute pairwise wasserstein losses for a sample of
-## observations for provide a reference. 
+## Reference pairwise Wasserstein distances, using the pipeline already
+## fit above under Representation Learning.
 pwds <- compute_sampled_pwds(
   y_list, pipeline,
   loss = 'wasserstein',
@@ -449,90 +441,58 @@ pwds <- compute_sampled_pwds(
   seed = 12345
 )
 
-## Plot losslessness
-epsilon_star <- 0.5  ## set as desired
-alpha_star <- 0.01   ## set as desired
 plot_losslessness(
   valid_losses_by_K,
   jitter_width = 0.2,
-  epsilon = epsilon_star,  
-  alpha = alpha_star,   
+  epsilon = NULL, # 0.5,
+  alpha = 0.01,
   plot_mean = FALSE,
   ylab = "Cross-Validated Wasserstein Error",
   ylab2 = "Pairwise Wasserstein Distance Percentile",
   xlab = "K",
-  K_star = NULL,
   pairwise_distances = pwds,
-  main = "Cross-Validated Wasserstein Reconstruction Errors",
+  main = "Cross-Validated Wasserstein Reconstruction Error by K",
   path = file.path('artifacts', dir_art, 'plots', 'valid_losses.png')
 )
 
 
-## ---------- Choose lambda via generativity
+## ---------- Generativity scores by K
 
-## TODO: Streamline this code. 
-
-## Shrinkage parameter candidates
-lambdas <- c(0, 1e-3, 1e-2)
-
-## Fit pipelines with these candidate lambdas
-for (lambda in lambdas) {
-  pipeline <- fit_pipeline_iceland(
-    y_list, 
-    epsilon = epsilon_star, 
-    alpha = alpha_star, 
-    lambda = lambda,
-    path_flow = file.path('artifacts', dir_art, 'generativity', str_glue('flow_lambda-{lambda}.pth'))
-  )
-  path <- file.path('artifacts', dir_art, 'generativity', str_glue('pipe_lambda-{lambda}.rds'))
-  saveRDS(pipeline, path)
-}
-
-## Evalute generativity for each lambda
 S <- 5   ## number of data splits
 R <- 20  ## number of repetitions per split
 n_cores <- min(5, R)
-gen_list <- list()
-for (lambda in lambdas) {
-  print(str_glue("lambda = {lambda}"))
-  path_pipe <- file.path(
-    'artifacts', dir_art, 'generativity',
-    str_glue('pipe_lambda-{lambda}.rds')
+
+gen_list_by_K <- list()
+for (K in Ks) {
+  print(str_glue("K = {K}"))
+  pipeline_K <- fit_pipeline_iceland(
+    y_list, K,
+    path_flow = file.path('artifacts', dir_art, 'dimension_selection', str_glue('flow_K-{K}.pth'))
   )
-  pipeline <- readRDS(path_pipe)
-  gen_list[[as.character(lambda)]] <- evaluate_pipeline_generativity(
-    pipeline, y_list,
+  gen_list_by_K[[as.character(K)]] <- evaluate_pipeline_generativity(
+    pipeline_K, y_list,
     S = S, R = R,
     frac_train = 0.5,
-    J_aug = 500,
+    J_aug = J_aug,
     ridge = 0,
     seed = 12345,
     n_cores = n_cores
   )
 }
-path_gen <- file.path('artifacts', dir_art, 'generativity', 'gen_res.rds')
-saveRDS(gen_list, path_gen)
+path <- file.path('artifacts', dir_art, 'dimension_selection', 'gen_res_by_K.rds')
+saveRDS(gen_list_by_K, path)
 
-## Plot generativity and K against lambda
-K_by_lambda <- sapply(lambdas, function(lambda) {
-  pipe <- readRDS(file.path(
-    'artifacts', dir_art, 'generativity',
-    str_glue('pipe_lambda-{lambda}.rds')
-  ))
-  pipe$stages[[3]]$state$child_qg_pca$state$K
-})
-scores_by_lambda <- lapply(lambdas, function(lambda) {
-  lapply(gen_list[[as.character(lambda)]]$splits, `[[`, "log_norm")
+## Plot generativity against K
+scores_by_K <- lapply(Ks, function(K) {
+  lapply(gen_list_by_K[[as.character(K)]]$splits, `[[`, "log_norm")
 })
 plot_generativity_boxes(
-  groups      = as.character(lambdas),
-  scores      = scores_by_lambda,
-  Ks          = Ks,
+  groups      = as.character(Ks),
+  scores      = scores_by_K,
   hline       = 0,
-  # vline_group = as.character(lambda_star),
-  xlab        = expression(lambda),
+  xlab        = "K",
   ylab        = "log normalized generativity",
-  main        = "Generativity (log-normalized) and K vs lambda",
-  path        = file.path('artifacts', dir_art, 'plots', 'gen_score_vs_lambda.png')
+  main        = "Generativity (log-normalized) by K",
+  path        = file.path('artifacts', dir_art, 'plots', 'gen_score_vs_K.png')
 )
 

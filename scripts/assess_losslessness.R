@@ -629,7 +629,7 @@ for (i in 1:n_configs) {
     concordances = concordances,
     concordance_box_position = "topright",
     # main = str_glue('{config$dataset} | {config$model_type}'),
-    main = "NHANES Validation",
+    main = "NHANES Reconstructions",
     path = path_plot
   )
 
