@@ -731,12 +731,56 @@ evaluate_pipeline_generativity <- function(
     fit  <- fit_mean_cov(Z_tr, ridge = ridge)
 
     rep_seeds <- sample.int(.Machine$integer.max, R)
-    T_sv <- unlist(parallel::mclapply(seq_len(R), function(r) {
+
+    gen_one_rep <- function(r) {
+      # A fresh multisession worker has no py_pkg (src/cot.R:13 creates it
+      # only in the launching session). stage_flow pipelines need a
+      # worker-local py_pkg tied to that worker's own Python interpreter
+      # (decode_fun_flow, src/cot.R). Guarded on existence so a reused
+      # worker only pays the re-init cost once, not once per task.
+      if (!exists("py_pkg", envir = .GlobalEnv, inherits = FALSE)) {
+        setwd(.repo_root)
+        source(file.path(.repo_root, "src", "cot.R"))
+      }
       set.seed(rep_seeds[r])
       z_draws     <- draw_mean_cov(length(idx_val), fit)
       Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
       compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug)
-    }, mc.cores = n_cores))
+    }
+
+    .repo_root <- getwd()
+
+    if (n_cores > 1) {
+      # Reuse a caller-established worker pool if one is already active
+      # (a script can call future::plan(multisession, ...) once up front
+      # to avoid repeated pool teardown/Python re-init across many calls);
+      # otherwise self-manage a scoped pool for just this call.
+      caller_has_pool <- !inherits(future::plan(), "sequential")
+      if (!caller_has_pool) {
+        old_plan <- future::plan(future::multisession, workers = n_cores)
+        on.exit(future::plan(old_plan), add = TRUE)
+      }
+      # future.globals is explicit (not TRUE) so future's auto-detection
+      # doesn't walk into decode_z_to_Qi_aug -> decode -> decode_fun_flow
+      # and try to export the parent's live py_pkg reticulate handle.
+      # future.seed = NULL: each task already seeds itself deterministically
+      # via rep_seeds[r], so future's own RNG-stream management is neither
+      # needed nor safe to enable here -- future.seed = TRUE switches
+      # workers to the L'Ecuyer-CMRG RNG kind, which makes
+      # set.seed(rep_seeds[r]) draw a *different* stream than the plain
+      # Mersenne-Twister default used by the n_cores <= 1 path below,
+      # breaking numeric reproducibility across n_cores values. NULL (vs.
+      # the FALSE default) also silences future.apply's "UNRELIABLE VALUE"
+      # warning, which is a false positive given the manual per-task seed.
+      T_sv <- unlist(future.apply::future_lapply(
+        seq_len(R), gen_one_rep,
+        future.seed    = NULL,
+        future.globals = c("rep_seeds", "pipeline", "idx_val", "fit",
+                            "Q_val_aug", "w_aug", "p_grid_aug", "p_grid", ".repo_root")
+      ))
+    } else {
+      T_sv <- unlist(lapply(seq_len(R), gen_one_rep))
+    }
 
     splits[[s]] <- list(
       T_tv     = T_tv,
