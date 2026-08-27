@@ -5,9 +5,7 @@
 ## Naming convention: binary_verb() / binary_verb_qualifier()
 ## ============================================================
 
-library(biotools)
 library(MASS)
-library(MVN)
 
 
 ## ==================== Estimation ====================
@@ -232,7 +230,7 @@ binary_diagnostics <- function(model, path_dir,
   print(result$univariate_normality)
 
   ## (5) Box's M
-  boxm_result <- boxM(Z, x)
+  boxm_result <- biotools::boxM(Z, x)
   print(boxm_result)
 
   ## (6) Per-group covariance heatmaps
