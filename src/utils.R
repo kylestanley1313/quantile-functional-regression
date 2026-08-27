@@ -858,6 +858,10 @@ plot_funs <- function(
   }
   
   ## ---- Plot ---- ##
+  xlim <- c(
+    min(unlist(grid_list)),
+    max(unlist(grid_list))
+  )
   if (is.null(ylim)) {
     ylim <- c(
       min(unlist(fun_list)),
@@ -867,7 +871,7 @@ plot_funs <- function(
   par(mfrow = c(1, 1))
   plot(
     NULL,
-    xlim = range(p_grid),
+    xlim = xlim,
     ylim = ylim,
     xlab = "p",
     ylab = ylab,
@@ -901,7 +905,7 @@ plot_funs <- function(
       bty    = "n"
     )
   }
-
+  
   if (!is.null(path)) dev.off()
 }
 
