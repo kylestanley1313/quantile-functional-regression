@@ -158,7 +158,9 @@ mean_log_norm_generativity <- function(pipeline, y_list_g, context) {
     {
       gen <- evaluate_pipeline_generativity(
         pipeline, y_list_g,
-        S = S_gen, R = R_gen, n_cores = 1
+        S = S_gen, R = R_gen, 
+        cost_type = 'mean',
+        n_cores = 1
       )
       mean(unlist(lapply(gen$splits, `[[`, "log_norm")))
     },

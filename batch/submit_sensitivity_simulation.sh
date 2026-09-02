@@ -25,7 +25,7 @@ if [[ "$AGGREGATE_ONLY" == true ]]; then RUN_COMPUTE=false; fi
 if [[ "$COMPUTE_ONLY" == true ]]; then RUN_AGGREGATE=false; fi
 
 # --- 1. Simulation parameters ------------------------------------------------
-ART_DIR_NAME="sensitivity-K-2"     # subdir under artifacts/
+ART_DIR_NAME="sensitivity-K-4"     # subdir under artifacts/
 NSIM_PER_SETTING=50
 MU_MU_1=0
 SIGMA_MU_1=5

@@ -619,18 +619,19 @@ plot_losslessness_groups <- function(losses_list,
 
 ## ---------- Generativity ---------- ##
 
-## Compute the (per-real-observation) generativity costs and scalar score
-## sqrt(sum(g)) by solving balanced OT between two empirical measures on a
-## shared grid. Returns the cost vector, scalar score, and the raw flow plan.
-compute_generativity <- function(
-    Q_synth_list,
-    Q_real_list,
-    w
-) {
-  N_synth <- length(Q_synth_list)
-  N <- length(Q_real_list)
+q_moments <- function(Q_list, w) {
+  M  <- do.call(rbind, Q_list)          # N x J
+  m  <- as.numeric(M %*% w)             # mean per row
+  Mc <- sweep(M, 1, m, '-')             # row-centered
+  v  <- as.numeric((Mc^2) %*% w)        # variance per row
+  m3 <- as.numeric((Mc^3) %*% w)        # third central moment per row
+  tol  <- .Machine$double.eps^0.5
+  skew <- ifelse(v > tol, m3 / v^1.5, 0)
+  list(mean = m, var = v, skew = skew)
+}
 
-  ## N_synth x N cost matrix of squared Wasserstein distances
+## Computes N_synth x N_real matrix of squared Wasserstein distances
+costs_wasserstein <- function(Q_synth_list, Q_real_list, w) {
   M1 <- do.call(rbind, Q_synth_list)
   M2 <- do.call(rbind, Q_real_list)
   M1w <- sweep(M1, 2, w, '*')
@@ -640,6 +641,56 @@ compute_generativity <- function(
   cross <- M1w %*% t(M2)
   cost_mat <- outer(sq1, sq2, '+') - 2 * cross
   cost_mat <- pmax(cost_mat, 0)  # guard tiny negative roundoff
+  cost_mat
+}
+
+## Computes N_synth x N_real matrix of squared differences between means
+costs_mean <- function(Q_synth_list, Q_real_list, w) {
+  a <- q_moments(Q_synth_list, w)$mean
+  b <- q_moments(Q_real_list,  w)$mean
+  outer(a, b, '-')^2
+}
+
+## Computes N_synth x N_real matrix of squared differences between variances
+costs_variance <- function(Q_synth_list, Q_real_list, w) {
+  a <- q_moments(Q_synth_list, w)$var
+  b <- q_moments(Q_real_list,  w)$var
+  outer(a, b, '-')^2
+}
+
+## Computes N_synth x N_real matrix of squared differences between skewnesses
+costs_skewness <- function(Q_synth_list, Q_real_list, w) {
+  a <- q_moments(Q_synth_list, w)$skew
+  b <- q_moments(Q_real_list,  w)$skew
+  outer(a, b, '-')^2
+}
+
+resolve_costs_fun <- function(cost_type = c("wasserstein", "mean",
+                                            "variance", "skewness")) {
+  cost_type <- match.arg(cost_type)
+  switch(cost_type,
+    wasserstein = costs_wasserstein,
+    mean        = costs_mean,
+    variance    = costs_variance,
+    skewness    = costs_skewness
+  )
+}
+
+## Compute the (per-real-observation) generativity costs and scalar score
+## sqrt(sum(g)) by solving balanced OT between two empirical measures on a
+## shared grid. Returns the cost vector, scalar score, and the raw flow plan.
+compute_generativity <- function(
+    Q_synth_list,
+    Q_real_list,
+    w,
+    cost_type
+) {
+  N_synth <- length(Q_synth_list)
+  N <- length(Q_real_list)
+
+  ## N_synth x N cost matrix of costs
+  costs_fun <- resolve_costs_fun(cost_type)
+  cost_mat <- costs_fun(Q_synth_list, Q_real_list, w)
 
   ## Optimal transport via network simplex
   result <- transport::transport(
@@ -664,8 +715,8 @@ compute_generativity <- function(
 
 ## Scalar wrapper around compute_generativity for callers that only need the
 ## score.
-compute_generativity_score <- function(Q_a, Q_b, w) {
-  compute_generativity(Q_a, Q_b, w)$score
+compute_generativity_score <- function(Q_a, Q_b, w, cost_type) {
+  compute_generativity(Q_a, Q_b, w, cost_type)$score
 }
 
 
@@ -685,6 +736,7 @@ compute_generativity_score <- function(Q_a, Q_b, w) {
 evaluate_pipeline_generativity <- function(
   pipeline, y_list,
   S, R,
+  cost_type   = 'wasserstein',
   frac_train  = 0.5,
   subsample_n = NULL,
   J_aug       = 500,
@@ -725,7 +777,7 @@ evaluate_pipeline_generativity <- function(
     Q_val_aug   <- encode_y_to_Qi_aug(pipeline, y_val, p_grid_aug)
     Q_train_aug <- encode_y_to_Qi_aug(pipeline, y_tr,  p_grid_aug)
 
-    T_tv <- compute_generativity_score(Q_train_aug, Q_val_aug, w_aug)
+    T_tv <- compute_generativity_score(Q_train_aug, Q_val_aug, w_aug, cost_type)
 
     Z_tr <- encode_y_to_z(pipeline, y_tr)
     fit  <- fit_mean_cov(Z_tr, ridge = ridge)
@@ -745,7 +797,7 @@ evaluate_pipeline_generativity <- function(
       set.seed(rep_seeds[r])
       z_draws     <- draw_mean_cov(length(idx_val), fit)
       Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
-      compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug)
+      compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
     }
 
     .repo_root <- getwd()
