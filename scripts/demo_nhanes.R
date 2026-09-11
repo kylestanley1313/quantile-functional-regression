@@ -18,7 +18,7 @@ source('src/utils.R')
 ## ========== Representation Learning ========== ##
 
 ## Globals
-dir_art <- 'demo_nhanes_jsm_2026'
+dir_art <- 'demo_nhanes_v6'
 
 ## Load data
 path <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
@@ -29,9 +29,9 @@ Ji_vec <- lengths(y_list)
 Ji_max <- max(Ji_vec)
 Ji_min <- min(Ji_vec)
 y_max <- max(unlist(y_list))
-path_plot_tmp = "scratch/plots/tmp_plot.png"
+path_plot_tmp <- "scratch/plots/tmp_plot.png"
 
-## Define grid (v1: 7500, v2: 10080)
+## Define grid
 p_grid <- p_grid_fun(
   breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
   interval_counts = c(51, 50)
@@ -140,7 +140,7 @@ plot_qi_recon_grid(
 mark_outliers <- FALSE
 include_legend <- FALSE
 k_from <- 1
-k_to <- 2
+k_to <- 3
 idx_outliers <- pipeline$training$meta$idx_outliers
 N_outlier <- length(idx_outliers)
 idx_train <- if (N_outlier > 0) -idx_outliers else seq_len(N)
@@ -308,6 +308,61 @@ plot_funs(
 dev.off()
 
 
+## Plot subsample of Q
+## NOTE: For Jeff's slides
+N_samp <- 500
+if (!is.null(N_samp)) {
+  set.seed(12345)
+
+  ## Compute overall mean
+  Q_mean <- colMeans(do.call(rbind, Q_ctx$payload))
+
+  ## Subsample
+  idx_samp <- sample(N, size = N_samp)
+  Q_samp <- Q_ctx$payload[idx_samp]
+
+  ## Plot
+  path_plot <- file.path(
+    'artifacts', dir_art, 'plots',
+    str_glue('data_q-subsamp.png')
+  )
+  png(path_plot, width = 960, height = 960, pointsize = 18)
+  fun_list <- c(
+    Q_samp,
+    list(Q_mean)
+  )
+  grid_list <- rep(list(p_grid), length(fun_list))
+  colors <- c(
+    rep('black', N_samp),
+    rep('red', 1)
+  )
+  widths <- c(
+    rep(0.25, length.out = N_samp),
+    rep(4, 1)
+  )
+  types <- rep(1, length(fun_list))
+  if (FALSE) {
+    color_width_type_labels <- data.frame(
+      color = c(col_train, col_outlier),
+      width = c(2.5, 2.5),
+      type  = c(1, 1),
+      label = c('non-outlier', 'outlier')
+    )
+  } else {
+    color_width_type_labels <- NULL
+  }
+  plot_funs(
+    fun_list = fun_list,
+    grid_list = grid_list,
+    colors = colors,
+    widths = widths,
+    types = types,
+    color_width_type_labels = color_width_type_labels
+  )
+  dev.off()
+}
+
+
 ## Plot Qi
 path_plot <- file.path(
   'artifacts', dir_art, 'plots',
@@ -330,7 +385,6 @@ widths <- c(
   rep(0.25, length.out = length(fun_list))
 )
 types <- rep(1, length(fun_list))
-
 if (include_legend) {
   color_width_type_labels <- data.frame(
     color = c(col_train, col_outlier),
@@ -519,6 +573,10 @@ dev.off()
 
 ## ========== EDA ========== ##
 
+## Create directory
+dir_eda <- file.path('artifacts', dir_art, 'plots', 'eda')
+if (!dir.exists(dir_eda)) dir.create(dir_eda)
+
 ## Load covariates
 path <- file.path('data', 'processed', 'nhanes_cov.rds')
 df_cov <- readRDS(path)
@@ -531,6 +589,23 @@ df_cov$low_income <- as.numeric(df_cov$PIR <= 1)
 df_cov$old <- as.numeric(df_cov$age >= 65)
 df_cov$male <- sapply(df_cov$gender, function(g) ifelse(g == 'Male', 1, 0))
 
+get_plot_name_for_cov <- function(cov, other_cov = FALSE) {
+  if (other_cov) {
+    name_map <- list(
+      'old' = '< 65',
+      'male' = 'Female',
+      'low_income' = 'Above Poverty Line'
+    )
+  } else {
+    name_map <- list(
+      'old' = '>= 65',
+      'male' = 'Male',
+      'low_income' = 'Below Poverty Line'
+    )
+  }
+  name_map[[cov]]
+}
+
 ## Plot QFs color-coded by covariate level
 for (bin_pred in c('old', 'male', 'low_income')) {
 
@@ -540,7 +615,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
   ## Plot: QF
   set.seed(12345)
   path_plot <- file.path(
-    'artifacts', dir_art, 'plots',
+    dir_eda,
     str_glue('eda_Qi_{bin_pred}.png')
   )
   png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -562,7 +637,10 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     color = c(col_0, col_1),
     width = c(2.5, 2.5),
     type  = c(1, 1),
-    label = c('0', '1')
+    label = c(
+      get_plot_name_for_cov(bin_pred, TRUE), 
+      get_plot_name_for_cov(bin_pred, FALSE)
+    )
   )
   plot_funs(
     fun_list = fun_list[idx],
@@ -574,47 +652,10 @@ for (bin_pred in c('old', 'male', 'low_income')) {
   )
   dev.off()
 
-  ## Plot: z-embeddings
-  set.seed(12345)
-  path_plot <- file.path(
-    'artifacts', dir_art, 'plots',
-    str_glue('eda_z_{bin_pred}.png')
-  )
-  png(path_plot, width = 960, height = 960, pointsize = 18)
-  col_0 <- rgb(0, 0, 0, alpha = 0.25)
-  col_1 <- rgb(1, 0, 0, alpha = 0.25)
-  mask <- !is.na(df_cov[bin_pred])
-  idx <- sample(1:sum(mask))
-  Z_plot <- do.call(rbind, z_ctx$payload)[mask,k_from:k_to]
-  df_cov_to_plot <- df_cov[mask,]
-  colors = rep(col_0, length.out = nrow(Z_plot))
-  colors[df_cov_to_plot[bin_pred] == 1] <- col_1
-  shapes <- c(
-    rep(19, length.out = nrow(Z_plot))
-  )
-  sizes <- c(
-    rep(0.5, length.out = nrow(Z_plot))
-  )
-  color_shape_size_labels = data.frame(
-    color = c(col_0, col_1),
-    shape = c(19, 19),
-    size = c(0.5, 0.5),
-    label = c('0', '1')
-  )
-  plot_embeddings(
-    Z_plot, 
-    colors = colors,
-    shapes = shapes,
-    sizes = sizes,
-    color_shape_size_labels = color_shape_size_labels,
-    stats = FALSE
-  )
-  dev.off()
-
   ## Plot: z-rot-embeddings
   set.seed(12345)
   path_plot <- file.path(
-    'artifacts', dir_art, 'plots',
+    dir_eda,
     str_glue('eda_z-rot_{bin_pred}.png')
   )
   png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -636,7 +677,10 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     color = c(col_0, col_1),
     shape = c(19, 19),
     size = c(0.5, 0.5),
-    label = c('0', '1')
+    label = c(
+      get_plot_name_for_cov(bin_pred, TRUE), 
+      get_plot_name_for_cov(bin_pred, FALSE)
+    )
   )
   plot_embeddings(
     Z_plot, 
@@ -655,6 +699,10 @@ for (bin_pred in c('old', 'male', 'low_income')) {
 ## ========== Group Comparison ========== ##
 
 ## ---------- Effect Plots ---------- ##
+
+## Create directory
+dir_eff_plots <- file.path('artifacts', dir_art, 'plots', 'effect-plots')
+if (!dir.exists(dir_eff_plots)) dir.create(dir_eff_plots)
 
 K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 k_star_quantiles <- seq(0.1, 0.9, by = 0.1)
@@ -690,7 +738,7 @@ for (k_star in 1:K) {
   ## Plot
   pi_grid <- pi_grid_fun(Ji)
   path_plot <- file.path(
-    'artifacts', dir_art, 'plots',
+    dir_eff_plots,
     str_glue('effect_k-{k_star}.png')
   )
   pal <- colorRampPalette(c("blue", "gray", "red"))(101)
@@ -725,8 +773,12 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'male'
+bin_pred <- 'old'
 run_diagnostics <- FALSE
+
+## Create directory
+dir_gc <- file.path('artifacts', dir_art, 'plots', 'group-comparison', bin_pred)
+if (!dir.exists(dir_gc)) dir.create(dir_gc)
 
 
 ## ----- Fit linear regression
@@ -743,7 +795,7 @@ model <- binary_fit(Z, x)
 ## ----- Model diagnostics
 
 if (run_diagnostics) {
-  binary_diagnostics(model, file.path('artifacts', dir_art, 'diagnostics'), col_train)
+  binary_diagnostics(model, dir_gc, col_train)
 }
 
 
@@ -757,7 +809,7 @@ print(res_rb)
 
 ## Save results
 path <- file.path(
-  'artifacts', dir_art, 'plots', 
+  dir_gc,
   str_glue('mod_{bin_pred}.txt')
 )
 sink(path)
@@ -768,28 +820,34 @@ res_rb
 sink()
 
 ## Plot Roy-Bose Intervals
-
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  dir_gc,
   str_glue('roy-bose_{bin_pred}.png')
 )
 png(path_plot, width = 600, height = 800, pointsize = 14)
-binary_plot_intervals(res_rb, xlim = c(-1, 1), main = str_glue("Roy-Bose Intervals ({bin_pred})"))
+binary_plot_intervals(
+  res_rb, 
+  xlim = c(-1.2, 1.2), 
+  main = str_glue("Joint Bands for Latent Regression Coefficients ({gp1_name})")
+)
 dev.off()
-
-
 
 ## MIMS activity-intensity thresholds (per-minute units) for CDF plots.
 mims_thresholds <- list(
   list(
-    label = "sed / light",
+    label = "light",
     value = 15.05,
     col = 'darkblue'
   ),
   list(
-    label = "light / mvpa",
+    label = "mvpa",
     value = 19.61,
     col = 'darkorange'
+  ),
+  list(
+    label = "extremely vigorous",
+    value = 40.00,
+    col = 'darkgreen'
   )
 )
 
@@ -810,6 +868,9 @@ quantile_levels <- list(
   )
 )
 
+## Covariate names for plotting
+gp1_name <- get_plot_name_for_cov(bin_pred, FALSE)
+gp0_name <- get_plot_name_for_cov(bin_pred, TRUE)
 
 ## ----- Conditional QF Plots
 
@@ -832,14 +893,15 @@ Qi_boot_1 <- decode_z_rot_to_Qi(pipeline, z_boot_1, Ji)
 ## --- Plot conditional QFs with bands
 
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  dir_gc,
   str_glue('gc_cond-qfs_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 plot_decoded_conditional_qfs(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha = alpha,
-  main  = str_glue("Decoded Conditional Means ({bin_pred})")
+  main  = "Decoded Conditional Means",
+  group_labels = c(gp0_name, gp1_name)
 )
 dev.off()
 
@@ -847,14 +909,16 @@ dev.off()
 ## --- Plot difference of conditional QFs with bands
 
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  dir_gc,
   str_glue('gc_cond-qfs-diff_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 plot_decoded_conditional_qf_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha = alpha,
-  main  = str_glue("Decoded Conditional Mean Difference ({bin_pred})")
+  main  = "Decoded Conditional Mean Contrast",
+  diff_label = str_glue("{gp1_name} - {gp0_name}"),
+  legend_loc = 'bottomleft'
 )
 dev.off()
 
@@ -866,16 +930,17 @@ y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1)
 ## --- Plot conditional CDFs with bands
 
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  dir_gc,
   str_glue('gc_cond-cdfs_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 plot_decoded_conditional_cdfs(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha      = alpha,
-  main       = str_glue("Decoded Conditional CDFs ({bin_pred})"),
+  main       = "Decoded Conditional CDFs",
   y_grid     = y_grid,
-  thresholds = mims_thresholds
+  thresholds = mims_thresholds,
+  group_labels = c(gp0_name, gp1_name)
 )
 dev.off()
 
@@ -883,31 +948,123 @@ dev.off()
 ## --- Plot CDF difference with bands
 
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  dir_gc,
   str_glue('gc_cond-cdfs-diff_{bin_pred}.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 plot_decoded_conditional_cdf_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha      = alpha,
-  main       = str_glue("Decoded Conditional CDF Difference ({bin_pred})"),
+  main       = "Decoded Conditional CDF Contrast",
   y_grid     = y_grid,
-  thresholds = mims_thresholds
+  thresholds = mims_thresholds,
+  diff_label = str_glue("{gp1_name} - {gp0_name}"),
+  legend_loc = 'topright'
 )
 dev.off()
+
+
+## --- Plot conditional survival functions (1-F(x)) with bands
+
+path_plot <- file.path(
+  dir_gc,
+  str_glue('gc_cond-survivals_{bin_pred}.png')
+)
+png(path_plot, width = 960, height = 960, pointsize = 18)
+plot_decoded_conditional_survivals(
+  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  alpha      = alpha,
+  main       = "Decoded Conditional Survival Curves",
+  y_grid     = y_grid,
+  thresholds = mims_thresholds,
+  group_labels = c(gp0_name, gp1_name),
+  band_type  = 'pointwise'
+)
+dev.off()
+
+
+## --- Plot survival function difference with bands
+
+path_plot <- file.path(
+  dir_gc,
+  str_glue('gc_cond-survivals-diff_{bin_pred}.png')
+)
+png(path_plot, width = 960, height = 960, pointsize = 18)
+plot_decoded_conditional_survival_diff(
+  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  alpha      = alpha,
+  main       = "Decoded Conditional Survival Contrast",
+  y_grid     = y_grid,
+  thresholds = mims_thresholds,
+  diff_label = str_glue("{gp1_name} - {gp0_name}"),
+  band_type  = 'pointwise',
+  legend_loc = 'bottomright'
+)
+dev.off()
+
+
+## --- Plot thresholds with bands (2 panels, one per threshold)
+
+path_plot <- file.path(
+  dir_gc,
+  str_glue('gc_cond-thresholds_{bin_pred}.png')
+)
+png(path_plot, width = 960, height = 360, pointsize = 12)
+plot_decoded_conditional_thresholds(
+  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  thresholds   = mims_thresholds,
+  eval_type    = c('cdf', 'survival', 'survival'),
+  panel_mains  = c('Time in sedentary', 'Time above MVPA threshold', 'Time above very vigorous threshold'),
+  panel_ylabs  = c(
+    str_glue("F(y = {mims_thresholds[[1]]$value})"),
+    str_glue("1 - F(y = {mims_thresholds[[2]]$value})"),
+    str_glue("1 - F(y = {mims_thresholds[[3]]$value})")
+  ),
+  alpha        = alpha,
+  main         = "Decoded Conditional Threshold Probabilities",
+  group_labels = c(gp0_name, gp1_name)
+)
+dev.off()
+
+
+## --- Plot threshold constrasts with bands (2 panels, one per threshold)
+
+path_plot <- file.path(
+  dir_gc,
+  str_glue('gc_cond-thresholds-diff_{bin_pred}.png')
+)
+png(path_plot, width = 960, height = 360, pointsize = 12)
+plot_decoded_conditional_threshold_diff(
+  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  thresholds  = mims_thresholds,
+  eval_type   = c('cdf', 'survival', 'survival'),
+  panel_mains = c('Time in sedentary', 'Time above MVPA threshold', 'Time above very vigorous threshold'),
+  panel_ylabs = c(
+    str_glue("F(y = {mims_thresholds[[1]]$value}) Contrast"),
+    str_glue("1 - F(y = {mims_thresholds[[2]]$value}) Contrast"),
+    str_glue("1 - F(y = {mims_thresholds[[3]]$value}) Contrast")
+  ),
+  alpha       = alpha,
+  main        = "Decoded Conditional Threshold Probability Contrast",
+  diff_label  = str_glue("{gp1_name} - {gp0_name}")
+)
+dev.off()
+
+
 
 
 ## --- Plot moments with bands (4 panels, one per moment)
 
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  dir_gc,
   str_glue('gc_cond-moments_{bin_pred}.png')
 )
 png(path_plot, width = 1280, height = 360, pointsize = 14)
 plot_decoded_conditional_moments(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha = alpha,
-  main  = str_glue("Decoded Conditional Moments ({bin_pred})")
+  main  = "Decoded Conditional Moments",
+  group_labels = c(gp0_name, gp1_name)
 )
 dev.off()
 
@@ -915,14 +1072,15 @@ dev.off()
 ## --- Contrast in conditional moments (group 1 - group 0)
 
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  dir_gc,
   str_glue('gc_cond-moments-diff_{bin_pred}.png')
 )
 png(path_plot, width = 1280, height = 360, pointsize = 14)
 plot_decoded_conditional_moment_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha = alpha,
-  main  = str_glue("Decoded Conditional Moment Contrasts ({bin_pred})")
+  main  = "Decoded Conditional Moment Contrasts",
+  diff_label = str_glue("{gp1_name} - {gp0_name}")
 )
 dev.off()
 

@@ -42,9 +42,7 @@ compute_recon_loss <- function(pipeline, y_list) {
 
 ## NHANES held-out subset matched to CHOP size, so both columns have the same
 ## sample size and the jitter clouds are visually comparable.
-set.seed(12345)
-idx_nhanes_val <- sample(length(y_nhanes), length(y_chop))
-losses_nhanes  <- compute_recon_loss(pipeline_star, y_nhanes)# y_nhanes[idx_nhanes_val])
+losses_nhanes  <- compute_recon_loss(pipeline_star, y_nhanes)
 losses_chop    <- compute_recon_loss(pipeline_star, y_chop)
 
 plot_losslessness_groups(
@@ -59,16 +57,11 @@ plot_losslessness_groups(
                            str_glue('chop-losses_K-{K_star}.png'))
 )
 
-## NOTES: 
-##  - Decide whether to include subsample of NHANES
-##  - Write percentage of CHOP < eps as well? Should be even higher than 95.3% (that was on validation sets)
-
-
 
 ## ---------- Embedding plots at K_star ---------- ##
 
 k_start   <- 1
-k_stop    <- 5
+k_stop    <- 3
 col_train <- rgb(0, 0, 0, alpha = 0.25)
 col_flag <- rgb(1, 0, 0)
 

@@ -872,11 +872,14 @@ plot_funs <- function(
     fun_list,
     grid_list,
     ylim = NULL,
+    xlab = 'p',
     ylab = 'Q(p)',
+    cex.lab = 1.0,
     colors = NULL,
     widths = NULL,
     types = NULL,
     color_width_type_labels = NULL,
+    legend_loc = 'topleft',
     main = '',
     path = NULL
 ) {
@@ -925,8 +928,9 @@ plot_funs <- function(
     NULL,
     xlim = xlim,
     ylim = ylim,
-    xlab = "p",
+    xlab = xlab,
     ylab = ylab,
+    cex.lab = cex.lab,
     main = main
   )
   
@@ -949,7 +953,7 @@ plot_funs <- function(
     }
     
     legend(
-      "topleft",
+      legend_loc,
       legend = color_width_type_labels$label,
       col    = color_width_type_labels$color,
       lwd    = color_width_type_labels$width,
