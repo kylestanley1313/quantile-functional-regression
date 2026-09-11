@@ -658,12 +658,12 @@ costs_variance <- function(Q_synth_list, Q_real_list, w) {
   outer(a, b, '-')^2
 }
 
-## Computes N_synth x N_real matrix of squared differences between skewnesses
+## Computes N_synth x N_real matrix of squared differences  between skewnesses
 costs_skewness <- function(Q_synth_list, Q_real_list, w) {
   a <- q_moments(Q_synth_list, w)$skew
   b <- q_moments(Q_real_list,  w)$skew
   outer(a, b, '-')^2
-}
+}  
 
 resolve_costs_fun <- function(cost_type = c("wasserstein", "mean",
                                             "variance", "skewness")) {
@@ -795,7 +795,7 @@ evaluate_pipeline_generativity <- function(
         source(file.path(.repo_root, "src", "cot.R"))
       }
       set.seed(rep_seeds[r])
-      z_draws     <- draw_mean_cov(length(idx_val), fit)
+      z_draws     <- sample_mean_cov(length(idx_val), fit)
       Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
       compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
     }
@@ -851,6 +851,190 @@ evaluate_pipeline_generativity <- function(
       N_used      = if (is.null(subsample_n)) length(y_list) else subsample_n,
       K           = K_used
     )
+  )
+}
+
+
+## Generalization of evaluate_pipeline_generativity to a covariate-aware
+## (conditional) setting. y_mask selects the group under study; X carries
+## whatever covariates fit_fun needs to fit a (possibly joint, cross-group)
+## latent model. See evaluate_unconditional_generativity below for the
+## covariate-agnostic special case, which reduces to
+## evaluate_pipeline_generativity's exact behavior.
+##
+## fit_fun / sample_fun contract (fixed, minimal signature -- see design
+## notes in the generativity-conditional plan):
+##   fit_fun(Z, X)    -> a fitted latent-model object ("fit"). Z is that
+##                       split's ENTIRE training-half latent matrix (not
+##                       restricted to the y_mask group) and X is the
+##                       corresponding training-half covariate subset (or
+##                       NULL). Passing the full training half (not just the
+##                       masked group) lets fit_fun be a joint/pooled model
+##                       across groups (e.g. a future fit_binary-based
+##                       closure), which needs to see every group to fit at
+##                       all. y_mask is NOT passed to fit_fun; a caller whose
+##                       model needs an explicit group column adds it to X
+##                       itself (e.g. X = data.frame(group = y_mask)).
+##   sample_fun(n, fit) -> a length-n list of numeric K-vectors drawn from
+##                       fit, matching sample_mean_cov's shape.
+## Any other configuration a real fit/sample pair needs (hyperparameters,
+## which column of X encodes group membership, which group level to sample
+## from) is not threaded through here generically -- the caller closes over
+## it when building fit_fun/sample_fun (see evaluate_unconditional_generativity
+## for the simplest example).
+evaluate_generativity <- function(
+  pipeline, y_list, X, y_mask,
+  fit_fun, sample_fun,
+  S, R,
+  cost_type   = 'wasserstein',
+  frac_train  = 0.5,
+  subsample_n = NULL,
+  J_aug       = 500,
+  seed        = 12345,
+  n_cores     = 1
+) {
+  stopifnot(
+    is.logical(y_mask), length(y_mask) == length(y_list),
+    is.null(X) || NROW(X) == length(y_list),
+    is.function(fit_fun), is.function(sample_fun)
+  )
+
+  set.seed(seed)
+
+  ## Build augmented grid + weights once
+  p_grid     <- pipeline$training$cache$p_grid
+  p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(J_aug - length(p_grid)))))
+  w_aug      <- get_quadrature_weights(p_grid_aug)
+
+  split_seeds <- sample.int(.Machine$integer.max, S)
+
+  splits <- vector('list', S)
+  for (s in seq_len(S)) {
+    set.seed(split_seeds[s])
+
+    ## Optional subsample, then split -- identical to
+    ## evaluate_pipeline_generativity, unmasked, so the RNG draw sequence is
+    ## independent of y_mask.
+    n_pool <- length(y_list)
+    if (!is.null(subsample_n)) {
+      stopifnot(subsample_n <= n_pool)
+      idx_pool <- sample.int(n_pool, subsample_n)
+    } else {
+      idx_pool <- seq_len(n_pool)
+    }
+    n_used   <- length(idx_pool)
+    n_train  <- floor(frac_train * n_used)
+    perm     <- sample(idx_pool)
+    idx_tr   <- perm[seq_len(n_train)]
+    idx_val  <- perm[(n_train + 1):n_used]
+
+    ## Fit on the FULL training half (not y_mask-restricted) so a joint,
+    ## cross-group model has both groups available to it.
+    Z_tr <- encode_y_to_z(pipeline, y_list[idx_tr])
+    X_tr <- if (is.null(X)) NULL else X[idx_tr, , drop = FALSE]
+    fit  <- fit_fun(Z_tr, X_tr)
+
+    ## Restrict to the masked group for scoring. Logical subsetting is not a
+    ## random draw, so when y_mask is all-TRUE, idx_tr_grp == idx_tr and
+    ## idx_val_grp == idx_val exactly.
+    idx_tr_grp  <- idx_tr[y_mask[idx_tr]]
+    idx_val_grp <- idx_val[y_mask[idx_val]]
+    stopifnot(length(idx_tr_grp) >= 1, length(idx_val_grp) >= 1)
+
+    Q_val_aug   <- encode_y_to_Qi_aug(pipeline, y_list[idx_val_grp], p_grid_aug)
+    Q_train_aug <- encode_y_to_Qi_aug(pipeline, y_list[idx_tr_grp], p_grid_aug)
+
+    T_tv <- compute_generativity_score(Q_train_aug, Q_val_aug, w_aug, cost_type)
+
+    rep_seeds <- sample.int(.Machine$integer.max, R)
+
+    gen_one_rep <- function(r) {
+      # See evaluate_pipeline_generativity's identical guard: a fresh
+      # multisession worker has no py_pkg until src/cot.R is re-sourced.
+      if (!exists("py_pkg", envir = .GlobalEnv, inherits = FALSE)) {
+        setwd(.repo_root)
+        source(file.path(.repo_root, "src", "cot.R"))
+      }
+      set.seed(rep_seeds[r])
+      z_draws     <- sample_fun(length(idx_val_grp), fit)
+      Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
+      compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
+    }
+
+    .repo_root <- getwd()
+
+    if (n_cores > 1) {
+      # See evaluate_pipeline_generativity for the rationale behind
+      # caller_has_pool reuse, future.globals being explicit, and
+      # future.seed = NULL. sample_fun is added to future.globals (unlike
+      # evaluate_pipeline_generativity's hardcoded sample_mean_cov) because
+      # it's a caller-supplied closure, not a function guaranteed to already
+      # exist on the worker via the source(cot.R) guard above.
+      caller_has_pool <- !inherits(future::plan(), "sequential")
+      if (!caller_has_pool) {
+        old_plan <- future::plan(future::multisession, workers = n_cores)
+        on.exit(future::plan(old_plan), add = TRUE)
+      }
+      T_sv <- unlist(future.apply::future_lapply(
+        seq_len(R), gen_one_rep,
+        future.seed    = NULL,
+        future.globals = c("rep_seeds", "pipeline", "idx_val_grp", "fit",
+                            "sample_fun", "Q_val_aug", "w_aug", "p_grid_aug",
+                            "p_grid", ".repo_root")
+      ))
+    } else {
+      T_sv <- unlist(lapply(seq_len(R), gen_one_rep))
+    }
+
+    splits[[s]] <- list(
+      T_tv      = T_tv,
+      T_sv      = T_sv,
+      log_norm  = log(T_sv / T_tv),
+      n_tr_grp  = length(idx_tr_grp),
+      n_val_grp = length(idx_val_grp)
+    )
+  }
+
+  K_used <- ncol(encode_y_to_z(pipeline, y_list[1]))
+  list(
+    splits = splits,
+    meta = list(
+      S = S, R = R,
+      frac_train  = frac_train,
+      subsample_n = subsample_n,
+      N_used      = if (is.null(subsample_n)) length(y_list) else subsample_n,
+      K           = K_used
+    )
+  )
+}
+
+
+## Covariate-agnostic special case of evaluate_generativity: no covariates,
+## the group under study is everyone, and the latent model is the
+## unconditional mean-covariance model. Reduces to
+## evaluate_pipeline_generativity's exact behavior (same splits, same RNG
+## draws, same scores) -- see the generativity-conditional plan for the
+## argument. Public signature matches evaluate_pipeline_generativity's, so
+## this is a drop-in replacement at call sites.
+evaluate_unconditional_generativity <- function(
+  pipeline, y_list,
+  S, R,
+  cost_type   = 'wasserstein',
+  frac_train  = 0.5,
+  subsample_n = NULL,
+  J_aug       = 500,
+  ridge       = 0,
+  seed        = 12345,
+  n_cores     = 1
+) {
+  evaluate_generativity(
+    pipeline, y_list,
+    X = NULL, y_mask = rep(TRUE, length(y_list)),
+    fit_fun    = function(Z, X) fit_mean_cov(Z, ridge = ridge),
+    sample_fun = sample_mean_cov,
+    S = S, R = R,
+    cost_type = cost_type, frac_train = frac_train, subsample_n = subsample_n,
+    J_aug = J_aug, seed = seed, n_cores = n_cores
   )
 }
 
