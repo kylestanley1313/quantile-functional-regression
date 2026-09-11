@@ -67,7 +67,7 @@ library(splines)
 ##   Z_k = X beta_k + W_age u_{age,k} + W_pir u_{pir,k} + eps_k
 ## where W_age, W_pir are Demmler-Reinsch spline bases and u ~ N(0, sigma^2_u I).
 ## Returns a named list with all fitted quantities (see return statement).
-amm_fit <- function(Z, covariates,
+fit_amm <- function(Z, covariates,
                     n_knots_age = 10, n_knots_pir = 10,
                     linear_covariates = c("male", "age", "pir"),
                     smooth_covariates = c("age", "pir")) {
@@ -269,8 +269,8 @@ amm_fit <- function(Z, covariates,
 ## Refit the AMM with one or more smooth covariates dropped (for likelihood
 ## ratio testing). drop is a character vector of covariate names to remove
 ## from smooth_covariates.
-amm_fit_reduced <- function(Z, covariates, drop = NULL, ...) {
-  amm_fit(Z, covariates,
+fit_amm_reduced <- function(Z, covariates, drop = NULL, ...) {
+  fit_amm(Z, covariates,
           smooth_covariates = setdiff(c("age", "pir"), drop), ...)
 }
 
@@ -550,7 +550,7 @@ amm_boot_test <- function(fit_full, fit_reduced, covariates, covariate_name,
   boot_one <- function(b) {
     G_b   <- matrix(rnorm(N_kept * K_), N_kept, K_)
     Z_b   <- Z_hat_red + G_b %*% L
-    fit_b <- tryCatch(amm_fit(Z_b, cov_kept), error = function(e) NULL)
+    fit_b <- tryCatch(fit_amm(Z_b, cov_kept), error = function(e) NULL)
     if (is.null(fit_b)) return(0)
     if (statistic == "iss") {
       sm_b <- amm_evaluate_smooth(fit_b, covariate_name, grid,
@@ -558,7 +558,7 @@ amm_boot_test <- function(fit_full, fit_reduced, covariates, covariate_name,
       sum(sm_b^2)
     } else {
       fit_b_red <- tryCatch(
-        amm_fit_reduced(Z_b, cov_kept, drop = covariate_name),
+        fit_amm_reduced(Z_b, cov_kept, drop = covariate_name),
         error = function(e) NULL
       )
       if (is.null(fit_b_red)) return(0)
@@ -585,23 +585,23 @@ amm_boot_test <- function(fit_full, fit_reduced, covariates, covariate_name,
 ## ==================== Diagnostics ====================
 
 ## Per-column summary of variance components, smoothing parameters, and EDF.
-amm_summary <- function(amm_fit) {
-  K_ <- ncol(amm_fit$beta_hat)
+amm_summary <- function(fit_amm) {
+  K_ <- ncol(fit_amm$beta_hat)
   data.frame(
     k            = seq_len(K_),
-    sigma2_U_age = amm_fit$sigma2_U_age,
-    sigma2_U_pir = amm_fit$sigma2_U_pir,
-    sigma2_E     = amm_fit$sigma2_E_diag,
-    lambda_age   = amm_fit$lambda_age,
-    lambda_pir   = amm_fit$lambda_pir,
-    edf          = amm_fit$edf
+    sigma2_U_age = fit_amm$sigma2_U_age,
+    sigma2_U_pir = fit_amm$sigma2_U_pir,
+    sigma2_E     = fit_amm$sigma2_E_diag,
+    lambda_age   = fit_amm$lambda_age,
+    lambda_pir   = fit_amm$lambda_pir,
+    edf          = fit_amm$edf
   )
 }
 
 ## Log10 smoothing-parameter plot (lambda by k for age and pir).
-amm_plot_lambda <- function(amm_fit, path) {
-  K_amm      <- ncol(amm_fit$beta_hat)
-  lambda_log <- log10(c(amm_fit$lambda_age, amm_fit$lambda_pir))
+amm_plot_lambda <- function(fit_amm, path) {
+  K_amm      <- ncol(fit_amm$beta_hat)
+  lambda_log <- log10(c(fit_amm$lambda_age, fit_amm$lambda_pir))
   png(path, width = 960, height = 540, pointsize = 14)
   par(mfrow = c(1, 1), mar = c(4, 5, 3, 1))
   plot(
@@ -611,9 +611,9 @@ amm_plot_lambda <- function(amm_fit, path) {
     xlab = "k", ylab = expression(log[10](lambda)),
     main = "AMM smoothing parameters by latent dimension"
   )
-  lines(1:K_amm, log10(amm_fit$lambda_age), col = "darkblue",   lwd = 2,
+  lines(1:K_amm, log10(fit_amm$lambda_age), col = "darkblue",   lwd = 2,
         type = "b", pch = 19)
-  lines(1:K_amm, log10(amm_fit$lambda_pir), col = "darkorange", lwd = 2,
+  lines(1:K_amm, log10(fit_amm$lambda_pir), col = "darkorange", lwd = 2,
         type = "b", pch = 17)
   legend("topright",
     legend = c("age", "pir"),
@@ -624,26 +624,26 @@ amm_plot_lambda <- function(amm_fit, path) {
 }
 
 ## Residual Q-Q panels (one panel per latent dimension k).
-amm_plot_resid_qq <- function(amm_fit, path,
+amm_plot_resid_qq <- function(fit_amm, path,
                                col_train = rgb(0, 0, 0, 0.25)) {
-  K_amm <- ncol(amm_fit$beta_hat)
+  K_amm <- ncol(fit_amm$beta_hat)
   nc    <- ceiling(sqrt(K_amm))
   nr    <- ceiling(K_amm / nc)
   pdf(path, width = 3 * nc, height = 3 * nr)
   par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
   for (k in seq_len(K_amm)) {
-    qqnorm(amm_fit$R_mat[, k], main = paste0("k = ", k),
+    qqnorm(fit_amm$R_mat[, k], main = paste0("k = ", k),
            pch = 19, cex = 0.25, col = col_train)
-    qqline(amm_fit$R_mat[, k], col = "red")
+    qqline(fit_amm$R_mat[, k], col = "red")
   }
   dev.off()
   par(mfrow = c(1, 1))
 }
 
 ## Heatmap of the residual covariance matrix Sigma_E.
-amm_plot_sigma_e <- function(amm_fit, path) {
-  K_amm   <- ncol(amm_fit$beta_hat)
-  zmax    <- max(abs(amm_fit$Sigma_E))
+amm_plot_sigma_e <- function(fit_amm, path) {
+  K_amm   <- ncol(fit_amm$beta_hat)
+  zmax    <- max(abs(fit_amm$Sigma_E))
   breaks  <- seq(-zmax, zmax, length.out = 101)
   col_pal <- colorRampPalette(c("#0000FF", "white", "#FF000000"))(100)
 
@@ -651,7 +651,7 @@ amm_plot_sigma_e <- function(amm_fit, path) {
   par(mar = c(4, 4, 3, 5))
   image(
     1:K_amm, 1:K_amm,
-    t(amm_fit$Sigma_E)[, K_amm:1],
+    t(fit_amm$Sigma_E)[, K_amm:1],
     zlim = c(-zmax, zmax),
     col  = col_pal, breaks = breaks,
     axes = FALSE, xlab = "", ylab = "",
@@ -660,7 +660,7 @@ amm_plot_sigma_e <- function(amm_fit, path) {
   axis(1, at = 1:K_amm, labels = 1:K_amm, las = 1, tick = FALSE)
   axis(2, at = 1:K_amm, labels = K_amm:1, las = 1, tick = FALSE)
   for (i in 1:K_amm) for (j in 1:K_amm) if (i >= j) {
-    text(j, K_amm - i + 1, sprintf("%.2f", amm_fit$Sigma_E[i, j]), cex = 0.6)
+    text(j, K_amm - i + 1, sprintf("%.2f", fit_amm$Sigma_E[i, j]), cex = 0.6)
   }
   dev.off()
 }
@@ -753,29 +753,29 @@ amm_plot_boot_hist <- function(boot_res, title, path) {
 ## ----- Internal helpers -----
 
 ## Simulate one synthetic Z from the fitted AMM: mu_hat + E*, E* ~ N(0, Sigma_E).
-.amm_simulate_one <- function(amm_fit) {
-  N_kept <- sum(amm_fit$keep)
-  K_     <- ncol(amm_fit$beta_hat)
-  mu     <- amm_fit$X_design %*% amm_fit$beta_hat
-  if (!is.null(amm_fit$U_age_hat)) mu <- mu + amm_fit$W_age %*% amm_fit$U_age_hat
-  if (!is.null(amm_fit$U_pir_hat)) mu <- mu + amm_fit$W_pir %*% amm_fit$U_pir_hat
-  L <- chol(amm_fit$Sigma_E)
+.amm_simulate_one <- function(fit_amm) {
+  N_kept <- sum(fit_amm$keep)
+  K_     <- ncol(fit_amm$beta_hat)
+  mu     <- fit_amm$X_design %*% fit_amm$beta_hat
+  if (!is.null(fit_amm$U_age_hat)) mu <- mu + fit_amm$W_age %*% fit_amm$U_age_hat
+  if (!is.null(fit_amm$U_pir_hat)) mu <- mu + fit_amm$W_pir %*% fit_amm$U_pir_hat
+  L <- chol(fit_amm$Sigma_E)
   G <- matrix(rnorm(N_kept * K_), N_kept, K_)
   mu + G %*% L
 }
 
 ## Wrap per-replicate coefficient triple into a fit-like object so that
 ## amm_evaluate_smooth and amm_compute_conditional_mean work unchanged on it.
-## Design matrices and basis attributes are shared by reference from amm_fit.
-.amm_make_replicate <- function(amm_fit, beta_hat_r, U_age_hat_r, U_pir_hat_r) {
+## Design matrices and basis attributes are shared by reference from fit_amm.
+.amm_make_replicate <- function(fit_amm, beta_hat_r, U_age_hat_r, U_pir_hat_r) {
   list(
     beta_hat          = beta_hat_r,
     U_age_hat         = U_age_hat_r,
     U_pir_hat         = U_pir_hat_r,
-    W_age             = amm_fit$W_age,
-    W_pir             = amm_fit$W_pir,
-    smooth_covariates = amm_fit$smooth_covariates,
-    linear_covariates = amm_fit$linear_covariates
+    W_age             = fit_amm$W_age,
+    W_pir             = fit_amm$W_pir,
+    smooth_covariates = fit_amm$smooth_covariates,
+    linear_covariates = fit_amm$linear_covariates
   )
 }
 
@@ -850,7 +850,7 @@ amm_boot_interpret <- function(amm, covariates_kept, B,
   set.seed(seed)
   boot_one <- function(b) {
     Z_b   <- .amm_simulate_one(amm)
-    fit_b <- tryCatch(amm_fit(Z_b, covariates_kept), error = function(e) NULL)
+    fit_b <- tryCatch(fit_amm(Z_b, covariates_kept), error = function(e) NULL)
     if (is.null(fit_b)) return(NULL)
     list(
       beta_hat  = fit_b$beta_hat,

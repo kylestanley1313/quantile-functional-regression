@@ -402,7 +402,7 @@ idx_tr     <- perm[seq_len(n_train)]
 idx_val    <- perm[(n_train + 1):N]
 
 fit     <- fit_mean_cov(encode_y_to_z(pipeline, y_list[idx_tr]), ridge = 0)
-z_draws <- draw_mean_cov(length(idx_val), fit)
+z_draws <- sample_mean_cov(length(idx_val), fit)
 Qi_draws <- decode_z_to_Qi(pipeline, z_draws, Ji = Ji)
 
 ## Plot
@@ -737,7 +737,7 @@ Z <- do.call(rbind, z_rot_ctx$payload[mask])
 N <- nrow(Z)
 K <- ncol(Z)
 x <- df_cov[mask,bin_pred]
-model <- binary_fit(Z, x)
+model <- fit_binary(Z, x)
 
 
 ## ----- Model diagnostics
@@ -941,7 +941,7 @@ covariates_amm <- data.frame(
   pir  = df_cov$PIR
 )
 start <- Sys.time()
-amm <- amm_fit(Z_amm, covariates_amm, n_knots_age = 10, n_knots_pir = 10)
+amm <- fit_amm(Z_amm, covariates_amm, n_knots_age = 10, n_knots_pir = 10)
 stop <- Sys.time()
 print(stop - start)
 
@@ -987,9 +987,9 @@ amm_plot_re_cov(
 ## ---------- Driver ----------
 
 ## Reduced fits for CR and bootstrap smooth tests
-amm_red_age <- amm_fit_reduced(Z_amm, covariates_amm, drop = "age",
+amm_red_age <- fit_amm_reduced(Z_amm, covariates_amm, drop = "age",
                                 n_knots_age = 10, n_knots_pir = 10)
-amm_red_pir <- amm_fit_reduced(Z_amm, covariates_amm, drop = "pir",
+amm_red_pir <- fit_amm_reduced(Z_amm, covariates_amm, drop = "pir",
                                 n_knots_age = 10, n_knots_pir = 10)
 
 ## Hotelling test for linear effects

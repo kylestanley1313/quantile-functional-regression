@@ -12,7 +12,7 @@ library(MASS)
 
 ## Fit a multivariate linear model Z ~ x where Z is N x K and x is a binary
 ## scalar predictor. Rows where x is NA are excluded.
-binary_fit <- function(Z, x) {
+fit_binary <- function(Z, x) {
   lm(Z ~ x)
 }
 
@@ -168,7 +168,7 @@ binary_plot_intervals <- function(rb_df, xlim = NULL, main = "") {
 
 ## ==================== Diagnostics ====================
 
-## Save a battery of residual-diagnostic plots for binary_fit() output:
+## Save a battery of residual-diagnostic plots for fit_binary() output:
 ##   (1) Marginal Q-Q plots
 ##   (2) Marginal histograms
 ##   (3) Pairwise residual scatterplots

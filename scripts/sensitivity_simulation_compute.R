@@ -146,8 +146,9 @@ gen_uncond_by_k <- p_vals_by_k
 gen_cond1_by_k  <- p_vals_by_k
 gen_cond2_by_k  <- p_vals_by_k
 
-# S/R kept small: evaluate_pipeline_generativity() runs once unconditionally
-# and once per group for every K below, so this stays cheap per row.
+# S/R kept small: evaluate_unconditional_generativity() runs once
+# unconditionally and once per group for every K below, so this stays cheap
+# per row.
 S_gen <- 2
 R_gen <- 5
 
@@ -156,7 +157,7 @@ R_gen <- 5
 mean_log_norm_generativity <- function(pipeline, y_list_g, context) {
   tryCatch(
     {
-      gen <- evaluate_pipeline_generativity(
+      gen <- evaluate_unconditional_generativity(
         pipeline, y_list_g,
         S = S_gen, R = R_gen, 
         cost_type = 'mean',

@@ -85,8 +85,8 @@ for (K in Ks) {
 
 ## All generativity helpers live in src/utils.R:
 ##   decode_z_to_Qi, encode_y_to_Qi_aug, decode_z_to_Qi_aug, compute_generativity,
-##   generativity_score, encode_y_to_z, fit_mean_cov, draw_mean_cov,
-##   evaluate_pipeline_generativity, plot_generativity_boxes.
+##   generativity_score, encode_y_to_z, fit_mean_cov, sample_mean_cov,
+##   evaluate_unconditional_generativity, plot_generativity_boxes.
 
 
 
@@ -112,7 +112,7 @@ for (K in Ks) {
   pipeline <- readRDS(path_pipe)
 
   start <- Sys.time()
-  gen_list[[as.character(K)]] <- evaluate_pipeline_generativity(
+  gen_list[[as.character(K)]] <- evaluate_unconditional_generativity(
     pipeline, y_list,
     S = S, R = R,
     frac_train  = 0.5,

@@ -302,7 +302,7 @@ dev.off()
 set.seed(12345)
 Z <- do.call(rbind, z_ctx$payload)
 mod <- fit_mean_cov(Z)
-z_draws <- draw_mean_cov(N, mod)
+z_draws <- sample_mean_cov(N, mod)
 Qi_draws <- decode_z_to_Qi(pipeline, z_draws, Ji = Ji_max)
 
 ## Plot Q
@@ -469,7 +469,7 @@ for (K in Ks) {
     y_list, K,
     path_flow = file.path('artifacts', dir_art, 'dimension_selection', str_glue('flow_K-{K}.pth'))
   )
-  gen_list_by_K[[as.character(K)]] <- evaluate_pipeline_generativity(
+  gen_list_by_K[[as.character(K)]] <- evaluate_unconditional_generativity(
     pipeline_K, y_list,
     S = S, R = R,
     frac_train = 0.5,

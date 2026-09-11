@@ -111,7 +111,7 @@ n_cores <- min(5, R)
 
 ## NHANES gets subsampled to CHOP's size BEFORE each split so both arms see
 ## matched-size splits and the comparison is apples-to-apples.
-gen_nhanes <- evaluate_pipeline_generativity(
+gen_nhanes <- evaluate_unconditional_generativity(
   pipeline_star, y_nhanes,
   S = S, R = R,
   frac_train  = 0.5,
@@ -121,7 +121,7 @@ gen_nhanes <- evaluate_pipeline_generativity(
   seed        = 12345,
   n_cores     = n_cores
 )
-gen_chop <- evaluate_pipeline_generativity(
+gen_chop <- evaluate_unconditional_generativity(
   pipeline_star, y_chop,
   S = S, R = R,
   frac_train  = 0.5,
@@ -185,7 +185,7 @@ for (label in c("nhanes", "chop")) {
   # mask <- z_norms < 15
   # fit <- fit_mean_cov(Z[mask,], ridge = 0)
   ############
-  z_draws  <- draw_mean_cov(length(idx_val), fit)
+  z_draws  <- sample_mean_cov(length(idx_val), fit)
   Qi_draws <- decode_z_to_Qi(pipeline_star, z_draws, Ji = Ji)
 
   y_ctx_val <- new_context(
