@@ -8,9 +8,7 @@
 
 library(future)
 library(future.apply)
-library(mgcv)
 library(nlme)
-library(RLRsim)
 library(splines)
 
 
@@ -120,7 +118,7 @@ fit_amm <- function(Z, covariates,
   edf_pir       <- if (M_p > 0) numeric(K) else NULL
   edf           <- numeric(K)
   fits          <- vector("list", K)
-  boundary_diag <- vector("list", K)
+  collapsed     <- vector("list", K)
 
   W_cols_age <- if (M_a > 0) paste0("Wa", seq_len(M_a)) else character(0)
   W_cols_pir <- if (M_p > 0) paste0("Wp", seq_len(M_p)) else character(0)
@@ -146,6 +144,22 @@ fit_amm <- function(Z, covariates,
     random_struct <- list(grp = pdIdent(form_pir))
   }
 
+  fit_lme <- function(random) {
+    tryCatch(
+      do.call(lme, list(
+        fixed   = fixed_form,
+        random  = random,
+        data    = df_k,
+        method  = "REML",
+        control = lmeControl(opt = "optim")
+      )),
+      error = function(e) {
+        message(str_glue("  lme error: {conditionMessage(e)}"))
+        NULL
+      }
+    )
+  }
+
   for (k in seq_len(K)) {
     message(str_glue("---- AMM fit: k = {k} of {K} ----"))
     df_k   <- df_base
@@ -165,66 +179,87 @@ fit_amm <- function(Z, covariates,
       sigma2_E_diag[k]  <- summary(fit_k)$sigma^2
       edf[k] <- A1
     } else {
-      fit_k <- tryCatch(
-        do.call(lme, list(
-          fixed   = fixed_form,
-          random  = random_struct,
-          data    = df_k,
-          method  = "REML",
-          control = lmeControl(opt = "optim")
-        )),
-        error = function(e) {
-          message(str_glue("  lme failed at k = {k}: {conditionMessage(e)}"))
-          NULL
-        }
-      )
+      fit_k <- fit_lme(random_struct)
+      dropped <- character(0)
+
       ## lme foreign-call errors are interpreted as variance-component boundary
-      ## collapse. Zero-fill encodes "this column contributes nothing."
+      ## collapse (a random-effect variance -> 0, i.e., a smooth that is exactly
+      ## linear). Refit at the boundary solution: drop each smooth in turn and keep
+      ## the single-smooth fit with the highest REML logLik; if none converges (or
+      ## only one smooth was present), fall back to fixed effects only (gls, REML,
+      ## so logLik stays comparable with the lme fits).
       if (is.null(fit_k)) {
-        beta_hat[, k] <- 0
-        if (M_a > 0) U_age_hat[, k] <- 0
-        if (M_p > 0) U_pir_hat[, k] <- 0
-        gam_k <- tryCatch(
-          mgcv::gam(
-            z ~ male + s(age, bs = "ps") + s(pir, bs = "ps"),
-            data = df_k, method = "REML"
-          ),
-          error = function(e) NULL
-        )
-        if (!is.null(gam_k)) {
-          s_tbl <- summary(gam_k)$s.table
-          boundary_diag[[k]] <- list(
-            gam_sp     = gam_k$sp,
-            gam_edf    = setNames(s_tbl[, "edf"], rownames(s_tbl)),
-            gam_logLik = as.numeric(logLik(gam_k))
+        message(str_glue("  lme failed at k = {k}; refitting at the variance-component boundary"))
+        cands <- list()
+        if (M_a > 0 && M_p > 0) {
+          cands <- list(
+            pir = fit_lme(list(grp = pdIdent(form_age))),
+            age = fit_lme(list(grp = pdIdent(form_pir)))
           )
-          message(str_glue(
-            "    -> mgcv refit: sp = ({paste(signif(gam_k$sp, 3), collapse=', ')}), ",
-            "edf = ({paste(signif(s_tbl[, 'edf'], 3), collapse=', ')})"
-          ))
+          cands <- Filter(Negate(is.null), cands)
         }
-        next
+        if (length(cands) > 0) {
+          best    <- names(cands)[which.max(sapply(cands, function(f) as.numeric(logLik(f))))]
+          fit_k   <- cands[[best]]
+          dropped <- best
+        } else {
+          fit_k <- tryCatch(
+            do.call(gls, list(model = fixed_form, data = df_k, method = "REML")),
+            error = function(e) {
+              message(str_glue("  gls failed at k = {k}: {conditionMessage(e)}"))
+              NULL
+            }
+          )
+          if (is.null(fit_k)) {
+            beta_hat[, k] <- 0
+            if (M_a > 0) U_age_hat[, k] <- 0
+            if (M_p > 0) U_pir_hat[, k] <- 0
+            collapsed[[k]] <- c(if (M_a > 0) "age", if (M_p > 0) "pir")
+            next
+          }
+          dropped <- c(if (M_a > 0) "age", if (M_p > 0) "pir")
+        }
+        message(str_glue(
+          "    -> smooth(s) collapsed to linear: ",
+          "{if (length(dropped)) paste(dropped, collapse = ', ') else 'none'}"
+        ))
       }
-      fits[[k]] <- fit_k
-      beta_hat[, k] <- fixef(fit_k)[beta_names]
+      collapsed[[k]] <- dropped
+      fits[[k]]      <- fit_k
 
-      re_vec <- as.numeric(ranef(fit_k)[1, ])
-      if (M_a > 0) U_age_hat[, k] <- re_vec[seq_len(M_a)]
-      if (M_p > 0) U_pir_hat[, k] <- re_vec[(M_a + 1):(M_a + M_p)]
-
+      beta_hat[, k] <- (if (inherits(fit_k, "lme")) fixef(fit_k) else coef(fit_k))[beta_names]
       sigma2_E_diag[k] <- fit_k$sigma^2
-      vc <- VarCorr(fit_k)
-      if (M_a > 0) sigma2_U_age[k] <- as.numeric(vc[1, "Variance"])
-      if (M_p > 0) sigma2_U_pir[k] <- as.numeric(vc[max(M_a, 0) + 1, "Variance"])
 
+      ## Random effects / variance components for the smooths that remain in fit_k
+      ## (column order in ranef/VarCorr follows the order of the remaining smooths).
+      keep_age <- M_a > 0 && !("age" %in% dropped)
+      keep_pir <- M_p > 0 && !("pir" %in% dropped)
+      if (M_a > 0) U_age_hat[, k] <- 0
+      if (M_p > 0) U_pir_hat[, k] <- 0
+      if (inherits(fit_k, "lme")) {
+        re_vec <- as.numeric(ranef(fit_k)[1, ])
+        vc     <- VarCorr(fit_k)
+        pos    <- 0
+        if (keep_age) {
+          U_age_hat[, k]  <- re_vec[pos + seq_len(M_a)]
+          sigma2_U_age[k] <- as.numeric(vc[pos + 1, "Variance"])
+          pos <- pos + M_a
+        }
+        if (keep_pir) {
+          U_pir_hat[, k]  <- re_vec[pos + seq_len(M_p)]
+          sigma2_U_pir[k] <- as.numeric(vc[pos + 1, "Variance"])
+        }
+      }
+
+      ## Collapsed smooths have sigma2_U = 0, i.e., lambda = Inf and zero penalized edf.
       edf_k_total <- A1
       if (M_a > 0) {
-        lambda_a  <- sigma2_E_diag[k] / sigma2_U_age[k]
+        lambda_a   <- sigma2_E_diag[k] / sigma2_U_age[k]
         edf_age[k] <- sum(phi_age / (phi_age + lambda_a))
         edf_k_total <- edf_k_total + edf_age[k]
       }
       if (M_p > 0) {
-        lambda_p  <- sigma2_E_diag[k] / sigma2_U_pir[k]
+        lambda_p   <- sigma2_E_diag[k] / sigma2_U_pir[k]
         edf_pir[k] <- sum(phi_pir / (phi_pir + lambda_p))
         edf_k_total <- edf_k_total + edf_pir[k]
       }
@@ -257,22 +292,17 @@ fit_amm <- function(Z, covariates,
     W_pir             = W_pir,
     knots_age         = if (M_a > 0) attr(W_age, "knots_interior") else NULL,
     knots_pir         = if (M_p > 0) attr(W_pir, "knots_interior") else NULL,
+    n_knots_age       = n_knots_age,
+    n_knots_pir       = n_knots_pir,
     linear_covariates = linear_covariates,
     smooth_covariates = smooth_covariates,
     keep              = keep,
     fits              = fits,
     R_mat             = R_mat,
-    boundary_diag     = boundary_diag
+    collapsed         = collapsed
   )
 }
 
-## Refit the AMM with one or more smooth covariates dropped (for likelihood
-## ratio testing). drop is a character vector of covariate names to remove
-## from smooth_covariates.
-fit_amm_reduced <- function(Z, covariates, drop = NULL, ...) {
-  fit_amm(Z, covariates,
-          smooth_covariates = setdiff(c("age", "pir"), drop), ...)
-}
 
 
 ## ==================== Inference ====================
@@ -303,283 +333,6 @@ amm_evaluate_smooth <- function(fit_result, covariate_name, grid,
   out
 }
 
-## Sum of per-column log-likelihood differences between reduced and full fits,
-## multiplied by -2. NULL fits (boundary collapses) contribute 0.
-.amm_compute_lrt <- function(fits_full, fits_reduced) {
-  K_ <- length(fits_full)
-  stopifnot(length(fits_reduced) == K_)
-  -2 * sum(sapply(seq_len(K_), function(k) {
-    if (is.null(fits_full[[k]]) || is.null(fits_reduced[[k]])) return(0)
-    as.numeric(logLik(fits_reduced[[k]])) - as.numeric(logLik(fits_full[[k]]))
-  }))
-}
-
-## Marginal fitted values from the reduced model (X*beta from each per-k fit).
-.amm_compute_fitted_reduced <- function(fit_result_reduced) {
-  Z_hat <- sapply(fit_result_reduced$fits, fitted)
-  if (!is.matrix(Z_hat))
-    Z_hat <- matrix(Z_hat, ncol = length(fit_result_reduced$fits))
-  Z_hat
-}
-
-## Adapted Hotelling T^2 test for the linear effect of covariate_name. Standard
-## errors are adjusted for the mixed-model EDF relative to a plain OLS test.
-amm_test_linear <- function(fit_result, covariate_name) {
-  a <- which(rownames(fit_result$beta_hat) == covariate_name)
-  if (length(a) != 1)
-    stop(str_glue("Covariate '{covariate_name}' not found in beta_hat."))
-
-  b      <- fit_result$beta_hat[a, ]
-  K_     <- length(b)
-  N_kept <- sum(fit_result$keep)
-  nu     <- nrow(fit_result$beta_hat) +
-            (if (!is.null(fit_result$edf_age)) mean(fit_result$edf_age) else 0) +
-            (if (!is.null(fit_result$edf_pir)) mean(fit_result$edf_pir) else 0)
-
-  c_aa <- mean(sapply(fit_result$fits, function(f) {
-    if (inherits(f, "lme")) {
-      vcov(f)[covariate_name, covariate_name] / f$sigma^2
-    } else {
-      vcov(f)[covariate_name, covariate_name] / summary(f)$sigma^2
-    }
-  }))
-
-  T2      <- as.numeric(t(b) %*% solve(fit_result$Sigma_E, b) / c_aa)
-  df1     <- K_
-  df2     <- N_kept - nu - K_
-  F_stat  <- (N_kept - nu - K_) / ((N_kept - nu - 1) * K_) * T2
-  p_value <- pf(F_stat, df1, df2, lower.tail = FALSE)
-
-  list(T2 = T2, F_stat = F_stat, df1 = df1, df2 = df2, p_value = p_value)
-}
-
-## Roy-Bose simultaneous confidence intervals for the linear coefficient
-## beta_k (k = 1..K), adapted for the AMM (EDF-adjusted degrees of freedom).
-amm_intervals_linear <- function(fit_result, covariate_name, alpha = 0.05) {
-  a <- which(rownames(fit_result$beta_hat) == covariate_name)
-  if (length(a) != 1)
-    stop(str_glue("Covariate '{covariate_name}' not found in beta_hat."))
-
-  b      <- fit_result$beta_hat[a, ]
-  K_     <- length(b)
-  N_kept <- sum(fit_result$keep)
-  nu     <- nrow(fit_result$beta_hat) +
-            (if (!is.null(fit_result$edf_age)) mean(fit_result$edf_age) else 0) +
-            (if (!is.null(fit_result$edf_pir)) mean(fit_result$edf_pir) else 0)
-
-  c_aa <- mean(sapply(fit_result$fits, function(f) {
-    if (inherits(f, "lme")) {
-      vcov(f)[covariate_name, covariate_name] / f$sigma^2
-    } else {
-      vcov(f)[covariate_name, covariate_name] / summary(f)$sigma^2
-    }
-  }))
-
-  df1     <- K_
-  df2     <- N_kept - nu - K_
-  F_crit  <- qf(1 - alpha, df1, df2)
-  T2_crit <- (N_kept - nu - 1) * K_ / (N_kept - nu - K_) * F_crit
-
-  se_k <- sqrt(c_aa * diag(fit_result$Sigma_E))
-  half <- sqrt(T2_crit) * se_k
-
-  list(
-    covariate_name = covariate_name,
-    alpha          = alpha,
-    beta_hat       = b,
-    se             = se_k,
-    T2_crit        = T2_crit,
-    df1            = df1,
-    df2            = df2,
-    half_width     = half,
-    lower          = b - half,
-    upper          = b + half,
-    method         = "Roy-Bose simultaneous (T^2 union-intersection)"
-  )
-}
-
-## Crainiceanu-Ruppert exact RLRT for the smooth effect of covariate_name,
-## aggregated across K latent dimensions via Bonferroni correction.
-##
-## Per-column null sampling uses RLRsim::exactRLRT. Short-circuited columns
-## (observed RLRT = 0) fall back to RLRTSim with the original design,
-## ignoring the nuisance variance component (conservative approximation).
-amm_test_smooth <- function(fit_full, fit_reduced,
-                             covariates,
-                             covariate_name,
-                             B = 10000,
-                             seed_base = 1234) {
-  K_           <- ncol(fit_full$beta_hat)
-  Lambda_per_k <- numeric(K_)
-  null_samples <- matrix(NA_real_, nrow = B, ncol = K_)
-  p_per_k      <- numeric(K_)
-  method_per_k <- character(K_)
-
-  cov_kept <- covariates[fit_full$keep, , drop = FALSE]
-  X_kept   <- cbind(
-    `(Intercept)` = 1,
-    male = cov_kept$male,
-    age  = cov_kept$age,
-    pir  = cov_kept$pir
-  )
-  W_tested <- fit_full[[paste0("W_", covariate_name)]]
-
-  for (k in seq_len(K_)) {
-    fit_k_full <- fit_full$fits[[k]]
-    fit_k_red  <- fit_reduced$fits[[k]]
-    if (is.null(fit_k_full) || is.null(fit_k_red)) {
-      Lambda_per_k[k]   <- 0
-      null_samples[, k] <- 0
-      p_per_k[k]        <- 1
-      method_per_k[k]   <- "collapsed"
-      next
-    }
-    Lambda_per_k[k] <- max(
-      0,
-      -2 * (as.numeric(logLik(fit_k_red)) - as.numeric(logLik(fit_k_full)))
-    )
-
-    rlrt_k <- tryCatch(
-      RLRsim::exactRLRT(m = fit_k_full, mA = fit_k_full, m0 = fit_k_red,
-                        nsim = B, seed = seed_base + k),
-      error = function(e) {
-        message(str_glue("  exactRLRT failed at k = {k}: {conditionMessage(e)}"))
-        NULL
-      }
-    )
-
-    sample_k <- if (!is.null(rlrt_k)) as.numeric(rlrt_k$sample) else numeric(0)
-
-    if (length(sample_k) >= B) {
-      null_samples[, k] <- sample_k[1:B]
-      method_per_k[k]   <- "exact"
-    } else {
-      sim_k <- tryCatch(
-        RLRsim::RLRTSim(
-          X = X_kept, Z = W_tested,
-          sqrt.Sigma = diag(ncol(W_tested)),
-          nsim = B, seed = seed_base + k + 100000L
-        ),
-        error = function(e) {
-          message(str_glue("  RLRTSim fallback failed at k = {k}: {conditionMessage(e)}"))
-          NULL
-        }
-      )
-      if (is.null(sim_k)) {
-        null_samples[, k] <- 0
-        method_per_k[k]   <- "fallback_failed"
-      } else {
-        null_samples[, k] <- as.numeric(sim_k)[1:B]
-        method_per_k[k]   <- "approx_no_nuisance"
-      }
-    }
-
-    p_per_k[k] <- (1 + sum(null_samples[, k] >= Lambda_per_k[k])) / (1 + B)
-  }
-
-  Lambda_joint      <- sum(Lambda_per_k)
-  joint_null_sample <- rowSums(null_samples)
-  p_conv <- (1 + sum(joint_null_sample >= Lambda_joint)) / (1 + B)
-
-  p_clean  <- pmin(pmax(p_per_k, .Machine$double.xmin), 1)
-  X_Fisher <- -2 * sum(log(p_clean))
-  p_Fisher <- pchisq(X_Fisher, df = 2 * K_, lower.tail = FALSE)
-  p_Bonf   <- min(K_ * min(p_per_k), 1)
-
-  n_approx <- sum(method_per_k == "approx_no_nuisance")
-  if (n_approx > 0) {
-    message(str_glue(
-      "  Note: {n_approx} of {K_} columns used the RLRTSim fallback ",
-      "(observed RLRT = 0). Null samples ignore the nuisance variance ",
-      "component (approximate, conservative)."
-    ))
-  }
-
-  p_per_k_Bonf <- pmin(K_ * p_per_k, 1)
-
-  list(
-    covariate_name    = covariate_name,
-    Lambda_per_k      = Lambda_per_k,
-    Lambda_joint      = Lambda_joint,
-    p_per_k           = p_per_k,
-    p_per_k_Bonf      = p_per_k_Bonf,
-    p_conv            = p_conv,
-    p_Fisher          = p_Fisher,
-    p_Bonf            = p_Bonf,
-    X_Fisher          = X_Fisher,
-    null_samples      = null_samples,
-    joint_null_sample = joint_null_sample,
-    method_per_k      = method_per_k,
-    B                 = B,
-    K                 = K_
-  )
-}
-
-## Parametric bootstrap test for the smooth effect of covariate_name.
-## statistic = "iss" uses integrated sum-of-squares; statistic = "lrt" uses
-## the REML log-likelihood ratio. Parallelism via future::multisession.
-amm_boot_test <- function(fit_full, fit_reduced, covariates, covariate_name,
-                           grid = NULL,
-                           statistic = c("iss", "lrt"),
-                           null_type = c("vc_only", "full"),
-                           B = 500, n_cores = 4) {
-  statistic <- match.arg(statistic)
-  null_type <- match.arg(null_type)
-
-  if (statistic == "lrt" && null_type != "vc_only") {
-    stop("statistic='lrt' requires null_type='vc_only'.")
-  }
-  if (statistic == "iss" && is.null(grid)) {
-    stop("statistic='iss' requires a non-NULL grid.")
-  }
-
-  T_obs <- if (statistic == "iss") {
-    sm <- amm_evaluate_smooth(fit_full, covariate_name, grid,
-                              include_linear = (null_type == "full"))
-    sum(sm^2)
-  } else {
-    .amm_compute_lrt(fit_full$fits, fit_reduced$fits)
-  }
-
-  Z_hat_red <- .amm_compute_fitted_reduced(fit_reduced)
-  L         <- chol(fit_reduced$Sigma_E)
-  cov_kept  <- covariates[fit_reduced$keep, , drop = FALSE]
-  N_kept    <- nrow(Z_hat_red)
-  K_        <- ncol(Z_hat_red)
-
-  boot_one <- function(b) {
-    G_b   <- matrix(rnorm(N_kept * K_), N_kept, K_)
-    Z_b   <- Z_hat_red + G_b %*% L
-    fit_b <- tryCatch(fit_amm(Z_b, cov_kept), error = function(e) NULL)
-    if (is.null(fit_b)) return(0)
-    if (statistic == "iss") {
-      sm_b <- amm_evaluate_smooth(fit_b, covariate_name, grid,
-                                  include_linear = (null_type == "full"))
-      sum(sm_b^2)
-    } else {
-      fit_b_red <- tryCatch(
-        fit_amm_reduced(Z_b, cov_kept, drop = covariate_name),
-        error = function(e) NULL
-      )
-      if (is.null(fit_b_red)) return(0)
-      .amm_compute_lrt(fit_b$fits, fit_b_red$fits)
-    }
-  }
-
-  T_boot <- if (n_cores > 1) {
-    old_plan <- future::plan(future::multisession, workers = n_cores)
-    on.exit(future::plan(old_plan), add = TRUE)
-    unlist(future.apply::future_lapply(seq_len(B), boot_one, future.seed = TRUE))
-  } else {
-    sapply(seq_len(B), boot_one)
-  }
-  T_boot_ok <- T_boot[!is.na(T_boot)]
-  p_value   <- (1 + sum(T_boot_ok >= T_obs)) / (1 + length(T_boot_ok))
-
-  list(T_obs = T_obs, T_boot = T_boot, p_value = p_value,
-       B = B, B_effective = length(T_boot_ok),
-       statistic = statistic, null_type = null_type)
-}
 
 
 ## ==================== Diagnostics ====================
@@ -694,58 +447,6 @@ amm_plot_re_cov <- function(U_hat, K_, title_expr, path) {
   dev.off()
 }
 
-## Per-column CR null distribution histograms (one panel per k).
-amm_plot_cr_per_k <- function(cr_res, title, path) {
-  K_ <- cr_res$K
-  nc <- ceiling(sqrt(K_))
-  nr <- ceiling(K_ / nc)
-  png(path, width = 200 * nc, height = 200 * nr, pointsize = 12)
-  par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1), oma = c(0, 0, 2, 0),
-      mgp = c(1.8, 0.6, 0))
-  for (k in seq_len(K_)) {
-    xlim_k <- range(c(cr_res$null_samples[, k], cr_res$Lambda_per_k[k]),
-                    finite = TRUE)
-    hist(cr_res$null_samples[, k],
-         breaks = 40, col = "gray85", border = "white",
-         xlab = expression(Lambda[k]), main = paste0("k = ", k),
-         xlim = xlim_k)
-    abline(v = cr_res$Lambda_per_k[k], col = "red", lwd = 2)
-    mtext(sprintf("p = %.3g", cr_res$p_per_k[k]), side = 3, line = 0.2, cex = 0.8)
-  }
-  mtext(title, outer = TRUE, cex = 1.1, font = 2)
-  dev.off()
-}
-
-## Joint CR null distribution histogram.
-amm_plot_cr_joint <- function(cr_res, title, path) {
-  png(path, width = 720, height = 480, pointsize = 14)
-  par(mar = c(4, 4, 3, 1))
-  hist(cr_res$joint_null_sample, breaks = 40,
-       col = "gray85", border = "white",
-       xlab = expression(Lambda), main = title,
-       xlim = range(c(cr_res$joint_null_sample, cr_res$Lambda_joint),
-                    finite = TRUE))
-  abline(v = cr_res$Lambda_joint, col = "red", lwd = 2)
-  mtext(sprintf("Lambda = %.3g    p (conv) = %.3g    p (Fisher) = %.3g    p (Bonf) = %.3g",
-                cr_res$Lambda_joint, cr_res$p_conv,
-                cr_res$p_Fisher, cr_res$p_Bonf),
-        side = 3, line = 0.2, cex = 0.85)
-  dev.off()
-}
-
-## Bootstrap null distribution histogram for smooth tests.
-amm_plot_boot_hist <- function(boot_res, title, path) {
-  png(path, width = 720, height = 480, pointsize = 14)
-  par(mar = c(4, 4, 3, 1))
-  hist(boot_res$T_boot, breaks = 40, col = "gray85", border = "white",
-       xlab = "T", main = title,
-       xlim = range(c(boot_res$T_boot, boot_res$T_obs), na.rm = TRUE))
-  abline(v = boot_res$T_obs, col = "red", lwd = 2)
-  mtext(sprintf("T_obs = %.3g    p = %.3g    B_eff = %d",
-                boot_res$T_obs, boot_res$p_value, boot_res$B_effective),
-        side = 3, line = 0.2, cex = 0.9)
-  dev.off()
-}
 
 
 ## ==================== Interpretation ====================
@@ -850,7 +551,12 @@ amm_boot_interpret <- function(amm, covariates_kept, B,
   set.seed(seed)
   boot_one <- function(b) {
     Z_b   <- .amm_simulate_one(amm)
-    fit_b <- tryCatch(fit_amm(Z_b, covariates_kept), error = function(e) NULL)
+    fit_b <- tryCatch(
+      fit_amm(Z_b, covariates_kept,
+              n_knots_age = amm$n_knots_age,
+              n_knots_pir = amm$n_knots_pir),
+      error = function(e) NULL
+    )
     if (is.null(fit_b)) return(NULL)
     list(
       beta_hat  = fit_b$beta_hat,

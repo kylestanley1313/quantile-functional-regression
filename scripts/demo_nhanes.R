@@ -127,7 +127,7 @@ plot_qi_recon_grid(
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
   log_x_plus_1  = log_scale,
-  path          = file.path('artifacts', dir_art, 'plots',
+  path          = file.path('artifacts', dir_art, 'plots', 'representation',
                             sprintf('Qi-recon_grid_3x5%s.png',
                                     if (log_scale) '_log' else ''))
 )
@@ -149,7 +149,7 @@ col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
 
 ## Plot z-rot-embeddings
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_z-rot.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -189,7 +189,7 @@ dev.off()
 
 ## Plot z-embeddings
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_z.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -229,7 +229,7 @@ dev.off()
 
 ## Plot c-embeddings
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_c.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -270,7 +270,7 @@ dev.off()
 
 ## Plot Q
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_q.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -323,7 +323,7 @@ if (!is.null(N_samp)) {
 
   ## Plot
   path_plot <- file.path(
-    'artifacts', dir_art, 'plots',
+    'artifacts', dir_art, 'plots', 'representation',
     str_glue('data_q-subsamp.png')
   )
   png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -365,7 +365,7 @@ if (!is.null(N_samp)) {
 
 ## Plot Qi
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_qi.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -409,7 +409,7 @@ dev.off()
 ## Plot Qi vs. Q (one subject)
 i <- 1
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_qi-v-q_i-{i}.png')
 )
 pi_grid <- pi_grid_fun(Ji_vec[i])
@@ -463,7 +463,7 @@ Qi_draws <- decode_z_to_Qi(pipeline, z_draws, Ji = Ji)
 col_real  <- rgb(0, 0, 0, alpha = 0.25)
 col_synth <- rgb(1, 0, 0, alpha = 0.25)
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  'artifacts', dir_art, 'plots', 'representation',
   str_glue('synth_qi.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -528,7 +528,7 @@ mean_f <- approx(
 
 ## Plotting
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots',
+  'artifacts', dir_art, 'plots', 'representation',
   str_glue('frechet_nhanes.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -1131,6 +1131,9 @@ dev.off()
 
 ## ========== Additive Mixed Model ========== ##
 
+## Create directory
+dir_amm <- file.path('artifacts', dir_art, 'plots', 'amm')
+if (!dir.exists(dir_amm)) dir.create(dir_amm)
 
 ## ---------- Fit ----------
 
@@ -1141,12 +1144,18 @@ covariates_amm <- data.frame(
   pir  = df_cov$PIR
 )
 start <- Sys.time()
-amm <- fit_amm(Z_amm, covariates_amm, n_knots_age = 10, n_knots_pir = 10)
+amm <- fit_amm(Z_amm, covariates_amm, n_knots_age = 20, n_knots_pir = 20)  
 stop <- Sys.time()
 print(stop - start)
 
+## NOTE: For more nuanced knot selection, see the following references.
+##  - "Selecting the number of knots for penlalized splines", Ruppert (2002).
+##  - "Semiparametric Regression", Ruppert, Wand, and Carroll (2003).
+
 
 ## ---------- Diagnostics ----------
+
+## TODO: Add conditional generativity-based diagnostics
 
 K_amm <- ncol(Z_amm)
 
@@ -1155,180 +1164,31 @@ summary_tbl <- amm_summary(amm)
 print(summary_tbl)
 write.csv(
   summary_tbl,
-  file.path('artifacts', dir_art, 'amm_summary.csv'),
+  file.path(dir_amm, 'amm_summary.csv'),
   row.names = FALSE
 )
 
 ## (2) Smoothing-parameter plot
-amm_plot_lambda(amm, file.path('artifacts', dir_art, 'plots', 'amm_lambda.png'))
+amm_plot_lambda(amm, file.path(dir_amm, 'amm_lambda.png'))
 
 ## (3) Residual Q-Q panels
-amm_plot_resid_qq(amm, file.path('artifacts', dir_art, 'plots', 'amm_resid_qq.pdf'),
+amm_plot_resid_qq(amm, file.path(dir_amm, 'amm_resid_qq.pdf'),
                   col_train)
 
 ## (4) Residual covariance heatmap (Sigma_E)
-amm_plot_sigma_e(amm, file.path('artifacts', dir_art, 'plots', 'amm_sigma_e.png'))
+amm_plot_sigma_e(amm, file.path(dir_amm, 'amm_sigma_e.png'))
 
 ## (5) Random-effect covariance heatmaps
 amm_plot_re_cov(
   amm$U_age_hat, K_amm,
   expression(hat(Sigma)[U]^"(age)"),
-  file.path('artifacts', dir_art, 'plots', 'amm_sigma_u_age.png')
+  file.path(dir_amm, 'amm_sigma_u_age.png')
 )
 amm_plot_re_cov(
   amm$U_pir_hat, K_amm,
   expression(hat(Sigma)[U]^"(pir)"),
-  file.path('artifacts', dir_art, 'plots', 'amm_sigma_u_pir.png')
+  file.path(dir_amm, 'amm_sigma_u_pir.png')
 )
-
-
-## ========== AMM Inference ========== ##
-
-## ---------- Driver ----------
-
-## Reduced fits for CR and bootstrap smooth tests
-amm_red_age <- fit_amm_reduced(Z_amm, covariates_amm, drop = "age",
-                                n_knots_age = 10, n_knots_pir = 10)
-amm_red_pir <- fit_amm_reduced(Z_amm, covariates_amm, drop = "pir",
-                                n_knots_age = 10, n_knots_pir = 10)
-
-## Hotelling test for linear effects
-hot_male <- amm_test_linear(amm, "male")
-hot_age  <- amm_test_linear(amm, "age")
-hot_pir  <- amm_test_linear(amm, "pir")
-
-## Crainiceanu-Ruppert exact RLRT for smooth effects
-cr_age <- amm_test_smooth(amm, amm_red_age,
-                           covariates_amm, "age",
-                           B = 10000, seed_base = 12345)
-cr_pir <- amm_test_smooth(amm, amm_red_pir,
-                           covariates_amm, "pir",
-                           B = 10000, seed_base = 12345)
-
-## Roy-Bose simultaneous CIs for linear effects
-ci_male <- amm_intervals_linear(amm, "male", alpha = 0.05)
-ci_age  <- amm_intervals_linear(amm, "age",  alpha = 0.05)
-ci_pir  <- amm_intervals_linear(amm, "pir",  alpha = 0.05)
-
-## Parametric bootstrap (ISS and LRT; VC-only null; for validation)
-grid_age <- seq(min(covariates_amm$age, na.rm = TRUE),
-                max(covariates_amm$age, na.rm = TRUE), length.out = 200)
-grid_pir <- seq(min(covariates_amm$pir, na.rm = TRUE),
-                max(covariates_amm$pir, na.rm = TRUE), length.out = 200)
-B_amm <- 20  # development; raise for final
-set.seed(12345)
-boot_age_iss <- amm_boot_test(amm, amm_red_age, covariates_amm, "age",
-                               grid = grid_age, statistic = "iss",
-                               null_type = "vc_only", B = B_amm, n_cores = 5)
-boot_age_lrt <- amm_boot_test(amm, amm_red_age, covariates_amm, "age",
-                               statistic = "lrt", null_type = "vc_only", B = B_amm, n_cores = 5)
-boot_pir_iss <- amm_boot_test(amm, amm_red_pir, covariates_amm, "pir",
-                               grid = grid_pir, statistic = "iss",
-                               null_type = "vc_only", B = B_amm, n_cores = 5)
-boot_pir_lrt <- amm_boot_test(amm, amm_red_pir, covariates_amm, "pir",
-                               statistic = "lrt", null_type = "vc_only", B = B_amm, n_cores = 5)
-saveRDS(
-  list(
-    boot_age_iss = boot_age_iss, boot_age_lrt = boot_age_lrt,
-    boot_pir_iss = boot_pir_iss, boot_pir_lrt = boot_pir_lrt
-  ),
-  file.path('artifacts', dir_art, 'amm_bootstraps.rds')
-)
-
-## Read Bootstrap
-tmp <- readRDS(file.path('artifacts', dir_art, 'amm_bootstraps.rds'))
-boot_age_iss <- tmp[['boot_age_iss']]
-boot_age_lrt <- tmp[['boot_age_lrt']]
-boot_pir_iss <- tmp[['boot_pir_iss']]
-boot_pir_lrt <- tmp[['boot_pir_lrt']]
-
-
-## ---------- Inference summary ----------
-
-inference_tbl <- data.frame(
-  covariate = c(
-    "male", "age (linear)", "pir (linear)",
-    "age (smooth)", "age (smooth)", "age (smooth)",
-    "pir (smooth)", "pir (smooth)", "pir (smooth)"
-  ),
-  test      = c(
-    "Hotelling", "Hotelling", "Hotelling",
-    "Crainiceanu-Ruppert (Bonferroni)",
-    "Parametric boot (ISS)", "Parametric boot (LRT)",
-    "Crainiceanu-Ruppert (Bonferroni)",
-    "Parametric boot (ISS)", "Parametric boot (LRT)"
-  ),
-  statistic = c(
-    hot_male$F_stat, hot_age$F_stat, hot_pir$F_stat,
-    min(cr_age$p_per_k) * cr_age$K,
-    boot_age_iss$T_obs, boot_age_lrt$T_obs,
-    min(cr_pir$p_per_k) * cr_pir$K,
-    boot_pir_iss$T_obs, boot_pir_lrt$T_obs
-  ),
-  p_value   = c(
-    hot_male$p_value, hot_age$p_value, hot_pir$p_value,
-    cr_age$p_Bonf,
-    boot_age_iss$p_value, boot_age_lrt$p_value,
-    cr_pir$p_Bonf,
-    boot_pir_iss$p_value, boot_pir_lrt$p_value
-  )
-)
-print(inference_tbl)
-write.csv(
-  inference_tbl,
-  file.path('artifacts', dir_art, 'amm_inference_summary.csv'),
-  row.names = FALSE
-)
-
-## LaTeX Table
-p_val_to_text <- function(p_val) {
-  if (p_val < 0.001) {
-    return("<.001")
-  } else {
-    return(sub("^0", "", format(round(p_val, 3), nsmall = 2)))
-  }
-}
-inf_tbl_latex <- data.frame(
-  "Effect Type" = c("Linear", "Smooth"),
-  "Sex" = c(p_val_to_text(hot_male$p_value), "{---}"),
-  "Age" = c(p_val_to_text(hot_age$p_value), p_val_to_text(cr_age$p_Bonf)),
-  "Income" = c(p_val_to_text(hot_pir$p_value), p_val_to_text(cr_pir$p_Bonf))
-)
-path <- file.path(
-  'artifacts', dir_art, 'plots', 
-  str_glue('amm_inf_latex.txt')
-)
-sink(path)
-kbl(inf_tbl_latex, 
-    format = "latex", 
-    booktabs = TRUE, 
-    escape = FALSE,
-    align = c("l", "S", "S", "S"),
-    caption = "Inference for Semiparametric Regression",
-    col.names = c("", "{Sex}", "{Age}", "{Income}")) %>%
-  kable_styling(latex_options = c("HOLD_position"))
-sink()
-
-
-## ---------- Diagnostic plots ----------
-
-amm_plot_boot_hist(boot_age_iss, "Bootstrap (age, ISS, VC-only)",
-                   file.path('artifacts', dir_art, 'plots', 'amm_boot_hist_age_iss.png'))
-amm_plot_boot_hist(boot_age_lrt, "Bootstrap (age, LRT, VC-only)",
-                   file.path('artifacts', dir_art, 'plots', 'amm_boot_hist_age_lrt.png'))
-amm_plot_boot_hist(boot_pir_iss, "Bootstrap (pir, ISS, VC-only)",
-                   file.path('artifacts', dir_art, 'plots', 'amm_boot_hist_pir_iss.png'))
-amm_plot_boot_hist(boot_pir_lrt, "Bootstrap (pir, LRT, VC-only)",
-                   file.path('artifacts', dir_art, 'plots', 'amm_boot_hist_pir_lrt.png'))
-
-amm_plot_cr_per_k(cr_age, "Crainiceanu-Ruppert per-column null (age)",
-                  file.path('artifacts', dir_art, 'plots', 'amm_cr_per_k_age.png'))
-amm_plot_cr_per_k(cr_pir, "Crainiceanu-Ruppert per-column null (pir)",
-                  file.path('artifacts', dir_art, 'plots', 'amm_cr_per_k_pir.png'))
-amm_plot_cr_joint(cr_age, "Crainiceanu-Ruppert joint null (age)",
-                  file.path('artifacts', dir_art, 'plots', 'amm_cr_joint_age.png'))
-amm_plot_cr_joint(cr_pir, "Crainiceanu-Ruppert joint null (pir)",
-                  file.path('artifacts', dir_art, 'plots', 'amm_cr_joint_pir.png'))
 
 
 
@@ -1347,8 +1207,6 @@ amm_boots <- amm_boot_interpret(
   seed            = 12345
 )
 
-interp_dir <- file.path('artifacts', dir_art, 'plots')
-
 ## Per-covariate quantile levels for QF crossings / markings.
 quantile_levels_by_cov <- list(
   age = list(
@@ -1363,7 +1221,7 @@ quantile_levels_by_cov <- list(
 
 ## --- Latent-space effect curves
 for (cov in c("age", "pir")) {
-  path_plot <- file.path(interp_dir, str_glue("amm_latent_effect_{cov}.png"))
+  path_plot <- file.path(dir_amm, str_glue("amm_latent_effect_{cov}.png"))
   png(path_plot, width = 1280, height = 960, pointsize = 14)
   amm_plot_latent_effects(amm, cov, band = TRUE,
                           boot_reps = amm_boots,
@@ -1382,7 +1240,7 @@ for (cov in c("age", "pir")) {
   pi_grid_ref <- pi_grid_fun(Ji_interp)
 
   ## QF Reference
-  png(file.path(interp_dir, str_glue("amm_qf_reference_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_qf_reference_{cov}.png")),
       width = 960, height = 960, pointsize = 24)
   plot_funs(
     fun_list  = list(Qi_ref_decode),
@@ -1396,7 +1254,7 @@ for (cov in c("age", "pir")) {
   dev.off()
 
   ## CDF Reference
-  png(file.path(interp_dir, str_glue("amm_cdf_reference_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_cdf_reference_{cov}.png")),
       width = 960, height = 960, pointsize = 24)
   y_grid_ref <- .amm_default_y_grid(list(Qi_ref_decode))
   F_ref_decode <- qi_to_cdf(Qi_ref_decode, y_grid_ref)
@@ -1406,23 +1264,23 @@ for (cov in c("age", "pir")) {
   dev.off()
 
   ## QF family
-  png(file.path(interp_dir, str_glue("amm_qf_conditional_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_qf_conditional_{cov}.png")),
       width = 960, height = 720, pointsize = 14)
   amm_plot_conditional_qf(amm, cov, pipeline, Ji = Ji_interp,
                           quantile_lines = q_list)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_qf_conditional_faceted_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_qf_conditional_faceted_{cov}.png")),
       width = 1280, height = 480, pointsize = 14)
   amm_plot_conditional_qf_faceted(amm, cov, pipeline, Ji = Ji_interp,
                                   boot_reps = amm_boots,
                                   quantile_lines = q_list)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_qf_contrast_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_qf_contrast_{cov}.png")),
       width = 960, height = 720, pointsize = 14)
   amm_plot_contrast_qf(amm, cov, pipeline, Ji = Ji_interp,
                        quantile_lines = q_list)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_qf_contrast_faceted_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_qf_contrast_faceted_{cov}.png")),
       width = 1280, height = 480, pointsize = 14)
   amm_plot_contrast_qf_faceted(amm, cov, pipeline, Ji = Ji_interp,
                                boot_reps = amm_boots,
@@ -1430,23 +1288,23 @@ for (cov in c("age", "pir")) {
   dev.off()
 
   ## CDF family
-  png(file.path(interp_dir, str_glue("amm_cdf_conditional_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_cdf_conditional_{cov}.png")),
       width = 960, height = 720, pointsize = 14)
   amm_plot_conditional_cdf(amm, cov, pipeline, Ji = Ji_interp,
                            threshold_lines = mims_thresholds)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_cdf_conditional_faceted_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_cdf_conditional_faceted_{cov}.png")),
       width = 1280, height = 480, pointsize = 14)
   amm_plot_conditional_cdf_faceted(amm, cov, pipeline, Ji = Ji_interp,
                                    threshold_lines = mims_thresholds,
                                    boot_reps = amm_boots)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_cdf_contrast_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_cdf_contrast_{cov}.png")),
       width = 960, height = 720, pointsize = 14)
   amm_plot_contrast_cdf(amm, cov, pipeline, Ji = Ji_interp,
                         threshold_lines = mims_thresholds)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_cdf_contrast_faceted_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_cdf_contrast_faceted_{cov}.png")),
       width = 1280, height = 480, pointsize = 14)
   amm_plot_contrast_cdf_faceted(amm, cov, pipeline, Ji = Ji_interp,
                                 threshold_lines = mims_thresholds,
@@ -1454,20 +1312,20 @@ for (cov in c("age", "pir")) {
   dev.off()
 
   ## Moments family
-  png(file.path(interp_dir, str_glue("amm_moments_conditional_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_moments_conditional_{cov}.png")),
       width = 1280, height = 360, pointsize = 14)
   amm_plot_conditional_moments(amm, cov, pipeline, Ji = Ji_interp)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_moments_conditional_faceted_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_moments_conditional_faceted_{cov}.png")),
       width = 1280, height = 360, pointsize = 14)
   amm_plot_conditional_moments_faceted(amm, cov, pipeline, Ji = Ji_interp,
                                        boot_reps = amm_boots)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_moments_contrast_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_moments_contrast_{cov}.png")),
       width = 1280, height = 360, pointsize = 14)
   amm_plot_contrast_moments(amm, cov, pipeline, Ji = Ji_interp)
   dev.off()
-  png(file.path(interp_dir, str_glue("amm_moments_contrast_faceted_{cov}.png")),
+  png(file.path(dir_amm, str_glue("amm_moments_contrast_faceted_{cov}.png")),
       width = 1280, height = 360, pointsize = 14)
   amm_plot_contrast_moments_faceted(amm, cov, pipeline, Ji = Ji_interp,
                                     boot_reps = amm_boots)
@@ -1477,13 +1335,13 @@ for (cov in c("age", "pir")) {
   for (thr in mims_thresholds) {
     thr_slug <- gsub(" / ", "_", thr$label)
     thr_y    <- thr$value
-    png(file.path(interp_dir,
+    png(file.path(dir_amm,
                   str_glue("amm_threshold_{thr_slug}_{cov}.png")),
         width = 540, height = 540, pointsize = 14)
     amm_plot_threshold_crossing(amm, cov, thr_y, pipeline, Ji = Ji_interp,
                                 boot_reps = amm_boots)
     dev.off()
-    png(file.path(interp_dir,
+    png(file.path(dir_amm,
                   str_glue("amm_threshold_contrast_{thr_slug}_{cov}.png")),
         width = 540, height = 540, pointsize = 14)
     amm_plot_contrast_threshold_crossing(amm, cov, thr_y, pipeline,
@@ -1495,13 +1353,13 @@ for (cov in c("age", "pir")) {
   ## Quantile-crossing (one per quantile level; absolute + contrast)
   for (ql in 1:length(q_list)) {
     p_star <- q_list[[ql]]$value
-    png(file.path(interp_dir,
+    png(file.path(dir_amm,
                   str_glue("amm_quantile_q{ql}_{cov}.png")),
         width = 540, height = 540, pointsize = 14)
     amm_plot_quantile_crossing(amm, cov, p_star, pipeline, Ji = Ji_interp,
                                boot_reps = amm_boots)
     dev.off()
-    png(file.path(interp_dir,
+    png(file.path(dir_amm,
                   str_glue("amm_quantile_contrast_q{ql}_{cov}.png")),
         width = 540, height = 540, pointsize = 14)
     amm_plot_contrast_quantile_crossing(amm, cov, p_star, pipeline,
@@ -1540,7 +1398,7 @@ Qi_boot_male_1 <- t(apply(z_boot_male_1, 1,
 main_suffix <- str_glue("male @ age={amm_male_age_ref}, pir={amm_male_pir_ref}")
 
 ## QF and QF difference
-png(file.path(interp_dir, "amm_male_cond_qfs.png"),
+png(file.path(dir_amm, "amm_male_cond_qfs.png"),
     width = 960, height = 960, pointsize = 18)
 plot_decoded_conditional_qfs(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
@@ -1549,7 +1407,7 @@ plot_decoded_conditional_qfs(
 )
 dev.off()
 
-png(file.path(interp_dir, "amm_male_cond_qfs_diff.png"),
+png(file.path(dir_amm, "amm_male_cond_qfs_diff.png"),
     width = 960, height = 960, pointsize = 18)
 plot_decoded_conditional_qf_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
@@ -1564,7 +1422,7 @@ y_grid_male <- default_y_grid_two_group(
 )
 
 ## CDF and CDF difference
-png(file.path(interp_dir, "amm_male_cond_cdfs.png"),
+png(file.path(dir_amm, "amm_male_cond_cdfs.png"),
     width = 960, height = 960, pointsize = 18)
 plot_decoded_conditional_cdfs(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
@@ -1575,7 +1433,7 @@ plot_decoded_conditional_cdfs(
 )
 dev.off()
 
-png(file.path(interp_dir, "amm_male_cond_cdfs_diff.png"),
+png(file.path(dir_amm, "amm_male_cond_cdfs_diff.png"),
     width = 960, height = 960, pointsize = 18)
 plot_decoded_conditional_cdf_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
@@ -1587,7 +1445,7 @@ plot_decoded_conditional_cdf_diff(
 dev.off()
 
 ## Moments and moment contrast
-png(file.path(interp_dir, "amm_male_cond_moments.png"),
+png(file.path(dir_amm, "amm_male_cond_moments.png"),
     width = 1280, height = 360, pointsize = 14)
 plot_decoded_conditional_moments(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
@@ -1596,7 +1454,7 @@ plot_decoded_conditional_moments(
 )
 dev.off()
 
-png(file.path(interp_dir, "amm_male_cond_moments_diff.png"),
+png(file.path(dir_amm, "amm_male_cond_moments_diff.png"),
     width = 1280, height = 360, pointsize = 14)
 plot_decoded_conditional_moment_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
