@@ -254,17 +254,17 @@ plot_losslessness <- function(
 
 ## ---------- Pipeline Fitting Functions ---------- ##
 
-
 ## Stage-list builders. Only the LAST stage in each list depends on K --
 ## compute_cv_losses() relies on this to split off a K-independent "prefix"
 ## it can fit once per CV fold and reuse across the whole K sweep.
-stages_qg_pca <- function(K, p_grid = NULL, lambda = NULL, order_by = 'variance', loss = 'wasserstein') {
+stages_qg_pca <- function(K, K_max = 20, p_grid = NULL, lambda = NULL, order_by = 'variance', loss = 'wasserstein') {
   list(
     stage_eqf_sgrid(),
     stage_eqf_cgrid(p_grid = p_grid),
-    stage_wame(K = K, lambda = lambda, order_by = order_by, loss = loss)
+    stage_wame(K = K, K_max = K_max, lambda = lambda, order_by = order_by, loss = loss)
   )
 }
+
 
 stages_q_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
   list(
@@ -273,6 +273,7 @@ stages_q_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
     stage_q_pca(K = K, loss = loss)
   )
 }
+
 
 stages_g_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
   list(
@@ -287,6 +288,7 @@ stages_g_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
 fit_pipeline_qg_pca <- function(
     y_list, K,
     p_grid = NULL,
+    K_max = 20,
     supp_Y = NULL,
     p_star = 0,
     y_star = NULL,
@@ -298,7 +300,7 @@ fit_pipeline_qg_pca <- function(
 ) {
 
   pipeline <- construct_pipeline(
-    stages = stages_qg_pca(K, p_grid = p_grid, lambda = lambda, order_by = order_by, loss = loss),
+    stages = stages_qg_pca(K, K_max = K_max, p_grid = p_grid, lambda = lambda, order_by = order_by, loss = loss),
     supp_Y = supp_Y,
     p_star = p_star,
     y_star = y_star,
@@ -364,31 +366,46 @@ fit_pipeline_g_pca <- function(
 
 ## ----- Globals 
 
-dir_art <- file.path('artifacts', 'demo_nhanes_v5', 'losslessness')
+dir_art <- file.path('artifacts', 'analyze_chop-mims-subs_v2', 'losslessness')
 
 
 ## ----- Create YAML configs
 
 ## Dataset specs
 datasets <- list(
-  nhanes = list(
-    path = file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'),
+  sgrow2 = list(
+    path = file.path('data', 'processed', 'chop-mims_v1.rds'),
     p_grid = p_grid_fun(
-      breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
+      breaks = c(1/(1200 + 1), 0.95, 1200/(1200 + 1)),
       interval_counts = c(51, 50)
     ),
-    supp_Y = c(0, seq(0.006, 500, by = 0.001)),
+    K_max = 20,
+    supp_Y = c(0, 0.6, seq(0.601, 500, by = 0.001)),
     y_star = 0,
     y_min = 0,
-    pairwise_samp_rate = 0.05,
-    lambda = 0, # sqrt(10)^-1,
-    order_by = 'importance'
+    lambda = 0,
+    order_by = 'importance',
+    pairwise_samp_rate = 1.0
   )
+  # nhanes = list(
+  #   path = file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'),
+  #   p_grid = p_grid_fun(
+  #     breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
+  #     interval_counts = c(51, 50)
+  #   ),
+  #   K_max = 20,
+  #   supp_Y = c(0, seq(0.006, 500, by = 0.001)),
+  #   y_star = 0,
+  #   y_min = 0,
+  #   lambda = 0, # sqrt(10)^-1,
+  #   order_by = 'importance',
+  #   pairwise_samp_rate = 0.1,
+  # )
 )
 
 
 ## Create configs
-models <- c('qg_pca')
+models <- c('qg_pca', 'q_pca')
 i <- 1
 for (dataset in names(datasets)) {
   for (model in models) {
@@ -427,6 +444,7 @@ for (i in 1:n_configs) {
     fit_pipeline <- partial(
       fit_pipeline_qg_pca,
       p_grid = datasets[[config$dataset]]$p_grid,
+      K_max = datasets[[config$dataset]]$K_max,
       supp_Y = datasets[[config$dataset]]$supp_Y,
       y_star = datasets[[config$dataset]]$y_star,
       y_min = datasets[[config$dataset]]$y_min,
@@ -478,7 +496,7 @@ for (i in 1:n_configs) {
     y_star = datasets[[config$dataset]]$y_star,
     y_min = datasets[[config$dataset]]$y_min,
     K_from = 1,
-    K_to = 15,
+    K_to = 10,
     K_by = 1,
     V = 5,
     seed = gen_seed(),
@@ -519,7 +537,7 @@ for (i in 1:n_configs) {
 ## skipped (no file written), and plot_losslessness will fall back to
 ## drawing no annotation box for that config.
 
-K_stars <- c(5)
+K_stars <- c(4, 4)
 for (i in 1:n_configs) {
   message(str_glue("========== Concordance for CONFIG {i} of {n_configs} =========="))
 
@@ -598,6 +616,9 @@ for (i in 1:n_configs) {
 
 ## ----- Plot
 
+## Set plotting parameters
+epsilon <- quantile(pairwise_dist_norm, c(0.05))
+
 set.seed(12345)
 for (i in 1:n_configs) {
   print(i)
@@ -617,10 +638,10 @@ for (i in 1:n_configs) {
   plot_losslessness(
     loss_valid, NULL,
     jitter_width = 0.2,
-    epsilon = c(1.45),
+    epsilon = NULL,
     alpha = 0.05,
     plot_mean = FALSE,
-    # ylim = c(0, 15), #c(0, 20),
+    ylim = c(0, 8), #c(0, 20),
     ylab = "Cross-Validated Wasserstein Error",
     ylab2 = "Pairwise Wasserstein Distance Percentile",
     xlab = "K",
@@ -628,8 +649,8 @@ for (i in 1:n_configs) {
     pairwise_distances = pairwise_dist_norm,
     concordances = concordances,
     concordance_box_position = "topright",
-    # main = str_glue('{config$dataset} | {config$model_type}'),
-    main = "NHANES Reconstructions",
+    main = str_glue('{config$dataset} | {config$model_type}'),
+    # main = "NHANES Reconstructions",
     path = path_plot
   )
 

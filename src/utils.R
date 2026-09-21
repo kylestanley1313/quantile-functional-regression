@@ -720,6 +720,7 @@ compute_generativity_score <- function(Q_a, Q_b, w, cost_type) {
 }
 
 
+## TODO: Remove once new evaluate_generativity function is validated and integrated
 ## Data-split normalized generativity assessment.
 ##
 ## For each of S splits: partition y_list into train/val (optionally
@@ -875,8 +876,14 @@ evaluate_pipeline_generativity <- function(
 ##                       all. y_mask is NOT passed to fit_fun; a caller whose
 ##                       model needs an explicit group column adds it to X
 ##                       itself (e.g. X = data.frame(group = y_mask)).
-##   sample_fun(n, fit) -> a length-n list of numeric K-vectors drawn from
-##                       fit, matching sample_mean_cov's shape.
+##   sample_fun(n, fit, X = NULL) -> a length-n list of numeric K-vectors drawn
+##                       from fit, matching sample_mean_cov's shape. X, when
+##                       not NULL, is the n-row covariate subset for the
+##                       validation-group observations being scored (same rows,
+##                       same order as idx_val_grp), letting a conditional
+##                       sample_fun draw z_i ~ p(Z | X_i) row-by-row instead of
+##                       n iid unconditional draws. An unconditional sample_fun
+##                       (e.g. sample_mean_cov) ignores it.
 ## Any other configuration a real fit/sample pair needs (hyperparameters,
 ## which column of X encodes group membership, which group level to sample
 ## from) is not threaded through here generically -- the caller closes over
@@ -886,12 +893,13 @@ evaluate_generativity <- function(
   pipeline, y_list, X, y_mask,
   fit_fun, sample_fun,
   S, R,
-  cost_type   = 'wasserstein',
-  frac_train  = 0.5,
-  subsample_n = NULL,
-  J_aug       = 500,
-  seed        = 12345,
-  n_cores     = 1
+  cost_type        = 'wasserstein',
+  frac_train       = 0.5,
+  pool_subsample_n = NULL,
+  val_subsample_n  = NULL,
+  J_aug            = 500,
+  seed             = 12345,
+  n_cores          = 1
 ) {
   stopifnot(
     is.logical(y_mask), length(y_mask) == length(y_list),
@@ -912,13 +920,15 @@ evaluate_generativity <- function(
   for (s in seq_len(S)) {
     set.seed(split_seeds[s])
 
-    ## Optional subsample, then split -- identical to
+    ## Optional pool-level subsample, then split -- identical to
     ## evaluate_pipeline_generativity, unmasked, so the RNG draw sequence is
-    ## independent of y_mask.
+    ## independent of y_mask. This shrinks what the model is fit AND scored
+    ## on (both idx_tr and idx_val derive from idx_pool); see val_subsample_n
+    ## below for scoring-only subsampling that leaves the fit untouched.
     n_pool <- length(y_list)
-    if (!is.null(subsample_n)) {
-      stopifnot(subsample_n <= n_pool)
-      idx_pool <- sample.int(n_pool, subsample_n)
+    if (!is.null(pool_subsample_n)) {
+      stopifnot(pool_subsample_n <= n_pool)
+      idx_pool <- sample.int(n_pool, pool_subsample_n)
     } else {
       idx_pool <- seq_len(n_pool)
     }
@@ -939,6 +949,16 @@ evaluate_generativity <- function(
     ## idx_val_grp == idx_val exactly.
     idx_tr_grp  <- idx_tr[y_mask[idx_tr]]
     idx_val_grp <- idx_val[y_mask[idx_val]]
+
+    ## Optional validation-only subsample: fit above already used the FULL
+    ## training half, so this only controls scoring cost / cross-group
+    ## comparability, unlike pool_subsample_n which also shrinks the fit.
+    if (!is.null(val_subsample_n)) {
+      stopifnot(val_subsample_n <= length(idx_val_grp))
+      idx_val_grp <- sample(idx_val_grp, val_subsample_n)
+    }
+
+    X_val_grp <- if (is.null(X)) NULL else X[idx_val_grp, , drop = FALSE]
     stopifnot(length(idx_tr_grp) >= 1, length(idx_val_grp) >= 1)
 
     Q_val_aug   <- encode_y_to_Qi_aug(pipeline, y_list[idx_val_grp], p_grid_aug)
@@ -956,7 +976,7 @@ evaluate_generativity <- function(
         source(file.path(.repo_root, "src", "cot.R"))
       }
       set.seed(rep_seeds[r])
-      z_draws     <- sample_fun(length(idx_val_grp), fit)
+      z_draws     <- sample_fun(length(idx_val_grp), fit, X_val_grp)
       Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
       compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
     }
@@ -979,8 +999,8 @@ evaluate_generativity <- function(
         seq_len(R), gen_one_rep,
         future.seed    = NULL,
         future.globals = c("rep_seeds", "pipeline", "idx_val_grp", "fit",
-                            "sample_fun", "Q_val_aug", "w_aug", "p_grid_aug",
-                            "p_grid", ".repo_root")
+                            "sample_fun", "X_val_grp", "Q_val_aug", "w_aug",
+                            "p_grid_aug", "p_grid", ".repo_root")
       ))
     } else {
       T_sv <- unlist(lapply(seq_len(R), gen_one_rep))
@@ -1000,10 +1020,11 @@ evaluate_generativity <- function(
     splits = splits,
     meta = list(
       S = S, R = R,
-      frac_train  = frac_train,
-      subsample_n = subsample_n,
-      N_used      = if (is.null(subsample_n)) length(y_list) else subsample_n,
-      K           = K_used
+      frac_train       = frac_train,
+      pool_subsample_n = pool_subsample_n,
+      val_subsample_n  = val_subsample_n,
+      N_used           = if (is.null(pool_subsample_n)) length(y_list) else pool_subsample_n,
+      K                = K_used
     )
   )
 }
@@ -1013,19 +1034,22 @@ evaluate_generativity <- function(
 ## the group under study is everyone, and the latent model is the
 ## unconditional mean-covariance model. Reduces to
 ## evaluate_pipeline_generativity's exact behavior (same splits, same RNG
-## draws, same scores) -- see the generativity-conditional plan for the
-## argument. Public signature matches evaluate_pipeline_generativity's, so
-## this is a drop-in replacement at call sites.
+## draws, same scores) when val_subsample_n is NULL -- see the
+## generativity-conditional plan for the argument. Public signature otherwise
+## matches evaluate_pipeline_generativity's (pool_subsample_n was renamed from
+## subsample_n to disambiguate it from val_subsample_n), so this is a drop-in
+## replacement at call sites modulo that rename.
 evaluate_unconditional_generativity <- function(
   pipeline, y_list,
   S, R,
-  cost_type   = 'wasserstein',
-  frac_train  = 0.5,
-  subsample_n = NULL,
-  J_aug       = 500,
-  ridge       = 0,
-  seed        = 12345,
-  n_cores     = 1
+  cost_type        = 'wasserstein',
+  frac_train       = 0.5,
+  pool_subsample_n = NULL,
+  val_subsample_n  = NULL,
+  J_aug            = 500,
+  ridge            = 0,
+  seed             = 12345,
+  n_cores          = 1
 ) {
   evaluate_generativity(
     pipeline, y_list,
@@ -1033,7 +1057,8 @@ evaluate_unconditional_generativity <- function(
     fit_fun    = function(Z, X) fit_mean_cov(Z, ridge = ridge),
     sample_fun = sample_mean_cov,
     S = S, R = R,
-    cost_type = cost_type, frac_train = frac_train, subsample_n = subsample_n,
+    cost_type = cost_type, frac_train = frac_train,
+    pool_subsample_n = pool_subsample_n, val_subsample_n = val_subsample_n,
     J_aug = J_aug, seed = seed, n_cores = n_cores
   )
 }

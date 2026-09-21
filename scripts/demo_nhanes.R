@@ -773,8 +773,13 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'old'
-run_diagnostics <- FALSE
+bin_pred <- 'low_income'
+run_latent_diagnostics <- FALSE
+run_generativity_diagnostics <- TRUE
+
+## Covariate names for plotting
+gp1_name <- get_plot_name_for_cov(bin_pred, FALSE)
+gp0_name <- get_plot_name_for_cov(bin_pred, TRUE)
 
 ## Create directory
 dir_gc <- file.path('artifacts', dir_art, 'plots', 'group-comparison', bin_pred)
@@ -794,8 +799,49 @@ model <- fit_binary(Z, x)
 
 ## ----- Model diagnostics
 
-if (run_diagnostics) {
+## Latent diagnostics
+if (run_latent_diagnostics) {
   binary_diagnostics(model, dir_gc, col_train)
+}
+
+
+## Generativity diagnostics
+if (run_generativity_diagnostics) {
+  S <- 5
+  R <- 20
+  X <- matrix(x, ncol = 1)
+  gen_scores <- list()
+  for (v in c(0, 1)) {
+    y_mask <- x == v
+    start <- Sys.time()
+    gen_scores[[v + 1]] <- evaluate_generativity(
+      pipeline = pipeline,
+      y_list = y_list[!is.na(df_cov[bin_pred])],
+      X = X,
+      y_mask = y_mask,
+      fit_fun = fit_binary,
+      sample_fun = sample_binary,
+      S = S,
+      R = R,
+      val_subsample_n = 500,
+      n_cores = 1
+    )
+    stop <- Sys.time()
+    print(stop - start)
+  }
+  plot_generativity_boxes(
+    groups      = c(gp0_name, gp1_name),
+    scores      = list(
+      lapply(gen_scores[[1]]$splits, `[[`, "log_norm"),
+      lapply(gen_scores[[2]]$splits, `[[`, "log_norm")
+    ),
+    Ks          = NULL,
+    vline_group = NULL,
+    hline       = 0,
+    ylab        = "Log Normalized Conditional Generativity Scores",
+    main        = str_glue("Conditional Generativity"),
+    path        = file.path(dir_gc, str_glue('gen_{bin_pred}.png'))
+  )
 }
 
 
@@ -867,10 +913,6 @@ quantile_levels <- list(
     col = 'darkorange'
   )
 )
-
-## Covariate names for plotting
-gp1_name <- get_plot_name_for_cov(bin_pred, FALSE)
-gp0_name <- get_plot_name_for_cov(bin_pred, TRUE)
 
 ## ----- Conditional QF Plots
 

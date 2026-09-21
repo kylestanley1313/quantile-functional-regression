@@ -107,22 +107,22 @@ n_cores <- min(5, R)
 gen_nhanes <- evaluate_unconditional_generativity(
   pipeline_star, y_nhanes,
   S = S, R = R,
-  frac_train  = 0.5,
-  subsample_n = length(y_chop),
-  J_aug       = 500,
-  ridge       = 0,
-  seed        = 12345,
-  n_cores     = n_cores
+  frac_train       = 0.5,
+  pool_subsample_n = length(y_chop),
+  J_aug            = 500,
+  ridge            = 0,
+  seed             = 12345,
+  n_cores          = n_cores
 )
 gen_chop <- evaluate_unconditional_generativity(
   pipeline_star, y_chop,
   S = S, R = R,
-  frac_train  = 0.5,
-  subsample_n = NULL,
-  J_aug       = 500,
-  ridge       = 0,
-  seed        = 12345,
-  n_cores     = n_cores
+  frac_train       = 0.5,
+  pool_subsample_n = NULL,
+  J_aug            = 500,
+  ridge            = 0,
+  seed             = 12345,
+  n_cores          = n_cores
 )
 saveRDS(
   list(nhanes = gen_nhanes, chop = gen_chop),

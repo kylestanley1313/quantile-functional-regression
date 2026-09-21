@@ -33,10 +33,11 @@ pipeline <- construct_pipeline(
     stage_eqf_cgrid(p_grid = p_grid),
     stage_wame(
       K_max = 20,
-      epsilon = 1, # 0.25,
+      epsilon = 0.2,
       alpha = 0.05,
       V = 5,
-      lambda = 0.1
+      lambda = 0.1,
+      order_by = 'importance'
     ),
     stage_flow(
       n_layers = 16,

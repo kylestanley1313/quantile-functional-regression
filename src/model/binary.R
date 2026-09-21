@@ -10,10 +10,31 @@ library(MASS)
 
 ## ==================== Estimation ====================
 
-## Fit a multivariate linear model Z ~ x where Z is N x K and x is a binary
-## scalar predictor. Rows where x is NA are excluded.
-fit_binary <- function(Z, x) {
+fit_binary <- function(Z, X) {
+  x <- if (is.null(dim(X))) as.numeric(X) else as.numeric(X[, 1])
   lm(Z ~ x)
+}
+
+
+## ==================== Sampling ====================
+
+sample_binary <- function(n, fit, X) {
+  x <- if (is.null(dim(X))) as.numeric(X) else as.numeric(X[, 1])
+  stopifnot(length(x) == n, all(x %in% c(0, 1)))
+
+  B_hat     <- coef(fit)
+  E_hat     <- residuals(fit)
+  N_fit     <- nrow(E_hat)
+  Sigma_hat <- crossprod(E_hat) / (N_fit - 2)
+  K         <- ncol(B_hat)
+
+  mu_hat <- matrix(B_hat["(Intercept)", ], nrow = n, ncol = K, byrow = TRUE) +
+    outer(x, B_hat["x", ])
+  eps <- MASS::mvrnorm(n, mu = rep(0, K), Sigma = Sigma_hat)
+  if (n == 1) eps <- matrix(eps, nrow = 1)
+
+  draws <- mu_hat + eps
+  asplit(draws, MARGIN = 1) |> lapply(as.numeric)
 }
 
 

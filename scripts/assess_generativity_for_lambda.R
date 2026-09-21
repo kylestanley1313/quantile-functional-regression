@@ -133,12 +133,12 @@ for (lambda in lambdas) {
   gen_list[[as.character(lambda)]] <- evaluate_unconditional_generativity(
     pipeline, y_list,
     S = S, R = R,
-    frac_train  = 0.5,
-    subsample_n = NULL,
-    J_aug       = 500,
-    ridge       = 0,
-    seed        = 12345,
-    n_cores     = n_cores
+    frac_train       = 0.5,
+    pool_subsample_n = NULL,
+    J_aug            = 500,
+    ridge            = 0,
+    seed             = 12345,
+    n_cores          = n_cores
   )
   print(Sys.time() - start)
 }
