@@ -1380,7 +1380,8 @@ plot_generativity_boxes <- function(groups,
                                      path        = NULL,
                                      width       = 960,
                                      height      = 720,
-                                     pointsize   = 14) {
+                                     pointsize   = 14,
+                                     collapse    = FALSE) {
   L <- length(groups)
   stopifnot(length(scores) == L)
   if (!is.null(Ks)) stopifnot(length(Ks) == L)
@@ -1390,6 +1391,14 @@ plot_generativity_boxes <- function(groups,
   if (!all(vapply(scores, length, integer(1)) == S)) {
     stop("Every group must have the same number of splits.")
   }
+
+  ## Collapse pools each group's S splits into one vector, so every group
+  ## renders as a single box instead of S side-by-side split-wise boxes.
+  if (collapse) {
+    scores <- lapply(scores, function(g) list(unlist(g, use.names = FALSE)))
+    S <- 1
+  }
+
   y_all  <- unlist(scores, use.names = FALSE)
   y_rng  <- range(c(y_all, hline), finite = TRUE)
   y_pad  <- 0.05 * diff(y_rng)
