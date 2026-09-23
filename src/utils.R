@@ -261,10 +261,13 @@ compute_pwds <- function(
 ## NOTE: The hard-coded from=/to= stage indices below assume the canonical
 ## pipeline order
 ##   eqf_sgrid(1) -> eqf_cgrid(2) -> wame(3) -> flow(4) -> [pca_rotation(5)]
-## where `z` is the flow latent (stage 4) and `z_rot` is the pca_rotation
-## output (stage 5). The LQD and QG-PCA steps are fused inside the single
-## `wame` stage, so there is no separate G/G_Q_star boundary. Update these
-## indices if the stage layout changes.
+## where `c` is the wame output (stage 3), `z` is the flow latent (stage 4) and
+## `z_rot` is the pca_rotation output (stage 5). The LQD and QG-PCA steps are
+## fused inside the single `wame` stage, so there is no separate G/G_Q_star
+## boundary. Update these indices if the stage layout changes.
+##
+## Downstream models (binary, amm) can treat either `z_rot` or `c` as the latent
+## representation; see the "Latent-space selection" block below.
 
 decode_z_to_Qi <- function(pipeline, z_list, Ji) {
   z_ctx <- new_context(
@@ -304,6 +307,54 @@ decode_z_rot_to_Qi <- function(pipeline, z_rot_list, Ji) {
 }
 
 
+## The wame stage emits list(c_list, Q_star_list), not a bare list of vectors,
+## so decoding from C requires rebuilding both slots. Q_star is carried in the
+## cache (fixed by the pipeline's y_star), never inside the c-vectors.
+##
+## NOTE: when cache$Q_star is NULL, encode_fun_flow appends a per-subject Q_star
+## column to c_mat (see src/cot.R), making the flow latent K+1 rather than K. A
+## K-dimensional c is then not the whole latent, so the helpers below refuse
+## that case rather than silently dropping the Q_star coordinate.
+.c_payload <- function(pipeline, c_list) {
+  Q_star <- pipeline$training$cache$Q_star
+  if (is.null(Q_star)) {
+    stop("latent = 'c' requires a fixed Q_star (non-NULL y_star) in the cache.")
+  }
+  list(
+    c_list = lapply(c_list, as.numeric),
+    Q_star_list = rep(list(Q_star), length(c_list))
+  )
+}
+
+decode_c_to_Qi <- function(pipeline, c_list, Ji) {
+  c_ctx <- new_context(
+    payload = .c_payload(pipeline, c_list),
+    cache = pipeline$training$cache,
+    meta = list(Ji_vec = rep(Ji, length.out = length(c_list)))
+  )
+  decode(pipeline, c_ctx, from = 3, to = 1)$payload
+}
+
+decode_c_to_Qi_aug <- function(pipeline, c_list, p_grid_aug, p_grid) {
+  N <- length(c_list)
+  c_ctx <- new_context(
+    payload = .c_payload(pipeline, c_list),
+    cache = pipeline$training$cache,
+    meta = list(Ji_vec = rep(1000, length.out = length(c_list)))
+  )
+  Qi_list <- decode(pipeline, c_ctx, from = 3, to = 2)$payload
+
+  supp_Y <- pipeline$training$cache$supp_Y
+  for (i in seq_len(N)) {
+    Qi_list[[i]] <- inv_eqf_cgrid(
+      Qi_list[[i]], p_grid,
+      p_grid_aug, supp_Y
+    )
+  }
+  Qi_list
+}
+
+
 ## Encode y_list to the rotated latent space (z) and stack into an N x K matrix.
 encode_y_to_z <- function(pipeline, y_list) {
   y_ctx <- new_context(
@@ -313,6 +364,63 @@ encode_y_to_z <- function(pipeline, y_list) {
   )
   z_ctx <- encode(pipeline, y_ctx, from = 0, to = 4)
   do.call(rbind, z_ctx$payload)
+}
+
+## Encode y_list to the wame coefficient space (c) and stack into an N x K
+## matrix. Note the payload is list(c_list, Q_star_list), hence the $c_list.
+encode_y_to_c <- function(pipeline, y_list) {
+  y_ctx <- new_context(
+    payload = y_list,
+    cache = pipeline$training$cache,
+    meta = list()
+  )
+  c_ctx <- encode(pipeline, y_ctx, from = 0, to = 3)
+  do.call(rbind, c_ctx$payload$c_list)
+}
+
+
+## ---------- Latent-space selection ---------- ##
+
+## `pipeline$latent` selects which stage output the downstream models (binary,
+## amm, generativity) treat as the latent representation:
+##   'z_rot' (default) -> stage 5, the PCA-rotated flow output
+##   'c'               -> stage 3, the wame coefficients
+##
+## Set it on the pipeline object (pipeline$latent <- 'c'); every consumer reads
+## it from there, so no model or plotting signature changes.
+##
+## NOTE: the 'z_rot' encode branch deliberately stops at stage 4 (z), not stage
+## 5. stage_pca_rotation is a centering plus an orthogonal rotation, so this is
+## immaterial for fit_binary, and stopping at 4 reproduces the pre-existing
+## encode_y_to_z behaviour exactly. Do not "fix" it without re-running the
+## z_rot baselines.
+.latent_of <- function(pipeline) pipeline$latent %||% 'z_rot'
+
+encode_y_to_latent <- function(pipeline, y_list) {
+  switch(
+    .latent_of(pipeline),
+    z_rot = encode_y_to_z(pipeline, y_list),
+    c     = encode_y_to_c(pipeline, y_list),
+    stop(str_glue("Unknown pipeline$latent: '{.latent_of(pipeline)}'"))
+  )
+}
+
+decode_latent_to_Qi <- function(pipeline, latent_list, Ji) {
+  switch(
+    .latent_of(pipeline),
+    z_rot = decode_z_rot_to_Qi(pipeline, latent_list, Ji),
+    c     = decode_c_to_Qi(pipeline, latent_list, Ji),
+    stop(str_glue("Unknown pipeline$latent: '{.latent_of(pipeline)}'"))
+  )
+}
+
+decode_latent_to_Qi_aug <- function(pipeline, latent_list, p_grid_aug, p_grid) {
+  switch(
+    .latent_of(pipeline),
+    z_rot = decode_z_to_Qi_aug(pipeline, latent_list, p_grid_aug, p_grid),
+    c     = decode_c_to_Qi_aug(pipeline, latent_list, p_grid_aug, p_grid),
+    stop(str_glue("Unknown pipeline$latent: '{.latent_of(pipeline)}'"))
+  )
 }
 
 ## Encode y_list to Qi on the augmented p-grid.
@@ -940,7 +1048,7 @@ evaluate_generativity <- function(
 
     ## Fit on the FULL training half (not y_mask-restricted) so a joint,
     ## cross-group model has both groups available to it.
-    Z_tr <- encode_y_to_z(pipeline, y_list[idx_tr])
+    Z_tr <- encode_y_to_latent(pipeline, y_list[idx_tr])
     X_tr <- if (is.null(X)) NULL else X[idx_tr, , drop = FALSE]
     fit  <- fit_fun(Z_tr, X_tr)
 
@@ -977,7 +1085,7 @@ evaluate_generativity <- function(
       }
       set.seed(rep_seeds[r])
       z_draws     <- sample_fun(length(idx_val_grp), fit, X_val_grp)
-      Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
+      Q_synth_aug <- decode_latent_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
       compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
     }
 
@@ -1015,7 +1123,7 @@ evaluate_generativity <- function(
     )
   }
 
-  K_used <- ncol(encode_y_to_z(pipeline, y_list[1]))
+  K_used <- ncol(encode_y_to_latent(pipeline, y_list[1]))
   list(
     splits = splits,
     meta = list(
@@ -1024,7 +1132,8 @@ evaluate_generativity <- function(
       pool_subsample_n = pool_subsample_n,
       val_subsample_n  = val_subsample_n,
       N_used           = if (is.null(pool_subsample_n)) length(y_list) else pool_subsample_n,
-      K                = K_used
+      K                = K_used,
+      latent           = .latent_of(pipeline)
     )
   )
 }

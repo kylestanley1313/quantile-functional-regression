@@ -20,6 +20,16 @@ source('src/utils.R')
 ## Globals
 dir_art <- 'demo_nhanes_v6'
 
+## Latent representation used by the Group Comparison and AMM sections:
+##   'z_rot' -> output of the PCA layer (stage 5)
+##   'c'     -> output of the WAME layer (stage 3)
+## Analysis output directories are suffixed for anything other than z_rot, so
+## the two runs sit side by side under the same dir_art (and therefore share a
+## single fitted pipeline -- see the pipeline load guard below).
+latent <- 'c'
+suffix <- if (latent == 'z_rot') '' else str_glue('-{latent}')
+
+
 ## Load data
 path <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
 y_list <- readRDS(path)
@@ -68,9 +78,18 @@ pipeline <- construct_pipeline(
 )
 
 ## Fitting
-pipeline <- fit(pipeline, y_list)
+## NOTE: stage seeds come from gen_seed(), which is evaluated before
+## construct_pipeline() calls set.seed(), so re-fitting produces a DIFFERENT
+## flow each session. Reuse the saved pipeline so that the z_rot and c runs are
+## two views of one fit and the comparison isn't confounded by retraining.
 path <- str_glue('artifacts/{dir_art}/pipe_nhanes.rds')
-saveRDS(pipeline, path)
+if (file.exists(path)) {
+  pipeline <- readRDS(path)
+} else {
+  pipeline <- fit(pipeline, y_list)
+  saveRDS(pipeline, path)
+}
+pipeline$latent <- latent
 
 ## New context
 y_ctx <- new_context(
@@ -90,6 +109,16 @@ c_ctx_ <- decode(pipeline, z_ctx_, from = 4, to = 3)
 Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
 Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
 y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
+
+## N x K matrix of the selected latent, consumed by the Group Comparison and
+## AMM sections below. Note the c payload is list(c_list, Q_star_list), so the
+## c branch needs $c_list -- rbind-ing the payload directly is wrong.
+Z_latent <- switch(
+  latent,
+  z_rot = do.call(rbind, z_rot_ctx$payload),
+  c     = do.call(rbind, c_ctx$payload$c_list),
+  stop(str_glue("Unknown latent: '{latent}'"))
+)
 
 
 ## ----- Visualize reconstructions
@@ -701,15 +730,16 @@ for (bin_pred in c('old', 'male', 'low_income')) {
 ## ---------- Effect Plots ---------- ##
 
 ## Create directory
-dir_eff_plots <- file.path('artifacts', dir_art, 'plots', 'effect-plots')
-if (!dir.exists(dir_eff_plots)) dir.create(dir_eff_plots)
+dir_eff_plots <- file.path('artifacts', dir_art, 'plots',
+                           str_glue('effect-plots{suffix}'))
+if (!dir.exists(dir_eff_plots)) dir.create(dir_eff_plots, recursive = TRUE)
 
 K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
 k_star_quantiles <- seq(0.1, 0.9, by = 0.1)
 for (k_star in 1:K) {
 
-  ## Set z-embeddings to decode
-  Z <- do.call(rbind, z_rot_ctx$payload)
+  ## Set latent embeddings to decode
+  Z <- Z_latent
   Z_mean <- colMeans(Z)
   Z_plot <- matrix(
     Z_mean, 
@@ -721,10 +751,10 @@ for (k_star in 1:K) {
 
   ## Decode
   Ji <- length(Qi_ctx$payload[[1]])
-  Qi_plot <- decode_z_rot_to_Qi(
+  Qi_plot <- decode_latent_to_Qi(
     pipeline,
-    z_rot_list = asplit(Z_plot, MARGIN = 1),
-    Ji         = Ji
+    latent_list = asplit(Z_plot, MARGIN = 1),
+    Ji          = Ji
   )
 
   ## Center each QF by subtracting the q = 0.5 QF
@@ -739,7 +769,7 @@ for (k_star in 1:K) {
   pi_grid <- pi_grid_fun(Ji)
   path_plot <- file.path(
     dir_eff_plots,
-    str_glue('effect_k-{k_star}.png')
+    str_glue('effect{suffix}_k-{k_star}.png')
   )
   pal <- colorRampPalette(c("blue", "gray", "red"))(101)
   line_cols <- pal[round(k_star_quantiles * 100) + 1]
@@ -773,8 +803,8 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'old'
-run_latent_diagnostics <- FALSE
+bin_pred <- 'low_income'
+run_latent_diagnostics <- TRUE
 run_generativity_diagnostics <- TRUE
 
 ## Covariate names for plotting
@@ -782,15 +812,16 @@ gp1_name <- get_plot_name_for_cov(bin_pred, FALSE)
 gp0_name <- get_plot_name_for_cov(bin_pred, TRUE)
 
 ## Create directory
-dir_gc <- file.path('artifacts', dir_art, 'plots', 'group-comp', bin_pred)
-if (!dir.exists(dir_gc)) dir.create(dir_gc)
+dir_gc <- file.path('artifacts', dir_art, 'plots',
+                    str_glue('group-comp{suffix}'), bin_pred)
+if (!dir.exists(dir_gc)) dir.create(dir_gc, recursive = TRUE)
 
 
 ## ----- Fit linear regression
 
 ## Fit linear model
 mask <- !is.na(df_cov[bin_pred])
-Z <- do.call(rbind, z_rot_ctx$payload[mask])
+Z <- Z_latent[mask, , drop = FALSE]
 N <- nrow(Z)
 K <- ncol(Z)
 x <- df_cov[mask,bin_pred]
@@ -871,10 +902,11 @@ path_plot <- file.path(
   dir_gc,
   str_glue('roy-bose_{bin_pred}.png')
 )
+xlim_rb <- if (latent == 'z_rot') c(-1.2, 1.2) else NULL
 png(path_plot, width = 600, height = 800, pointsize = 14)
 binary_plot_intervals(
-  res_rb, 
-  xlim = c(-1.2, 1.2), 
+  res_rb,
+  xlim = xlim_rb,
   main = str_glue("Joint Bands for Latent Regression Coefficients ({gp1_name})")
 )
 dev.off()
@@ -933,10 +965,10 @@ z_boot_0  <- boot_res$z_boot_0
 z_boot_1  <- boot_res$z_boot_1
 
 ## Decode original and bootstrap conditional means to Qi-space
-Qi_hat_0  <- decode_z_rot_to_Qi(pipeline, list(z_hat_0), Ji)[[1]]
-Qi_hat_1  <- decode_z_rot_to_Qi(pipeline, list(z_hat_1), Ji)[[1]]
-Qi_boot_0 <- decode_z_rot_to_Qi(pipeline, z_boot_0, Ji)
-Qi_boot_1 <- decode_z_rot_to_Qi(pipeline, z_boot_1, Ji)
+Qi_hat_0  <- decode_latent_to_Qi(pipeline, list(z_hat_0), Ji)[[1]]
+Qi_hat_1  <- decode_latent_to_Qi(pipeline, list(z_hat_1), Ji)[[1]]
+Qi_boot_0 <- decode_latent_to_Qi(pipeline, z_boot_0, Ji)
+Qi_boot_1 <- decode_latent_to_Qi(pipeline, z_boot_1, Ji)
 
 
 ## --- Plot conditional QFs with bands
@@ -1129,14 +1161,14 @@ dev.off()
 ## ========== Additive Mixed Model ========== ##
 
 ## Create directory
-dir_amm <- file.path('artifacts', dir_art, 'plots', 'amm')
-if (!dir.exists(dir_amm)) dir.create(dir_amm)
+dir_amm <- file.path('artifacts', dir_art, 'plots', str_glue('amm{suffix}'))
+if (!dir.exists(dir_amm)) dir.create(dir_amm, recursive = TRUE)
 
 ## ---------- Fit ----------
 
 n_knots_age <- 20
 n_knots_pir <- 20
-Z_amm <- do.call(rbind, z_rot_ctx$payload)
+Z_amm <- Z_latent
 covariates_amm <- data.frame(
   male = df_cov$male,
   age  = df_cov$age,
