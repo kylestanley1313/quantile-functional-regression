@@ -4,6 +4,7 @@ library(dplyr)
 library(kableExtra)
 library(knitr)
 library(MASS)
+library(mgcv)
 library(moments)
 library(MVN)
 library(purrr)
@@ -607,16 +608,35 @@ dir_eda <- file.path('artifacts', dir_art, 'plots', 'eda')
 if (!dir.exists(dir_eda)) dir.create(dir_eda)
 
 ## Load covariates
-path <- file.path('data', 'processed', 'nhanes_cov.rds')
+# path <- file.path('data', 'processed', 'nhanes_cov.rds')
+path <- file.path('data', 'processed', 'nhanes_cov_cdc.rds')
 df_cov <- readRDS(path)
 df_cov <- df_cov %>%
   filter(sub_id %in% names(y_list)) %>%
   arrange(match(sub_id, names(y_list)))
 
 ## Create binary covariates
-df_cov$low_income <- as.numeric(df_cov$PIR <= 1)
+df_cov$low_income <- as.numeric(df_cov$pir <= 1)
 df_cov$old <- as.numeric(df_cov$age >= 65)
-df_cov$male <- sapply(df_cov$gender, function(g) ifelse(g == 'Male', 1, 0))
+df_cov$male <- df_cov$gender == 1
+
+## Age- and Sex- adjusted covariates
+df_cov$bmd_ll_adj <- residuals(
+  gam(bmd_ll ~ male + s(age), data = df_cov, na.action = na.exclude)
+)
+df_cov$bmd_rl_adj <- residuals(
+  gam(bmd_l_min ~ male + s(age), data = df_cov, na.action = na.exclude)
+)
+df_cov$bmd_l_min_adj <- residuals(
+  gam(bmd_l_min ~ male + s(age), data = df_cov, na.action = na.exclude)
+)
+df_cov$hdl_adj <- residuals(
+  gam(hdl ~ male + s(age), data = df_cov, na.action = na.exclude)
+)
+df_cov$ghb_adj <- residuals(
+  gam(ghb ~ male + s(age), data = df_cov, na.action = na.exclude)
+)
+
 
 get_plot_name_for_cov <- function(cov, other_cov = FALSE) {
   if (other_cov) {
@@ -1172,7 +1192,7 @@ Z_amm <- Z_latent
 covariates_amm <- data.frame(
   male = df_cov$male,
   age  = df_cov$age,
-  pir  = df_cov$PIR
+  pir  = df_cov$pir
 )
 start <- Sys.time()
 amm <- fit_amm(
@@ -1698,4 +1718,544 @@ plot_decoded_conditional_threshold_diff(
 )
 dev.off()
 
+
+
+## ========== Hierarchical Clustering ========== ##
+
+## Ward clustering of the latent embeddings, characterized by decoding
+## embedding-space group means back to QF space, with a QF-space clustering as
+## a baseline. Outputs land in plots/hca/<latent> so that the c and z_rot runs
+## sit side by side rather than overwriting each other.
+
+## ---------- Helpers ---------- ##
+
+## Place every Qi on the shared augmented p-grid, as a J x N matrix. Subjects
+## have different Ji, so this is what makes them comparable pointwise.
+hca_qf_aug <- function(Qi_list, p_grid_aug, supp_Y) {
+  vapply(
+    Qi_list,
+    function(Qi) inv_eqf_cgrid(Qi, pi_grid_fun(length(Qi)), p_grid_aug, supp_Y),
+    numeric(length(p_grid_aug))
+  )
+}
+
+## Pairwise Wasserstein distances between QFs, as a `dist`, from the augmented
+## matrix above. The metric is a w-weighted L2, so scaling coordinates by
+## sqrt(w) reduces it to plain Euclidean distance and dist() does the O(N^2)
+## work in C -- the R-level loop in compute_pwds() is hopeless at N ~ 8k.
+hca_qf_dist <- function(Q_aug, p_grid_aug) {
+  w_aug <- get_quadrature_weights(p_grid_aug)
+  dist(sweep(t(Q_aug), 2, sqrt(w_aug), `*`))
+}
+
+## Wasserstein barycenter of the columns in `idx`. In one dimension the W2
+## barycenter has a closed form -- it is the pointwise mean of the quantile
+## functions -- so this is exact, not an iterative solve.
+hca_qf_barycenter <- function(Q_aug, idx) {
+  rowMeans(Q_aug[, idx, drop = FALSE])
+}
+
+## (Adjusted) Rand index from the cluster contingency table.
+hca_rand <- function(a, b, adjusted = FALSE) {
+  tab   <- table(a, b)
+  total <- choose(length(a), 2)
+  s_ij  <- sum(choose(tab, 2))
+  s_i   <- sum(choose(rowSums(tab), 2))
+  s_j   <- sum(choose(colSums(tab), 2))
+  if (adjusted) {
+    exp_ij <- s_i * s_j / total
+    (s_ij - exp_ij) / ((s_i + s_j) / 2 - exp_ij)
+  } else {
+    (total + 2 * s_ij - s_i - s_j) / total
+  }
+}
+
+## Decode the embedding-space mean of a set of subjects to a QF.
+hca_decode_mean <- function(idx) {
+  z_bar <- colMeans(Z_hca[idx, , drop = FALSE])
+  decode_latent_to_Qi(pipe_hca, list(z_bar), Ji_hca)[[1]]
+}
+
+## Overlaid per-cluster densities of a covariate.
+hca_plot_density <- function(v, cl, cols, xlab, main, path) {
+  ok    <- !is.na(v)
+  dens  <- lapply(seq_along(cols), function(g) density(v[ok & cl == g]))
+  png(path, width = 960, height = 720, pointsize = 18)
+  plot(
+    NULL,
+    xlim = range(sapply(dens, function(d) range(d$x))),
+    ylim = c(0, max(sapply(dens, function(d) max(d$y)))),
+    xlab = xlab, ylab = 'density', main = main
+  )
+  for (g in seq_along(dens)) lines(dens[[g]], col = cols[g], lwd = 3)
+  legend(
+    'topright',
+    legend = str_glue('cluster {seq_along(cols)}'),
+    col = cols, lwd = 3, bty = 'n'
+  )
+  dev.off()
+}
+
+## Cluster-wise horizontal boxplots stacked vertically, with the pooled median
+## marked. Groups are passed in reverse because boxplot() draws its first group
+## at the bottom, and cluster 1 reads better at the top.
+hca_plot_boxes <- function(v, cl, cols, xlab, main, path,
+                           width = 960, height = 720, pointsize = 18) {
+  idx    <- rev(seq_along(cols))
+  groups <- lapply(idx, function(g) v[cl == g & !is.na(v)])
+  ## An individual empty cluster is fine (boxplot just leaves a gap), but an
+  ## all-missing covariate has no finite xlim and would error.
+  if (all(lengths(groups) == 0)) {
+    warning(str_glue("hca_plot_boxes: '{xlab}' is entirely missing; skipping."))
+    return(invisible(NULL))
+  }
+  png(path, width = width, height = height, pointsize = pointsize)
+  on.exit(dev.off(), add = TRUE)
+  par(mar = c(5, 5, 4, 2))
+  boxplot(
+    groups,
+    horizontal = TRUE,
+    names      = idx,
+    col        = cols[idx],
+    las        = 1,
+    xlab       = xlab,
+    ylab       = 'cluster',
+    main       = main
+  )
+  abline(v = median(v, na.rm = TRUE), lty = 3, lwd = 2)
+}
+
+## --- Clustered-heatmap colour scales
+
+## Missing covariate values get their own colour rather than falling back on
+## white: in a binary column white is already 0, so NA would otherwise be
+## indistinguishable from it (low_income, say, inherits every pir NA). Orange
+## sits outside both covariate ramps and outside the green cluster rules.
+hca_na_col <- 'orange'
+
+## Black/white for a binary covariate.
+hca_cols_bw <- function(v, na_col = hca_na_col) {
+  out <- rep('white', length(v))
+  out[!is.na(v) & v == 1] <- 'black'
+  out[is.na(v)] <- na_col
+  out
+}
+
+## Greys for a continuous covariate.
+hca_grey_pal <- function(n = 256) gray.colors(n, start = 0.92, end = 0)
+hca_cols_grey <- function(v, n = 256, na_col = hca_na_col) {
+  pal <- hca_grey_pal(n)
+  rng <- range(v, na.rm = TRUE)
+  out <- rep(na_col, length(v))
+  ok  <- !is.na(v)
+  out[ok] <- if (diff(rng) > 0) {
+    pal[round((v[ok] - rng[1]) / diff(rng) * (n - 1)) + 1]
+  } else {
+    pal[1]
+  }
+  out
+}
+
+## Blue (negative) - white (zero) - red (positive) over [-lim, lim].
+hca_div_pal <- function(n = 255) colorRampPalette(c('blue', 'white', 'red'))(n)
+hca_cols_div <- function(v, lim, n = 255) {
+  if (!is.finite(lim) || lim <= 0) lim <- 1
+  vc <- pmax(pmin(v, lim), -lim)
+  hca_div_pal(n)[round((vc + lim) / (2 * lim) * (n - 1)) + 1]
+}
+
+## One labelled colour ramp in the key panel.
+hca_legend_ramp <- function(pal, y0, y1, title, labels) {
+  rasterImage(as.raster(matrix(rev(pal), ncol = 1)), 0.05, y0, 0.30, y1)
+  text(0.05, y1 + 0.035, title, adj = 0, font = 2)
+  text(0.34, seq(y1, y0, length.out = length(labels)), labels, adj = 0)
+}
+
+## Clustered heatmap: an N x (A + K) raster of covariate and latent values,
+## rows in dendrogram order with the tree drawn alongside (one leaf per row).
+## Columns are never re-ordered, so the latent block stays in component order.
+##
+## Args:
+##   hc         hclust whose leaves index the rows of `covs` and `Z`
+##   Z          N x K latent matrix. Each column gets its own symmetric scale,
+##              +/- max|Z[, k]|, so zero is white everywhere and every
+##              component is legible regardless of its variance.
+##   covs       data.frame of covariates, one per heatmap column, drawn left of
+##              the latent block in the order given
+##   cov_types  optional 'binary'/'continuous' per covariate; the default
+##              infers 'binary' when every non-NA value of a column is 0 or 1
+##   n_clusts   positive integer -> cutree(hc, n_clusts) to partition the rows;
+##              NULL (default) leaves the rows unmarked and makes the two
+##              flags below no-ops
+##   cluster_lines   draw green rules between the row blocks
+##   label_clusters  print each cluster's number in the right margin, centred
+##                   on its block
+##   na_col     colour for missing covariate values, in both column types
+##   path       output png
+hca_plot_heatmap <- function(hc, Z, covs, path,
+                            cov_types = NULL, n_clusts = NULL,
+                            cluster_lines = TRUE, label_clusters = TRUE,
+                            na_col = hca_na_col,
+                            width = 1000, height = 1200, pointsize = 16) {
+  covs <- as.data.frame(covs)
+  nr   <- nrow(Z)
+  A    <- ncol(covs)
+  K    <- ncol(Z)
+  stopifnot(nrow(covs) == nr, length(hc$order) == nr, A >= 1)
+
+  if (is.null(cov_types)) {
+    cov_types <- vapply(
+      covs,
+      function(v) if (all(v[!is.na(v)] %in% c(0, 1))) 'binary' else 'continuous',
+      character(1)
+    )
+  }
+  stopifnot(length(cov_types) == A,
+            cov_types %in% c('binary', 'continuous'))
+
+  ## vapply (not sapply/mapply) so a single covariate still yields a matrix
+  cols_cov <- vapply(
+    seq_len(A),
+    function(j) {
+      v <- covs[[j]]
+      if (cov_types[j] == 'binary') {
+        hca_cols_bw(v, na_col = na_col)
+      } else {
+        hca_cols_grey(v, na_col = na_col)
+      }
+    },
+    character(nr)
+  )
+  ## One symmetric scale per component: +/- max|Z[, k]|, so each column uses
+  ## the full blue-to-red range regardless of how much variance it carries.
+  lims <- apply(abs(Z), 2, max, na.rm = TRUE)
+  cols_lat <- vapply(
+    seq_len(K),
+    function(k) hca_cols_div(Z[, k], lims[k]),
+    character(nr)
+  )
+
+  ord     <- hc$order
+  col_mat <- cbind(cols_cov, cols_lat)[ord, , drop = FALSE]
+  nc      <- ncol(col_mat)
+  labs    <- c(names(covs), paste('k =', seq_len(K)))
+
+  png(path, width = width, height = height, pointsize = pointsize)
+  on.exit({dev.off(); layout(1)}, add = TRUE)
+  layout(matrix(1:3, nrow = 1), widths = c(1.1, 2.4, 0.9))
+
+  ## Dendrogram: yaxs = 'i' makes leaf i sit at y = i, matching the raster
+  par(mar = c(5, 2, 6, 0))
+  plot(as.dendrogram(hc), horiz = TRUE, axes = FALSE,
+      yaxs = 'i', leaflab = 'none')
+
+  ## Heatmap. as.raster() draws its first row at the top, so flip to put
+  ## dendrogram-order row 1 at the bottom where the first leaf is.
+  ## Right margin holds the cluster numbers, between heatmap and key
+  par(mar = c(5, 0, 6, if (label_clusters) 2.5 else 1))
+  plot(NULL, xlim = 0.5 + c(0, nc), ylim = 0.5 + c(0, nr),
+      xaxs = 'i', yaxs = 'i', axes = FALSE, xlab = '', ylab = '')
+  rasterImage(
+    as.raster(col_mat[nr:1, , drop = FALSE]),
+    xleft = 0.5, ybottom = 0.5, xright = nc + 0.5, ytop = nr + 0.5,
+    interpolate = FALSE
+  )
+  axis(3, at = seq_len(nc), labels = labs, las = 2, tick = FALSE, line = -0.5)
+  abline(v = A + 0.5, lwd = 2)
+  if (!is.null(n_clusts)) {
+    stopifnot(length(n_clusts) == 1, n_clusts == round(n_clusts), n_clusts >= 1)
+    ## Clusters are contiguous in dendrogram order, so run-lengths give both
+    ## the cut points and each block's extent in one pass
+    runs <- rle(cutree(hc, k = n_clusts)[ord])
+    ends <- cumsum(runs$lengths)
+    if (cluster_lines) {
+      abline(h = head(ends, -1) + 0.5, col = 'green', lwd = 2)
+    }
+    if (label_clusters) {
+      ## mtext rather than axis() so no label is dropped when a block is thin
+      mids <- ends - (runs$lengths - 1) / 2
+      for (i in seq_along(mids)) {
+        mtext(runs$values[i], side = 4, at = mids[i], line = 0.6, las = 1)
+      }
+    }
+  }
+  box()
+
+  ## Key
+  par(mar = c(5, 1, 6, 1))
+  plot(NULL, xlim = c(0, 1), ylim = c(0, 1), axes = FALSE, xlab = '', ylab = '')
+  rect(0.05, c(0.90, 0.83), 0.30, c(0.96, 0.89),
+      col = c('white', 'black'), border = 'grey50')
+  text(0.05, 0.995, 'binary', adj = 0, font = 2)
+  text(0.34, c(0.93, 0.86), c('0', '1'), adj = 0)
+  hca_legend_ramp(hca_grey_pal(), 0.52, 0.74, 'continuous', c('max', 'min'))
+  ## Scale is per column, so the key shows sign rather than a shared bound
+  hca_legend_ramp(hca_div_pal(), 0.14, 0.36, 'latent', c('+', '0', '-'))
+  ## NA applies to the covariate columns only; latent values are never missing
+  rect(0.05, 0.035, 0.30, 0.085, col = na_col, border = 'grey50')
+  text(0.05, 0.115, 'missing', adj = 0, font = 2)
+  text(0.34, 0.06, 'NA', adj = 0)
+}
+
+
+## ---------- Settings ---------- ##
+
+# hca_latent   <- 'z_rot'      # 'c' or 'z_rot'
+# hca_k        <- 20        # set after eyeballing hca_dendrogram.png, then re-run
+
+for (hca_latent in c('c')) {
+  for (hca_k in c(10, 11, 15, 20)) {
+
+    hca_J_aug    <- 500      # augmented p-grid size for the QF-space baseline
+    hca_baseline <- TRUE
+
+    dir_hca <- file.path('artifacts', dir_art, 'plots', 'hca', hca_latent)
+    if (!dir.exists(dir_hca)) dir.create(dir_hca, recursive = TRUE)
+
+    ## Embeddings to cluster, plus a pipeline view whose decoder matches them.
+    ## NOTE: N, K, Ji, mask, x, y_grid, ... are all clobbered by earlier sections,
+    ## so every name introduced below carries an _hca suffix.
+    Z_hca <- switch(
+      hca_latent,
+      z_rot = do.call(rbind, z_rot_ctx$payload),
+      c     = do.call(rbind, c_ctx$payload$c_list),
+      stop(str_glue("Unknown hca_latent: '{hca_latent}'"))
+    )
+    pipe_hca <- pipeline
+    pipe_hca$latent <- hca_latent
+    N_hca       <- nrow(Z_hca)
+    K_hca       <- ncol(Z_hca)
+    Ji_hca      <- length(Qi_ctx$payload[[1]])
+    pi_grid_hca <- pi_grid_fun(Ji_hca)
+    stopifnot(nrow(df_cov) == N_hca)
+
+
+    ## ---------- Cluster the embeddings ---------- ##
+
+    d_hca  <- dist(Z_hca)
+    hc_hca <- hclust(d_hca, method = 'ward.D2')
+
+    png(file.path(dir_hca, 'hca_dendrogram.png'),
+        width = 1280, height = 720, pointsize = 14)
+    plot(hc_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
+        main = str_glue("Ward linkage on {hca_latent}-embeddings"))
+    dev.off()
+
+    cl_hca   <- cutree(hc_hca, k = hca_k)
+    cols_hca <- hcl.colors(hca_k, palette = 'Dark 3')
+
+    ## rect.hclust() fills `border` left-to-right along hc$order, not by cluster id,
+    ## so the palette has to be permuted to keep box colors consistent with every
+    ## other plot in this section.
+    hca_rect_cols <- function(hc, cl, cols) cols[unique(cl[hc$order])]
+
+    png(file.path(dir_hca, str_glue('hca_dendrogram_k-{hca_k}.png')),
+        width = 1280, height = 720, pointsize = 14)
+    plot(hc_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
+        main = str_glue("Ward linkage on {hca_latent}-embeddings (k = {hca_k})"))
+    rect.hclust(hc_hca, k = hca_k,
+                border = hca_rect_cols(hc_hca, cl_hca, cols_hca))
+    dev.off()
+
+    print(table(cluster = cl_hca))
+
+
+    ## ---------- Clustered Heatmap ---------- ##
+
+    hca_plot_heatmap(
+      hc             = hc_hca,
+      Z              = Z_hca,
+      covs           = df_cov[, c('male', 'age', 'pir', 'bmd_l_min_adj', 'hdl_adj', 'ghb_adj')],
+      n_clusts       = hca_k,
+      cluster_lines  = TRUE,
+      label_clusters = TRUE,
+      path           = file.path(dir_hca, str_glue('hca_heatmap_k-{hca_k}.png'))
+    )
+
+
+    ## ---------- Embedding space ---------- ##
+
+    k_from <- 1
+    k_to <- 3
+    png(file.path(dir_hca, str_glue('hca_embeddings_k-{hca_k}.png')),
+        width = 960, height = 960, pointsize = 18)
+    plot_embeddings(
+      Z_hca[,k_from:k_to],
+      colors = adjustcolor(cols_hca[cl_hca], alpha.f = 0.3),
+      shapes = rep(19, N_hca),
+      sizes  = rep(0.5, N_hca),
+      color_shape_size_labels = data.frame(
+        color = cols_hca,
+        shape = 19,
+        size  = 1,
+        label = str_glue('cluster {seq_len(hca_k)}')
+      ),
+      stats = FALSE
+    )
+    dev.off()
+
+
+    ## ---------- Distribution space ---------- ##
+
+    ## Cluster QF := decode(mean of the cluster's embeddings)
+    Qi_cluster <- lapply(
+      seq_len(hca_k),
+      function(g) hca_decode_mean(which(cl_hca == g))
+    )
+
+    png(file.path(dir_hca, str_glue('hca_cluster-qfs_k-{hca_k}.png')),
+        width = 960, height = 960, pointsize = 18)
+    plot_funs(
+      fun_list  = Qi_cluster,
+      grid_list = rep(list(pi_grid_hca), hca_k),
+      colors    = cols_hca,
+      widths    = rep(3, hca_k),
+      types     = rep(1, hca_k),
+      color_width_type_labels = data.frame(
+        color = cols_hca,
+        width = 3,
+        type  = 1,
+        label = str_glue('cluster {seq_len(hca_k)}')
+      ),
+      main = str_glue("Cluster QFs ({hca_latent}-embeddings, k = {hca_k})")
+    )
+    dev.off()
+
+    ## Same curves against the root QF -- decode(mean of all embeddings) -- so each
+    ## cluster reads as a departure from the overall distribution.
+    Qi_root <- hca_decode_mean(seq_len(N_hca))
+
+    png(file.path(dir_hca, str_glue('hca_cluster-qfs-contrast_k-{hca_k}.png')),
+        width = 960, height = 960, pointsize = 18)
+    plot_funs(
+      fun_list  = lapply(Qi_cluster, function(q) q - Qi_root),
+      grid_list = rep(list(pi_grid_hca), hca_k),
+      colors    = cols_hca,
+      widths    = rep(3, hca_k),
+      types     = rep(1, hca_k),
+      color_width_type_labels = data.frame(
+        color = cols_hca,
+        width = 3,
+        type  = 1,
+        label = str_glue('cluster {seq_len(hca_k)}')
+      ),
+      ylab = 'Q(p) - Q_root(p)',
+      main = str_glue("Cluster QF contrasts vs. root ({hca_latent}, k = {hca_k})")
+    )
+    abline(h = 0, lty = 2, col = 'gray50')
+    dev.off()
+
+
+    ## ---------- Baseline: cluster directly on the QFs ---------- ##
+
+    if (hca_baseline) {
+
+      p_grid_aug_hca <- sort(unique(c(
+        p_grid, pi_grid_fun(hca_J_aug - length(p_grid))
+      )))
+
+      start <- Sys.time()
+      ## Interpolate once; the tree and the barycenters below share this matrix
+      Q_aug_hca <- hca_qf_aug(
+        Qi_ctx$payload, p_grid_aug_hca, pipeline$training$cache$supp_Y
+      )
+      d_qf_hca  <- hca_qf_dist(Q_aug_hca, p_grid_aug_hca)
+      hc_qf_hca <- hclust(d_qf_hca, method = 'ward.D2')
+      print(Sys.time() - start)
+
+      ## dist objects are ~N^2/2 doubles apiece; drop them once the trees are built
+      rm(d_qf_hca)
+      gc()
+
+      cl_qf_hca <- cutree(hc_qf_hca, k = hca_k)
+
+      png(file.path(dir_hca, str_glue('hca_dendrogram_k-{hca_k}_qf.png')),
+          width = 1280, height = 720, pointsize = 14)
+      plot(hc_qf_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
+          main = "Ward linkage on QFs (Wasserstein)")
+      rect.hclust(hc_qf_hca, k = hca_k,
+                  border = hca_rect_cols(hc_qf_hca, cl_qf_hca, cols_hca))
+      dev.off()
+
+      ## Barycenter contrasts
+      Qi_bary_root <- hca_qf_barycenter(Q_aug_hca, seq_len(ncol(Q_aug_hca)))
+      Qi_bary_qf   <- lapply(
+        seq_len(hca_k),
+        function(g) hca_qf_barycenter(Q_aug_hca, which(cl_qf_hca == g))
+      )
+
+      png(file.path(dir_hca, str_glue('hca_qf-barycenter-contrast_k-{hca_k}.png')),
+          width = 960, height = 960, pointsize = 18)
+      plot_funs(
+        fun_list  = lapply(Qi_bary_qf, function(q) q - Qi_bary_root),
+        grid_list = rep(list(p_grid_aug_hca), hca_k),
+        colors    = cols_hca,
+        widths    = rep(3, hca_k),
+        types     = rep(1, hca_k),
+        color_width_type_labels = data.frame(
+          color = cols_hca,
+          width = 3,
+          type  = 1,
+          label = str_glue('cluster {seq_len(hca_k)}')
+        ),
+        ylab = 'Q(p) - Q_bary(p)',
+        main = str_glue("QF-space barycentre contrasts vs. overall (k = {hca_k})")
+      )
+      abline(h = 0, lty = 2, col = 'gray50')
+      dev.off()
+
+      res_hca_rand <- list(
+        contingency = table(embedding = cl_hca, qf = cl_qf_hca),
+        rand        = hca_rand(cl_hca, cl_qf_hca),
+        rand_adj    = hca_rand(cl_hca, cl_qf_hca, adjusted = TRUE)
+      )
+      print(res_hca_rand)
+
+      ## NOTE: str_glue trims trailing whitespace, so newlines go through cat().
+      sink(file.path(dir_hca, str_glue('hca_baseline_k-{hca_k}.txt')))
+      cat(str_glue("Embedding space: {hca_latent}"), "\n",
+          str_glue("k = {hca_k}"), "\n\n", sep = "")
+      print(res_hca_rand$contingency)
+      cat("\n",
+          str_glue("Rand index:          {round(res_hca_rand$rand, 4)}"), "\n",
+          str_glue("Adjusted Rand index: {round(res_hca_rand$rand_adj, 4)}"), "\n",
+          sep = "")
+      sink()
+
+    }
+
+
+    ## ---------- Covariate summaries ---------- ##
+
+    tbl_hca_male <- data.frame(cluster = cl_hca, male = df_cov$male) %>%
+      group_by(cluster) %>%
+      summarise(prop_male = mean(male, na.rm = TRUE)) %>%
+      as.data.frame()
+    print(tbl_hca_male)
+    write.csv(
+      tbl_hca_male,
+      file.path(dir_hca, str_glue('hca_cov-male_k-{hca_k}.csv')),
+      row.names = FALSE
+    )
+
+    ## Each continuous covariate gets a density overlay and a stack of
+    ## cluster-wise boxplots. File stems match the previous explicit calls.
+    hca_cov_plots <- c('age', 'pir', 'bmd_l_min_adj', 'hdl_adj', 'ghb_adj')
+    for (cv in hca_cov_plots) {
+      slug <- gsub('_', '-', cv)
+      hca_plot_density(
+        df_cov[[cv]], cl_hca, cols_hca,
+        xlab = cv, main = str_glue("{cv} by cluster (k = {hca_k})"),
+        path = file.path(dir_hca, str_glue('hca_cov-{slug}_k-{hca_k}.png'))
+      )
+      hca_plot_boxes(
+        df_cov[[cv]], cl_hca, cols_hca,
+        xlab = cv, main = str_glue("{cv} by cluster (k = {hca_k})"),
+        path = file.path(dir_hca, str_glue('hca_box-{slug}_k-{hca_k}.png'))
+      )
+    }
+
+
+  }
+}
 
