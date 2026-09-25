@@ -207,7 +207,7 @@ binary_diagnostics <- function(model, path_dir,
   nr <- ceiling(K / nc)
 
   ## (1) Q-Q plots
-  path <- file.path(path_dir, 'group-comp_norm-marg-qq.png')
+  path <- file.path(path_dir, 'gc_male_diag_norm-marg-qq.png')
   png(path, width = 250 * nc, height = 250 * nr, pointsize = 12)
   par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
   for (k in seq_len(K)) {
@@ -219,7 +219,7 @@ binary_diagnostics <- function(model, path_dir,
   par(mfrow = c(1, 1))
 
   ## (2) Histograms
-  path <- file.path(path_dir, 'group-comp_norm-marg-hist.png')
+  path <- file.path(path_dir, 'gc_male_diag_norm-marg-hist.png')
   png(path, width = 250 * nc, height = 250 * nr, pointsize = 12)
   par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
   for (k in seq_len(K)) {
@@ -232,7 +232,7 @@ binary_diagnostics <- function(model, path_dir,
   n_plots <- choose(K, 2)
   nc2 <- ceiling(sqrt(n_plots))
   nr2 <- ceiling(n_plots / nc2)
-  path <- file.path(path_dir, 'group-comp_norm-mv-pw-plots.png')
+  path <- file.path(path_dir, 'gc_male_diag_norm-mv-pw-plots.png')
   png(path, width = 250 * nc2, height = 250 * nr2, pointsize = 12)
   par(mfrow = c(nr2, nc2), mar = c(3, 3, 2, 1))
   for (k1 in 1:(K - 1)) {
@@ -275,7 +275,7 @@ binary_diagnostics <- function(model, path_dir,
     }
   }
 
-  path <- file.path(path_dir, 'group-comp_cov-heatmaps.png')
+  path <- file.path(path_dir, 'gc_male_diag_cov-heatmaps.png')
   png(path, width = 1200, height = 540, pointsize = 14)
   layout(matrix(c(1, 2, 3), nrow = 1), widths = c(4, 4, 1))
   par(mar = c(4, 4, 3, 1))
