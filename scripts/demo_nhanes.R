@@ -1755,27 +1755,6 @@ hca_qf_barycenter <- function(Q_aug, idx) {
   rowMeans(Q_aug[, idx, drop = FALSE])
 }
 
-## (Adjusted) Rand index from the cluster contingency table.
-hca_rand <- function(a, b, adjusted = FALSE) {
-  tab   <- table(a, b)
-  total <- choose(length(a), 2)
-  s_ij  <- sum(choose(tab, 2))
-  s_i   <- sum(choose(rowSums(tab), 2))
-  s_j   <- sum(choose(colSums(tab), 2))
-  if (adjusted) {
-    exp_ij <- s_i * s_j / total
-    (s_ij - exp_ij) / ((s_i + s_j) / 2 - exp_ij)
-  } else {
-    (total + 2 * s_ij - s_i - s_j) / total
-  }
-}
-
-## Decode the embedding-space mean of a set of subjects to a QF.
-hca_decode_mean <- function(idx) {
-  z_bar <- colMeans(Z_hca[idx, , drop = FALSE])
-  decode_latent_to_Qi(pipe_hca, list(z_bar), Ji_hca)[[1]]
-}
-
 ## Overlaid per-cluster densities of a covariate.
 hca_plot_density <- function(v, cl, cols, xlab, main, path) {
   ok    <- !is.na(v)
@@ -1891,11 +1870,19 @@ hca_legend_ramp <- function(pal, y0, y1, title, labels) {
 ##   label_clusters  print each cluster's number in the right margin, centred
 ##                   on its block
 ##   na_col     colour for missing covariate values, in both column types
+##   z_labs     column labels for the Z block; defaults to 'k = 1..K'. Pass a
+##              mostly-'' vector when Z is wide (Qi on the augmented p-grid)
+##              so the axis stays readable.
+##   cov_frac   share of the plot width given to the covariate block; the
+##              default A/(A + K) makes every column equally wide, which is
+##              right for a K-column latent but squeezes the covariates to a
+##              sliver when K is in the hundreds
 ##   path       output png
 hca_plot_heatmap <- function(hc, Z, covs, path,
                             cov_types = NULL, n_clusts = NULL,
                             cluster_lines = TRUE, label_clusters = TRUE,
-                            na_col = hca_na_col,
+                            na_col = hca_na_col, z_labs = NULL,
+                            cov_frac = NULL,
                             width = 1000, height = 1200, pointsize = 16) {
   covs <- as.data.frame(covs)
   nr   <- nrow(Z)
@@ -1935,10 +1922,16 @@ hca_plot_heatmap <- function(hc, Z, covs, path,
     character(nr)
   )
 
-  ord     <- hc$order
-  col_mat <- cbind(cols_cov, cols_lat)[ord, , drop = FALSE]
-  nc      <- ncol(col_mat)
-  labs    <- c(names(covs), paste('k =', seq_len(K)))
+  ord      <- hc$order
+  cols_cov <- cols_cov[ord, , drop = FALSE]
+  cols_lat <- cols_lat[ord, , drop = FALSE]
+  if (is.null(z_labs)) z_labs <- paste('k =', seq_len(K))
+  stopifnot(length(z_labs) == K)
+  ## The two blocks are drawn as separate rasters on a [0, 1] axis so their
+  ## widths are independent of their column counts -- otherwise a wide Z (Qi
+  ## on the augmented p-grid, K ~ 500) squeezes the covariates to a sliver.
+  if (is.null(cov_frac)) cov_frac <- A / (A + K)
+  stopifnot(cov_frac > 0, cov_frac < 1)
 
   png(path, width = width, height = height, pointsize = pointsize)
   on.exit({dev.off(); layout(1)}, add = TRUE)
@@ -1953,15 +1946,27 @@ hca_plot_heatmap <- function(hc, Z, covs, path,
   ## dendrogram-order row 1 at the bottom where the first leaf is.
   ## Right margin holds the cluster numbers, between heatmap and key
   par(mar = c(5, 0, 6, if (label_clusters) 2.5 else 1))
-  plot(NULL, xlim = 0.5 + c(0, nc), ylim = 0.5 + c(0, nr),
+  plot(NULL, xlim = c(0, 1), ylim = 0.5 + c(0, nr),
       xaxs = 'i', yaxs = 'i', axes = FALSE, xlab = '', ylab = '')
-  rasterImage(
-    as.raster(col_mat[nr:1, , drop = FALSE]),
-    xleft = 0.5, ybottom = 0.5, xright = nc + 0.5, ytop = nr + 0.5,
-    interpolate = FALSE
-  )
-  axis(3, at = seq_len(nc), labels = labs, las = 2, tick = FALSE, line = -0.5)
-  abline(v = A + 0.5, lwd = 2)
+  rasterImage(as.raster(cols_cov[nr:1, , drop = FALSE]),
+              xleft = 0, ybottom = 0.5, xright = cov_frac, ytop = nr + 0.5,
+              interpolate = FALSE)
+  rasterImage(as.raster(cols_lat[nr:1, , drop = FALSE]),
+              xleft = cov_frac, ybottom = 0.5, xright = 1, ytop = nr + 0.5,
+              interpolate = FALSE)
+  ## Column centres in axis units, per block
+  at_cov <- (seq_len(A) - 0.5) / A * cov_frac
+  at_z   <- cov_frac + (seq_len(K) - 0.5) / K * (1 - cov_frac)
+  ## Two axis() calls over only the labelled positions: one call spanning both
+  ## blocks lets axis() thin out labels it judges too dense, which silently
+  ## drops the sparse p-marks used for a wide Z.
+  axis(3, at = at_cov, labels = names(covs), las = 2, tick = FALSE, line = -0.5)
+  keep <- nzchar(z_labs)
+  if (any(keep)) {
+    axis(3, at = at_z[keep], labels = z_labs[keep], las = 2,
+         tick = FALSE, line = -0.5)
+  }
+  abline(v = cov_frac, lwd = 2)
   if (!is.null(n_clusts)) {
     stopifnot(length(n_clusts) == 1, n_clusts == round(n_clusts), n_clusts >= 1)
     ## Clusters are contiguous in dendrogram order, so run-lengths give both
@@ -2003,43 +2008,109 @@ hca_plot_heatmap <- function(hc, Z, covs, path,
 # hca_latent   <- 'z_rot'      # 'c' or 'z_rot'
 # hca_k        <- 20        # set after eyeballing hca_dendrogram.png, then re-run
 
-for (hca_latent in c('c')) {
-  for (hca_k in c(10, 11, 15, 20)) {
+hca_J_aug <- 500      # augmented p-grid size for the Qi representation
 
-    hca_J_aug    <- 500      # augmented p-grid size for the QF-space baseline
-    hca_baseline <- TRUE
+## Subject-level activity quantiles, boxplotted per cluster alongside the
+## covariates. These are a property of the data, not of the clustering, so
+## they are evaluated once rather than per representation or per k.
+hca_q_levels <- c(0.5, 0.75, 0.99)
+Q_lvl_hca <- t(hca_qf_aug(Qi_ctx$payload, hca_q_levels,
+                          pipeline$training$cache$supp_Y))
 
-    dir_hca <- file.path('artifacts', dir_art, 'plots', 'hca', hca_latent)
-    if (!dir.exists(dir_hca)) dir.create(dir_hca, recursive = TRUE)
+## 'c' and 'z_rot' are latent embeddings; 'qi' clusters the quantile functions
+## themselves, on the augmented p-grid under the Wasserstein metric. Qi is not
+## a latent representation, so it skips the pairwise-embedding scatter plot --
+## every other figure is produced for it exactly as for the embeddings.
+for (hca_latent in c('c', 'z_rot', 'qi')) {
 
-    ## Embeddings to cluster, plus a pipeline view whose decoder matches them.
-    ## NOTE: N, K, Ji, mask, x, y_grid, ... are all clobbered by earlier sections,
-    ## so every name introduced below carries an _hca suffix.
+  hca_is_qi     <- hca_latent == 'qi'
+  hca_rep_label <- switch(
+    hca_latent,
+    z_rot = 'z_rot-embeddings',
+    c     = 'c-embeddings',
+    qi    = 'Qi',
+    stop(str_glue("Unknown hca_latent: '{hca_latent}'"))
+  )
+
+  dir_hca <- file.path('artifacts', dir_art, 'plots', 'hca', hca_latent)
+  if (!dir.exists(dir_hca)) dir.create(dir_hca, recursive = TRUE)
+
+  ## NOTE: N, K, Ji, mask, x, y_grid, ... are all clobbered by earlier
+  ## sections, so every name introduced below carries an _hca suffix.
+  Ji_hca         <- length(Qi_ctx$payload[[1]])
+  pi_grid_hca    <- pi_grid_fun(Ji_hca)
+  p_grid_aug_hca <- sort(unique(c(
+    p_grid, pi_grid_fun(hca_J_aug - length(p_grid))
+  )))
+
+  ## Representation, metric, and cluster representative. The tree does not
+  ## depend on k, so it is built once per representation rather than once per
+  ## k -- the Qi distance matrix alone is ~8k x 8k.
+  start <- Sys.time()
+  if (hca_is_qi) {
+    ## Qi on the shared augmented grid; rows are subjects, as for a latent
+    Q_aug_hca <- hca_qf_aug(Qi_ctx$payload, p_grid_aug_hca,
+                            pipeline$training$cache$supp_Y)
+    Z_hca     <- t(Q_aug_hca)
+    d_hca     <- hca_qf_dist(Q_aug_hca, p_grid_aug_hca)
+    grid_hca  <- p_grid_aug_hca
+    ## In 1-D the W2 barycenter is the pointwise mean of the QFs, so it is the
+    ## exact analogue of decoding the mean of a cluster's embeddings.
+    hca_rep_mean <- function(idx) hca_qf_barycenter(Q_aug_hca, idx)
+  } else {
     Z_hca <- switch(
       hca_latent,
       z_rot = do.call(rbind, z_rot_ctx$payload),
-      c     = do.call(rbind, c_ctx$payload$c_list),
-      stop(str_glue("Unknown hca_latent: '{hca_latent}'"))
+      c     = do.call(rbind, c_ctx$payload$c_list)
     )
+    d_hca    <- dist(Z_hca)
+    grid_hca <- pi_grid_hca
     pipe_hca <- pipeline
     pipe_hca$latent <- hca_latent
-    N_hca       <- nrow(Z_hca)
-    K_hca       <- ncol(Z_hca)
-    Ji_hca      <- length(Qi_ctx$payload[[1]])
-    pi_grid_hca <- pi_grid_fun(Ji_hca)
-    stopifnot(nrow(df_cov) == N_hca)
+    hca_rep_mean <- function(idx) {
+      z_bar <- colMeans(Z_hca[idx, , drop = FALSE])
+      decode_latent_to_Qi(pipe_hca, list(z_bar), Ji_hca)[[1]]
+    }
+  }
+  N_hca <- nrow(Z_hca)
+  K_hca <- ncol(Z_hca)
+  stopifnot(nrow(df_cov) == N_hca)
 
+  hc_hca <- hclust(d_hca, method = 'ward.D2')
+  ## dist objects are ~N^2/2 doubles; drop once the tree is built
+  rm(d_hca)
+  gc()
+  print(Sys.time() - start)
 
-    ## ---------- Cluster the embeddings ---------- ##
+  png(file.path(dir_hca, 'dendrogram.png'),
+      width = 1280, height = 720, pointsize = 14)
+  plot(hc_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
+       main = str_glue("Ward linkage on {hca_rep_label}"))
+  dev.off()
 
-    d_hca  <- dist(Z_hca)
-    hc_hca <- hclust(d_hca, method = 'ward.D2')
+  ## Heatmap Z block: for Qi the natural analogue of the latent columns is the
+  ## QF itself, centred on the overall barycenter so that the diverging scale
+  ## has a meaningful zero. 500 columns, so label only a few p levels.
+  if (hca_is_qi) {
+    Z_heat_hca <- sweep(Z_hca, 2, hca_qf_barycenter(Q_aug_hca, seq_len(N_hca)))
+    z_labs_hca <- rep('', K_hca)
+    p_marks    <- c(0.1, 0.25, 0.5, 0.75, 0.9, 0.99)
+    z_labs_hca[sapply(p_marks, function(p) which.min(abs(p_grid_aug_hca - p)))] <-
+      sprintf('p = %g', p_marks)
+    ## ~500 Z columns vs a handful of covariates, so fix the split by width
+    cov_frac_hca <- 0.3
+  } else {
+    Z_heat_hca   <- Z_hca
+    z_labs_hca   <- NULL
+    cov_frac_hca <- NULL   # equal-width columns, as before
+  }
 
-    png(file.path(dir_hca, 'hca_dendrogram.png'),
-        width = 1280, height = 720, pointsize = 14)
-    plot(hc_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
-        main = str_glue("Ward linkage on {hca_latent}-embeddings"))
-    dev.off()
+  for (hca_k in c(10, 11, 15, 20)) {
+
+    ## One directory per k: the figure names below carry no k suffix,
+    ## so the path alone identifies a plot.
+    dir_hca_k <- file.path(dir_hca, str_glue('k-{hca_k}'))
+    if (!dir.exists(dir_hca_k)) dir.create(dir_hca_k, recursive = TRUE)
 
     cl_hca   <- cutree(hc_hca, k = hca_k)
     cols_hca <- hcl.colors(hca_k, palette = 'Dark 3')
@@ -2049,10 +2120,10 @@ for (hca_latent in c('c')) {
     ## other plot in this section.
     hca_rect_cols <- function(hc, cl, cols) cols[unique(cl[hc$order])]
 
-    png(file.path(dir_hca, str_glue('hca_dendrogram_k-{hca_k}.png')),
+    png(file.path(dir_hca_k, 'dendrogram.png'),
         width = 1280, height = 720, pointsize = 14)
     plot(hc_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
-        main = str_glue("Ward linkage on {hca_latent}-embeddings (k = {hca_k})"))
+        main = str_glue("Ward linkage on {hca_rep_label} (k = {hca_k})"))
     rect.hclust(hc_hca, k = hca_k,
                 border = hca_rect_cols(hc_hca, cl_hca, cols_hca))
     dev.off()
@@ -2064,50 +2135,57 @@ for (hca_latent in c('c')) {
 
     hca_plot_heatmap(
       hc             = hc_hca,
-      Z              = Z_hca,
+      Z              = Z_heat_hca,
       covs           = df_cov[, c('male', 'age', 'pir', 'bmd_l_min_adj', 'hdl_adj', 'ghb_adj')],
       n_clusts       = hca_k,
       cluster_lines  = TRUE,
       label_clusters = TRUE,
-      path           = file.path(dir_hca, str_glue('hca_heatmap_k-{hca_k}.png'))
+      z_labs         = z_labs_hca,
+      cov_frac       = cov_frac_hca,
+      path           = file.path(dir_hca_k, 'heatmap.png')
     )
 
 
     ## ---------- Embedding space ---------- ##
 
-    k_from <- 1
-    k_to <- 3
-    png(file.path(dir_hca, str_glue('hca_embeddings_k-{hca_k}.png')),
-        width = 960, height = 960, pointsize = 18)
-    plot_embeddings(
-      Z_hca[,k_from:k_to],
-      colors = adjustcolor(cols_hca[cl_hca], alpha.f = 0.3),
-      shapes = rep(19, N_hca),
-      sizes  = rep(0.5, N_hca),
-      color_shape_size_labels = data.frame(
-        color = cols_hca,
-        shape = 19,
-        size  = 1,
-        label = str_glue('cluster {seq_len(hca_k)}')
-      ),
-      stats = FALSE
-    )
-    dev.off()
+    ## Qi has no embedding coordinates to scatter, so this is the one figure
+    ## the Qi representation skips.
+    if (!hca_is_qi) {
+      k_from <- 1
+      k_to <- 3
+      png(file.path(dir_hca_k, 'embeddings.png'),
+          width = 960, height = 960, pointsize = 18)
+      plot_embeddings(
+        Z_hca[,k_from:k_to],
+        colors = adjustcolor(cols_hca[cl_hca], alpha.f = 0.3),
+        shapes = rep(19, N_hca),
+        sizes  = rep(0.5, N_hca),
+        color_shape_size_labels = data.frame(
+          color = cols_hca,
+          shape = 19,
+          size  = 1,
+          label = str_glue('cluster {seq_len(hca_k)}')
+        ),
+        stats = FALSE
+      )
+      dev.off()
+    }
 
 
     ## ---------- Distribution space ---------- ##
 
-    ## Cluster QF := decode(mean of the cluster's embeddings)
+    ## Cluster QF := decode(mean of the cluster's embeddings) for a latent,
+    ## or the cluster's Wasserstein barycenter for Qi.
     Qi_cluster <- lapply(
       seq_len(hca_k),
-      function(g) hca_decode_mean(which(cl_hca == g))
+      function(g) hca_rep_mean(which(cl_hca == g))
     )
 
-    png(file.path(dir_hca, str_glue('hca_cluster-qfs_k-{hca_k}.png')),
+    png(file.path(dir_hca_k, 'cluster-qfs.png'),
         width = 960, height = 960, pointsize = 18)
     plot_funs(
       fun_list  = Qi_cluster,
-      grid_list = rep(list(pi_grid_hca), hca_k),
+      grid_list = rep(list(grid_hca), hca_k),
       colors    = cols_hca,
       widths    = rep(3, hca_k),
       types     = rep(1, hca_k),
@@ -2117,19 +2195,20 @@ for (hca_latent in c('c')) {
         type  = 1,
         label = str_glue('cluster {seq_len(hca_k)}')
       ),
-      main = str_glue("Cluster QFs ({hca_latent}-embeddings, k = {hca_k})")
+      main = str_glue("Cluster QFs ({hca_rep_label}, k = {hca_k})")
     )
     dev.off()
 
-    ## Same curves against the root QF -- decode(mean of all embeddings) -- so each
-    ## cluster reads as a departure from the overall distribution.
-    Qi_root <- hca_decode_mean(seq_len(N_hca))
+    ## Same curves against the root QF -- the representative of the whole
+    ## sample -- so each cluster reads as a departure from the overall
+    ## distribution.
+    Qi_root <- hca_rep_mean(seq_len(N_hca))
 
-    png(file.path(dir_hca, str_glue('hca_cluster-qfs-contrast_k-{hca_k}.png')),
+    png(file.path(dir_hca_k, 'cluster-qfs-contrast.png'),
         width = 960, height = 960, pointsize = 18)
     plot_funs(
       fun_list  = lapply(Qi_cluster, function(q) q - Qi_root),
-      grid_list = rep(list(pi_grid_hca), hca_k),
+      grid_list = rep(list(grid_hca), hca_k),
       colors    = cols_hca,
       widths    = rep(3, hca_k),
       types     = rep(1, hca_k),
@@ -2146,83 +2225,6 @@ for (hca_latent in c('c')) {
     dev.off()
 
 
-    ## ---------- Baseline: cluster directly on the QFs ---------- ##
-
-    if (hca_baseline) {
-
-      p_grid_aug_hca <- sort(unique(c(
-        p_grid, pi_grid_fun(hca_J_aug - length(p_grid))
-      )))
-
-      start <- Sys.time()
-      ## Interpolate once; the tree and the barycenters below share this matrix
-      Q_aug_hca <- hca_qf_aug(
-        Qi_ctx$payload, p_grid_aug_hca, pipeline$training$cache$supp_Y
-      )
-      d_qf_hca  <- hca_qf_dist(Q_aug_hca, p_grid_aug_hca)
-      hc_qf_hca <- hclust(d_qf_hca, method = 'ward.D2')
-      print(Sys.time() - start)
-
-      ## dist objects are ~N^2/2 doubles apiece; drop them once the trees are built
-      rm(d_qf_hca)
-      gc()
-
-      cl_qf_hca <- cutree(hc_qf_hca, k = hca_k)
-
-      png(file.path(dir_hca, str_glue('hca_dendrogram_k-{hca_k}_qf.png')),
-          width = 1280, height = 720, pointsize = 14)
-      plot(hc_qf_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
-          main = "Ward linkage on QFs (Wasserstein)")
-      rect.hclust(hc_qf_hca, k = hca_k,
-                  border = hca_rect_cols(hc_qf_hca, cl_qf_hca, cols_hca))
-      dev.off()
-
-      ## Barycenter contrasts
-      Qi_bary_root <- hca_qf_barycenter(Q_aug_hca, seq_len(ncol(Q_aug_hca)))
-      Qi_bary_qf   <- lapply(
-        seq_len(hca_k),
-        function(g) hca_qf_barycenter(Q_aug_hca, which(cl_qf_hca == g))
-      )
-
-      png(file.path(dir_hca, str_glue('hca_qf-barycenter-contrast_k-{hca_k}.png')),
-          width = 960, height = 960, pointsize = 18)
-      plot_funs(
-        fun_list  = lapply(Qi_bary_qf, function(q) q - Qi_bary_root),
-        grid_list = rep(list(p_grid_aug_hca), hca_k),
-        colors    = cols_hca,
-        widths    = rep(3, hca_k),
-        types     = rep(1, hca_k),
-        color_width_type_labels = data.frame(
-          color = cols_hca,
-          width = 3,
-          type  = 1,
-          label = str_glue('cluster {seq_len(hca_k)}')
-        ),
-        ylab = 'Q(p) - Q_bary(p)',
-        main = str_glue("QF-space barycentre contrasts vs. overall (k = {hca_k})")
-      )
-      abline(h = 0, lty = 2, col = 'gray50')
-      dev.off()
-
-      res_hca_rand <- list(
-        contingency = table(embedding = cl_hca, qf = cl_qf_hca),
-        rand        = hca_rand(cl_hca, cl_qf_hca),
-        rand_adj    = hca_rand(cl_hca, cl_qf_hca, adjusted = TRUE)
-      )
-      print(res_hca_rand)
-
-      ## NOTE: str_glue trims trailing whitespace, so newlines go through cat().
-      sink(file.path(dir_hca, str_glue('hca_baseline_k-{hca_k}.txt')))
-      cat(str_glue("Embedding space: {hca_latent}"), "\n",
-          str_glue("k = {hca_k}"), "\n\n", sep = "")
-      print(res_hca_rand$contingency)
-      cat("\n",
-          str_glue("Rand index:          {round(res_hca_rand$rand, 4)}"), "\n",
-          str_glue("Adjusted Rand index: {round(res_hca_rand$rand_adj, 4)}"), "\n",
-          sep = "")
-      sink()
-
-    }
 
 
     ## ---------- Covariate summaries ---------- ##
@@ -2234,7 +2236,7 @@ for (hca_latent in c('c')) {
     print(tbl_hca_male)
     write.csv(
       tbl_hca_male,
-      file.path(dir_hca, str_glue('hca_cov-male_k-{hca_k}.csv')),
+      file.path(dir_hca_k, 'cov-male.csv'),
       row.names = FALSE
     )
 
@@ -2246,12 +2248,23 @@ for (hca_latent in c('c')) {
       hca_plot_density(
         df_cov[[cv]], cl_hca, cols_hca,
         xlab = cv, main = str_glue("{cv} by cluster (k = {hca_k})"),
-        path = file.path(dir_hca, str_glue('hca_cov-{slug}_k-{hca_k}.png'))
+        path = file.path(dir_hca_k, str_glue('cov-{slug}.png'))
       )
       hca_plot_boxes(
         df_cov[[cv]], cl_hca, cols_hca,
         xlab = cv, main = str_glue("{cv} by cluster (k = {hca_k})"),
-        path = file.path(dir_hca, str_glue('hca_box-{slug}_k-{hca_k}.png'))
+        path = file.path(dir_hca_k, str_glue('box-{slug}.png'))
+      )
+    }
+
+    ## Activity quantiles, same styling as the covariate boxes
+    for (j in seq_along(hca_q_levels)) {
+      q_pct <- round(100 * hca_q_levels[j])
+      hca_plot_boxes(
+        Q_lvl_hca[, j], cl_hca, cols_hca,
+        xlab = str_glue("Q({hca_q_levels[j]})"),
+        main = str_glue("Q({hca_q_levels[j]}) by cluster (k = {hca_k})"),
+        path = file.path(dir_hca_k, str_glue('box-q{q_pct}.png'))
       )
     }
 
