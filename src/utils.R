@@ -1177,12 +1177,21 @@ evaluate_unconditional_generativity <- function(
 
 empty_plot <- function() {
   plot(
-    NULL, xlab = "", ylab = "", 
-    xaxt = "n", yaxt = "n", 
-    xlim = c(0, 10), 
+    NULL, xlab = "", ylab = "",
+    xaxt = "n", yaxt = "n",
+    xlim = c(0, 10),
     ylim = c(0, 10),
     bty = "n"
   )
+}
+
+## Shade an uncertainty band between lo and hi over a sorted 1-D grid x. Draw it
+## right after plot() so curves and reference lines sit on top. The fill is
+## translucent so overlapping bands (e.g. two groups) remain distinguishable.
+draw_band <- function(x, lo, hi, col = adjustcolor("gray50", alpha.f = 0.25)) {
+  ok <- is.finite(x) & is.finite(lo) & is.finite(hi)
+  polygon(c(x[ok], rev(x[ok])), c(lo[ok], rev(hi[ok])),
+          col = col, border = NA)
 }
 
 
@@ -1199,8 +1208,10 @@ plot_funs <- function(
     color_width_type_labels = NULL,
     legend_loc = 'topleft',
     main = '',
-    path = NULL
+    path = NULL,
+    bands = NULL
 ) {
+  ## bands: optional list of list(x, lo, hi), shaded beneath the curves.
   if (!is.null(path)) {
     png(path, width = 800, height = 600)
   }
@@ -1236,10 +1247,8 @@ plot_funs <- function(
     max(unlist(grid_list))
   )
   if (is.null(ylim)) {
-    ylim <- c(
-      min(unlist(fun_list)),
-      max(unlist(fun_list))
-    )
+    band_vals <- unlist(lapply(bands, `[`, c("lo", "hi")))
+    ylim <- range(c(unlist(fun_list), band_vals), finite = TRUE)
   }
   par(mfrow = c(1, 1))
   plot(
@@ -1251,7 +1260,8 @@ plot_funs <- function(
     cex.lab = cex.lab,
     main = main
   )
-  
+  for (b in bands) draw_band(b$x, b$lo, b$hi)
+
   for (i in seq_len(n_funs)) {
     lines(
       grid_list[[i]],

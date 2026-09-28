@@ -1739,6 +1739,21 @@ stage_pca_rotation <- function(seed = gen_seed()) {
   )
 }
 
+## Flip the orientation of selected rotated directions of a fitted pipeline.
+## SVD signs are arbitrary, so this only fixes a convention: R stays
+## orthogonal, encode/decode remain exact inverses, and downstream inference
+## changes only by the sign of the flipped components.
+set_rotation_signs <- function(pipeline, flip) {
+  idx <- which(vapply(pipeline$stages, `[[`, '', 'name') == 'pca_rotation')
+  if (length(idx) != 1) {
+    stop("Pipeline must contain exactly one 'pca_rotation' stage.")
+  }
+  st <- pipeline$stages[[idx]]$state
+  st$R[, flip] <- -st$R[, flip]
+  pipeline$stages[[idx]]$state <- st
+  pipeline
+}
+
 
 
 ## ========== Pipeline ==========
