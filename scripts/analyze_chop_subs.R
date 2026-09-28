@@ -6,60 +6,55 @@ source('src/model.R')
 source('src/utils.R')  
 
 
+## ========== Setup ========== ##
 
-## ========== Representation Learning ========== ##
+dir_art <- file.path('artifacts', 'analyze_chop-mims-subs_v2')
 
-dataset <- 'chop-mims-sub'
+## Latent dimensions
+K <- 4
+K_qpca <- 4
 
-if (dataset == 'chop-mims-sub') {
+## Load data
+path <- file.path('data', 'processed', 'chop-mims_v1.rds')
+y_list <- readRDS(path)
+N <- length(y_list)
+Ji_vec <- lengths(y_list)
+Ji_max <- max(Ji_vec)
+y_max <- max(unlist(y_list))
 
-  ## Globals
-  dir_art <- file.path('artifacts', 'analyze_chop-mims-subs')
+## Define grid
+p_grid <- p_grid_fun(
+  breaks = c(1/(12000 + 1), 0.95, 12000/(12000 + 1)),
+  interval_counts = c(51, 50)
+)
 
-  ## Load data
-  path <- file.path('data', 'processed', 'chop-mims_v1.rds')
-  y_list <- readRDS(path)
-  N <- length(y_list)
-  Ji_vec <- lengths(y_list)
-  Ji_max <- max(Ji_vec)
-  y_max <- max(unlist(y_list))
+## ========== Representation Learning (WAME) ========== ##
 
-  ## Define grid
-  J_max <- 10000
-  p_grid <- p_grid_fun(
-    breaks = c(1/(J_max + 1), 0.95, J_max/(J_max + 1)),
-    interval_counts = c(51, 50)
-  )
-
-  ## Construct pipeline
-  pipeline <- construct_pipeline(
-    stages = list(
-      stage_eqf_sgrid(),
-      stage_eqf_cgrid(p_grid = p_grid),
-      stage_wame(
-        K_max = 20,
-        epsilon = 0.25,
-        alpha = 0.05,
-        V = 5,
-        lambda = 1e-6
-      ),
-      stage_flow(
-        n_layers = 16,
-        max_epochs = 1000,
-        lr = 1e-3,
-        path = file.path(dir_art, 'flow.pth')
-      )
+## Construct pipeline
+pipeline <- construct_pipeline(
+  stages = list(
+    stage_eqf_sgrid(),
+    stage_eqf_cgrid(p_grid = p_grid),
+    stage_wame(
+      K = K,
+      K_max = 20,
+      lambda = 0,
+      order_by = 'importance'
     ),
-    supp_Y = c(0, 0.6, seq(0.601, 2000, by = 0.001)),
-    p_star = 0,
-    y_star = 0,
-    y_min = 0,
-    seed = 12345
-  )
-
-} else {
-  stop("Invalid dataset.")
-}
+    stage_flow(
+      n_layers = 16,
+      hidden = 64,
+      max_epochs = 1000,
+      lr = 1e-3,
+      path = file.path(dir_art, 'flow.pth')
+    )
+  ),
+  supp_Y = c(0, 0.6, seq(0.601, 500, by = 0.001)),
+  p_star = 0,
+  y_star = 0,
+  y_min = 0,
+  seed = 12345
+)
 
 ## Fitting
 pipeline <- fit(pipeline, y_list)
@@ -83,57 +78,140 @@ Q_ctx_ <- decode(pipeline, c_ctx_, from = 3, to = 2)
 Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
 y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
-## Plot stages
-col_recon <- rgb(0, 0, 1, alpha = 0.5)
-i <- 0
-i <- i + 1
-pi_grid <- pi_grid_fun(Ji_vec[[i]])
-y_max_i <- max(c(y_ctx$payload[[i]], y_ctx_$payload[[i]]))
-y_min_i <- min(c(y_ctx$payload[[i]], y_ctx_$payload[[i]]))
-breaks_y <- seq(y_min_i, y_max_i, length.out = 50)
 
-png(path_plot_tmp, width = 1000, height = 500)
-par(mfrow=c(2,3))
-h <- hist(y_ctx$payload[[i]], breaks = breaks_y)
-hist(y_ctx_$payload[[i]], add = TRUE, col = col_recon, breaks = breaks_y)
-plot(pi_grid, Qi_ctx$payload[[i]], type = 'l', xlim = c(0, 1))
-lines(pi_grid, Qi_ctx_$payload[[i]], type = 'l', col = col_recon)
-plot(pi_grid, Qi_ctx$payload[[i]], type = 'l', xlim = c(0, 1), col = 'gray')
-lines(p_grid, Q_ctx$payload[[i]], type = 'l')
-lines(p_grid, Q_ctx_$payload[[i]], type = 'l', col = col_recon)
-plot(c_ctx$payload$c_list[[i]])
-points(c_ctx_$payload$c_list[[i]], col = col_recon)
-plot(z_ctx$payload[[i]])
-dev.off()
+## ----- Visualize reconstructions
+
+## Compute reconstruction losses
+recon_losses <- numeric(N)
+for (i in 1:N) {
+  Q1 <- Qi_ctx$payload[[i]]
+  Q2 <- Qi_ctx_$payload[[i]]
+  w <- get_quadrature_weights(pi_grid_fun(length(Q1)))
+  recon_losses[i] <- wasserstein(Q1, Q2, w)
+}
+
+set.seed(12345)
+
+lower_mat_3x5 <- matrix(
+  c(0.00, 0.10, 0.20, 0.30, 0.40,
+    0.50, 0.60, 0.70, 0.80, 0.90,
+    0.95, 0.96, 0.97, 0.98, 0.99),
+  nrow = 3, byrow = TRUE
+)
+upper_mat_3x5 <- matrix(
+  c(0.10, 0.20, 0.30, 0.40, 0.50,
+    0.60, 0.70, 0.80, 0.90, 0.95,
+    0.96, 0.97, 0.98, 0.99, 1.00),
+  nrow = 3, byrow = TRUE
+)
+
+log_scale <- FALSE   # toggle: TRUE => plot on log(Q(p) + 1) scale
+
+plot_qi_recon_grid(
+  Qi_orig_list  = Qi_ctx$payload,
+  Qi_recon_list = Qi_ctx_$payload,
+  recon_losses  = recon_losses,
+  lower_mat     = lower_mat_3x5,
+  upper_mat     = upper_mat_3x5,
+  log_x_plus_1  = log_scale,
+  path          = file.path(dir_art, 'plots',
+                            sprintf('Qi-recon_grid_3x5%s.png',
+                                    if (log_scale) '_log' else ''))
+)
 
 
+## ----- Visualize data in different spaces
 
-## Plot reconstructions
-par(mfrow = c(1,1))
-K_plot_min <- 5
-  
+## Plotting globals
+mark_outliers <- TRUE
+include_legend <- TRUE
+k_from <- 1
+k_to <- 4
+idx_outliers <- pipeline$training$meta$idx_outliers
+N_outlier <- length(idx_outliers)
+idx_train <- if (N_outlier > 0) -idx_outliers else seq_len(N)
+col_train <- rgb(0, 0, 0, alpha = 0.25)
+col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
+
 ## Plot z-embeddings
-png(path_plot_tmp)
-Z_plot <- do.call(rbind, z_ctx$payload)
-Z_plot <- Z_plot[,1:min(ncol(Z_plot), K_plot_min)]
-plot_embeddings(Z_plot)
-dev.off()
-
-## Plot c-embeddings
-png(path_plot_tmp, width = 2000, height = 2000)
-C_plot <- do.call(rbind, c_ctx$payload$c_list)
-C_plot <- C_plot[,1:min(ncol(C_plot), K_plot_min)]
-plot_embeddings(C_plot)
-dev.off()
-
-## Plot Smooth EQFs on common grid
-png(path_plot_tmp)
-plot_funs(
-  fun_list = Q_ctx$payload,
-  grid_list = rep(list(p_grid), N)
+path_plot <- file.path(
+  dir_art, 'plots',
+  str_glue('data_z.png')
+)
+png(path_plot, width = 960, height = 960, pointsize = 18)
+Z_plot <- rbind(
+  do.call(rbind, z_ctx$payload)[idx_train,k_from:k_to],
+  do.call(rbind, z_ctx$payload)[idx_outliers,k_from:k_to]
+)
+colors <- c(
+  rep(col_train, N - N_outlier),
+  rep(col_outlier, N_outlier)
+)
+shapes <- c(
+  rep(19, length.out = nrow(Z_plot))
+)
+sizes <- c(
+  rep(0.5, length.out = nrow(Z_plot))
+)
+if (include_legend) {
+  color_shape_size_labels = data.frame(
+    color = c(col_train, col_outlier),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_shape_size_labels <- NULL
+}
+plot_embeddings(
+  Z_plot, 
+  colors = colors,
+  shapes = shapes,
+  sizes = sizes,
+  color_shape_size_labels = color_shape_size_labels,
+  stats = FALSE
 )
 dev.off()
 
+## Plot c-embeddings
+path_plot <- file.path(
+  dir_art, 'plots',
+  str_glue('data_c.png')
+)
+png(path_plot, width = 960, height = 960, pointsize = 18)
+C_plot <- rbind(
+  do.call(rbind, c_ctx$payload$c_list)[idx_train,k_from:k_to],
+  do.call(rbind, c_ctx$payload$c_list)[idx_outliers,k_from:k_to]
+)
+colors <- c(
+  rep(col_train, N - N_outlier),
+  rep(col_outlier, N_outlier)
+)
+shapes <- c(
+  rep(19, length.out = nrow(C_plot))
+)
+sizes <- c(
+  rep(0.5, length.out = nrow(C_plot))
+)
+if (include_legend) {
+  color_shape_size_labels = data.frame(
+    color = c(col_train, col_outlier),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_shape_size_labels <- NULL
+}
+plot_embeddings(
+  C_plot, 
+  colors = colors,
+  shapes = shapes,
+  sizes = sizes,
+  color_shape_size_labels = color_shape_size_labels,
+  stats = FALSE
+)
+dev.off()
 
 
 ## ----- Save Quantities
@@ -155,32 +233,147 @@ saveRDS(E, path_E)
 saveRDS(p_grid, path_p_grid)
 
 
+## ========== Representation Learning (Q-PCA) ========== ##
 
-## ----- Weighted Q-PCA
+## Construct pipeline
+pipeline_qpca <- construct_pipeline(
+  stages = list(
+    stage_eqf_sgrid(),
+    stage_eqf_cgrid(p_grid = p_grid),
+    stage_q_pca(K = K_qpca)
+  ),
+  supp_Y = c(0, 0.6, seq(0.601, 500, by = 0.001)),
+  p_star = 0,
+  y_star = 0,
+  y_min  = 0,
+  seed   = 12345
+)
 
-## Perform Q-PCA
-sqrt_w <- pipeline$training$cache$sqrt_w
-K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
-Qw <- sweep(Q, 2, sqrt_w, FUN = "*")
-Qpc_res <- prcomp(Qw, center = TRUE, scale. = FALSE)
-Qpc <- Qpc_res$x[, 1:K, drop = FALSE]
-Vw <- Qpc_res$rotation[, 1:K]
-L <- sweep(Vw, 1, sqrt_w, FUN = "/")
-L <- sweep(L, 2, Qpc_res$sdev[1:K], FUN = "*")
+## Fitting
+pipeline_qpca <- fit(pipeline_qpca, y_list)
+path_pipe <- file.path(dir_art, 'pipe_qpca.pth')
+saveRDS(pipeline_qpca, path_pipe)
 
-## Save quantities 
+## New context
+y_qpca_ctx <- new_context(
+  payload = y_list,
+  cache = pipeline_qpca$training$cache,
+  meta = list()
+)
+
+## Encode/Decode
+Qi_qpca_ctx <- encode(pipeline_qpca, y_qpca_ctx, from = 0, to = 1)
+Q_qpca_ctx <- encode(pipeline_qpca, Qi_qpca_ctx, from = 1, to = 2)
+q_qpca_ctx <- encode(pipeline_qpca, Q_qpca_ctx, from = 2, to = 3)
+Q_qpca_ctx_ <- decode(pipeline_qpca, q_qpca_ctx, from = 3, to = 2)
+Qi_qpca_ctx_ <- decode(pipeline_qpca, Q_qpca_ctx_, from = 2, to = 1)
+y_qpca_ctx_ <- decode(pipeline_qpca, Qi_qpca_ctx_, from = 1, to = 0)
+
+
+## ----- Visualize reconstructions
+
+## Compute reconstruction losses
+recon_losses <- numeric(N)
+for (i in 1:N) {
+  Q1 <- Qi_qpca_ctx$payload[[i]]
+  Q2 <- Qi_qpca_ctx_$payload[[i]]
+  w <- get_quadrature_weights(pi_grid_fun(length(Q1)))
+  recon_losses[i] <- wasserstein(Q1, Q2, w)
+}
+
+set.seed(12345)
+
+lower_mat_3x5 <- matrix(
+  c(0.00, 0.10, 0.20, 0.30, 0.40,
+    0.50, 0.60, 0.70, 0.80, 0.90,
+    0.95, 0.96, 0.97, 0.98, 0.99),
+  nrow = 3, byrow = TRUE
+)
+upper_mat_3x5 <- matrix(
+  c(0.10, 0.20, 0.30, 0.40, 0.50,
+    0.60, 0.70, 0.80, 0.90, 0.95,
+    0.96, 0.97, 0.98, 0.99, 1.00),
+  nrow = 3, byrow = TRUE
+)
+
+log_scale <- FALSE   # toggle: TRUE => plot on log(Q(p) + 1) scale
+
+plot_qi_recon_grid(
+  Qi_orig_list  = Qi_ctx$payload,
+  Qi_recon_list = Qi_ctx_$payload,
+  recon_losses  = recon_losses,
+  lower_mat     = lower_mat_3x5,
+  upper_mat     = upper_mat_3x5,
+  log_x_plus_1  = log_scale,
+  path          = file.path(dir_art, 'plots',
+                            sprintf('Qi-qpca-recon_grid_3x5%s.png',
+                                    if (log_scale) '_log' else ''))
+)
+
+
+## ----- Visualize data in different spaces
+
+## Plotting globals
+mark_outliers <- TRUE
+include_legend <- TRUE
+k_from <- 1
+k_to <- 4
+idx_outliers <- pipeline_qpca$training$meta$idx_outliers
+N_outlier <- length(idx_outliers)
+idx_train <- if (N_outlier > 0) -idx_outliers else seq_len(N)
+col_train <- rgb(0, 0, 0, alpha = 0.25)
+col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
+
+## Plot q-embeddings
+path_plot <- file.path(
+  dir_art, 'plots',
+  str_glue('data_q_qpca.png')
+)
+png(path_plot, width = 960, height = 960, pointsize = 18)
+Qpc_plot <- rbind(
+  do.call(rbind, q_qpca_ctx$payload)[idx_train,k_from:k_to],
+  do.call(rbind, q_qpca_ctx$payload)[idx_outliers,k_from:k_to]
+)
+colors <- c(
+  rep(col_train, N - N_outlier),
+  rep(col_outlier, N_outlier)
+)
+shapes <- c(
+  rep(19, length.out = nrow(Qpc_plot))
+)
+sizes <- c(
+  rep(0.5, length.out = nrow(Qpc_plot))
+)
+if (include_legend) {
+  color_shape_size_labels = data.frame(
+    color = c(col_train, col_outlier),
+    shape = c(19, 19),
+    size = c(0.5, 0.5),
+    label = c('non-outlier', 'outlier')
+  )
+} else {
+  color_shape_size_labels <- NULL
+}
+plot_embeddings(
+  Qpc_plot, 
+  colors = colors,
+  shapes = shapes,
+  sizes = sizes,
+  color_shape_size_labels = color_shape_size_labels,
+  stats = FALSE
+)
+dev.off()
+
+
+## ----- Save Quantities
+
+Qpc <- do.call(rbind, q_qpca_ctx$payload)
 path_Qpc <- file.path(dir_art, str_glue('Qpc.rds'))
-path_L <- file.path(dir_art, str_glue('L.rds'))
-path_Qpc_res <- file.path(dir_art, str_glue('Qpc_res.rds'))
 saveRDS(Qpc, path_Qpc)
-saveRDS(L, path_L)
-saveRDS(Qpc_res, path_Qpc_res)
+
 
 
 ## ========== Data Loading + Processing ========== ##
-
-## Globals
-dir_art <- file.path('artifacts', 'analyze_chop-mims-subs')
 
 ## ----- Data Loading
 
@@ -191,15 +384,13 @@ path_nonwear <- file.path('data', 'processed', 'chop-nonwear_v1.rds')
 path_mvpa <- file.path('data', 'processed', 'chop-mvpa_v1.rds')
 path_misc <- file.path('data', 'processed', 'chop_misc-preds.rds')
 
-## Paths (from pipeline)
+## Paths (from pipelines)
 path_Q <- file.path(dir_art, str_glue('Q.rds'))
 path_C <- file.path(dir_art, str_glue('C.rds'))
 path_Z <- file.path(dir_art, str_glue('Z.rds'))
 path_E <- file.path(dir_art, str_glue('E.rds'))
-path_p_grid <- file.path(dir_art, str_glue('p_grid.rds'))
-
-## Paths (other)
 path_Qpc <- file.path(dir_art, str_glue('Qpc.rds'))
+path_p_grid <- file.path(dir_art, str_glue('p_grid.rds'))
 
 ## Load data
 y_list <- readRDS(path_y)
@@ -211,8 +402,8 @@ Q <- readRDS(path_Q)
 C <- readRDS(path_C)
 Z <- readRDS(path_Z)
 E <- readRDS(path_E)
-p_grid <- readRDS(path_p_grid)
 Qpc <- readRDS(path_Qpc)
+p_grid <- readRDS(path_p_grid)
 
 ## Define factor variables
 df_misc$age_cat <- as.factor(df_misc$age_cat)
@@ -237,6 +428,7 @@ df_a$a_95 <- unlist(lapply(y_list, function(y) quantile(y, c(0.95))))
 df_a$a_99 <- unlist(lapply(y_list, function(y) quantile(y, c(0.99))))
 df_a$a_995 <- unlist(lapply(y_list, function(y) quantile(y, c(0.995))))
 df_a$a_999 <- unlist(lapply(y_list, function(y) quantile(y, c(0.999))))
+df_a$a_tail95_mean <- unlist(lapply(y_list, function(y) mean(y[y >= quantile(y, c(0.95))])))
 
 ## Nonwear
 df_nonwear$t_nonwear <- log((df_nonwear$nonwear + 1e-3) / (1 - df_nonwear$nonwear + 1e-3))
@@ -246,18 +438,31 @@ df_sleep$good_sleep <- df_sleep$sleep_dur >= 8
 
 ## Misc
 imp_trans <- log((df_misc$impact23_hr_day) / (df_misc$impact01_hr_day + 1e-3) + 1)
-imp_33 <- quantile(tmp_imp, c(0.33))
-imp_50 <- quantile(tmp_imp, c(0.5))
-imp_66 <- quantile(tmp_imp, c(0.66))
+imp_33 <- quantile(imp_trans, c(0.33))
+imp_50 <- quantile(imp_trans, c(0.5))
+imp_66 <- quantile(imp_trans, c(0.66))
 df_misc$impact_trans <- imp_trans
-df_misc$impact_cat_2 <- as.factor(sapply(imp_trans, function(x) {
-  if (x < imp_50) 0 else 1
+# df_misc$impact_cat_2 <- as.factor(sapply(imp_trans, function(x) {
+#   if (x < imp_50) 0 else 1
+# }))
+imp_high_50 <- median(df_misc$impact23_hr_day)
+df_misc$impact_cat_2 <- as.factor(sapply(df_misc$impact23_hr_day, function(x) {
+  if (x < imp_high_50) 0 else 1
 }))
 df_misc$impact_cat_3 <- as.factor(sapply(imp_trans, function(x) {
   if (x < imp_33) 0
   else if (x < imp_66) 1
   else 2
 }))
+
+
+###############
+# tmp1 <- log((df_misc$impact23_hr_day) / (df_misc$impact01_hr_day + 1e-3) + 1)
+# tmp2 <- df_misc$impact23_hr_day
+# bin1 <- tmp1 > median(tmp1)
+# bin2 <- tmp2 > median(tmp2)
+# cor(bin1, bin2)
+###############
 
 
 ## ----- Dataframe Assembly
@@ -288,6 +493,14 @@ saveRDS(df, path_df)
 
 
 ## ========== EDA ========== ##
+
+## Questions
+##  - Univariate summaries for the following variables
+##     * Age
+##     * Sex
+##     * BMI
+##     * Impact Activities
+##     * 
 
 resps <- c(
   # 'a_99'
@@ -536,9 +749,12 @@ preds_common <- c('age_cat', 'sex', 'bmiz')
 
 ## Load data and pipeline
 path_pipe <- file.path(dir_art, 'pipe.pth')
+path_pipe_qpca <- file.path(dir_art, 'pipe_qpca.pth')
 path_df <- file.path(dir_art, 'df.rds')
 pipeline <- readRDS(path_pipe)
+pipeline_qpca <- readRDS(path_pipe_qpca)
 K <- pipeline$stages[[3]]$state$child_qg_pca$state$K
+stopifnot(K_qpca == K)  ## the q_* predictor blocks below assume Q-PCA dim == WAME dim
 df <- readRDS(path_df)
 
 ## Predictors
@@ -559,6 +775,10 @@ models <- list(
   ),
 
   ## Scalar PA
+  scale_0 = list(
+    preds = c(preds_common, "a_mean"),
+    f_str_abbr = 'x,a_mean'
+  ),
   scale_1 = list(
     preds = c(preds_common, "mvpa_rate"),
     f_str_abbr = 'x,mvpa'
@@ -591,16 +811,24 @@ models <- list(
     preds = c(preds_common, "a_99"),
     f_str_abbr = 'x,a_99'
   ),
-  # scale_9 = list(
-  #   preds = c(preds_common, "a_995"),
-  #   f_str_abbr = 'x,a_995'
-  # ),
-  # scale_10 = list(
-  #   preds = c(preds_common, "a_999"),
-  #   f_str_abbr = 'x,a_999'
-  # ),
+  scale_9 = list(
+    preds = c(preds_common, "a_995"),
+    f_str_abbr = 'x,a_995'
+  ),
+  scale_10 = list(
+    preds = c(preds_common, "a_999"),
+    f_str_abbr = 'x,a_999'
+  ),
+  scale_11 = list(
+    preds = c(preds_common, "a_tail95_mean"),
+    f_str_abbr = 'x,a_tail95_mean'
+  ),
   
   ## Scalar PA + Impact
+  scale_imp_0 = list(
+    preds = c(preds_common, "a_mean", "impact_cat_2", "mvpa_rate:a_mean"),
+    f_str_abbr = 'x,a_mean,imp'
+  ),
   scale_imp_1 = list(
     preds = c(preds_common, "mvpa_rate", "impact_cat_2", "mvpa_rate:impact_cat_2"),
     f_str_abbr = 'x,mvpa,imp'
@@ -633,14 +861,18 @@ models <- list(
     preds = c(preds_common, "a_99", "impact_cat_2", "a_99:impact_cat_2"),
     f_str_abbr = 'x,a_99,imp'
   ),
-  # scale_imp_9 = list(
-  #   preds = c(preds_common, "a_995", "impact_cat_2", "a_995:impact_cat_2"),
-  #   f_str_abbr = 'x,a_995,imp'
-  # ),
-  # scale_imp_10 = list(
-  #   preds = c(preds_common, "a_999", "impact_cat_2", "a_999:impact_cat_2"),
-  #   f_str_abbr = 'x,a_999,imp'
-  # ),
+  scale_imp_9 = list(
+    preds = c(preds_common, "a_995", "impact_cat_2", "a_995:impact_cat_2"),
+    f_str_abbr = 'x,a_995,imp'
+  ),
+  scale_imp_10 = list(
+    preds = c(preds_common, "a_999", "impact_cat_2", "a_999:impact_cat_2"),
+    f_str_abbr = 'x,a_999,imp'
+  ),
+  scale_imp_11 = list(
+    preds = c(preds_common, "a_tail95_mean", "impact_cat_2", "a_tail95_mean:impact_cat_2"),
+    f_str_abbr = 'x,a_tail95_mean,imp'
+  ),
 
   ## Distributional PA
   dist_Qpc = list(
@@ -651,10 +883,10 @@ models <- list(
     preds = c(preds_common, pred_block('c', K)),
     f_str_abbr = 'x,c'
   ),
-  # dist_Z_imp = list(
-  #   preds = c(preds_common, pred_block('z', K)),
-  #   f_str_abbr = 'x,z'
-  # ),
+  dist_Z_imp = list(
+    preds = c(preds_common, pred_block('z', K)),
+    f_str_abbr = 'x,z'
+  ),
   
   ## Distributional PA + Impact
   dist_Qpc_imp = list(
@@ -664,11 +896,11 @@ models <- list(
   dist_C_imp = list(
     preds = c(preds_common, 'impact_cat_2', pred_block('c', K), pred_block('c', K, 'impact_cat_2')),
     f_str_abbr = 'x,c,imp'
+  ),
+  dist_Z_imp = list(
+    preds = c(preds_common, 'impact_cat_2', pred_block('z', K), pred_block('z', K, 'impact_cat_2')),
+    f_str_abbr = 'x,z,imp'
   )
-  # dist_Z_imp = list(
-  #   preds = c(preds_common, 'impact_cat_2', pred_block('z', K), pred_block('z', K, 'impact_cat_2')),
-  #   f_str_abbr = 'x,z,imp'
-  # )
   
   # dist_Qpc_miss = list(
   #   preds = c(preds_common, 't_nonwear', pred_block('q', K)),
@@ -805,367 +1037,310 @@ for (i in 1:length(models)) {
 model <- models[['dist_Qpc_imp']]$model_red
 summary(model)
 
-## Extract fit quantities
-coeff_names <- names(model$coefficients[startsWith(names(model$coefficients), 'q_')])
-alpha <- model$coefficients[coeff_names]
-Sigma_alpha <- vcov(model)[coeff_names, coeff_names, drop = FALSE]
+## create_weight_plot: plots the estimated Q-PCA weight function alpha(p)
+## (dQ(p)/dq_k, summed over k) together with bootstrap-calibrated joint
+## confidence bands, at a given level of impact_cat_2. Accounts for any
+## q_k:impact_cat_2 interaction retained in the model; alpha(p) reduces to
+## the same curve at both impact levels when no such interaction survived.
+create_weight_plot <- function(model, L, p_grid, plim, imp, path,
+                                col_prefix = 'q',
+                                imp_var = 'impact_cat_2',
+                                imp_dummy = '1',
+                                B = 5000, seed = 12345,
+                                width = 500, height = 400) {
 
-## Estimate alpha(p)
-colnames(L) <- paste0('q_', 1:K)
-L_ <- L[, coeff_names, drop = FALSE]
-alpha_p <- L_ %*% alpha
-alpha_p_se <- sqrt(diag(L_ %*% Sigma_alpha %*% t(L_)))
+  K <- ncol(L)
+  coef_names <- names(coef(model))
+  q_names <- paste0(col_prefix, '_', 1:K)
+  imp_dummy_name <- paste0(imp_var, imp_dummy)
 
-## Pointwise bands
-alpha_p_low <- alpha_p - 2*alpha_p_se
-alpha_p_high <- alpha_p + 2*alpha_p_se
+  ## R names an interaction column after the order its variables first
+  ## appear in the overall formula, not the order written in the ":" term
+  ## itself -- so look up both orderings rather than assuming one.
+  find_inter_name <- function(term) {
+    cand <- c(
+      paste0(term, ':', imp_dummy_name),
+      paste0(imp_dummy_name, ':', term)
+    )
+    cand[cand %in% coef_names][1]
+  }
+  main_names <- ifelse(q_names %in% coef_names, q_names, NA_character_)
+  inter_names <- vapply(q_names, find_inter_name, character(1))
 
-## Plot pointwise bands
-par(mfrow = c(1,1))
-idx <- 1:length(p_grid)
-plot(p_grid[idx], alpha_p[idx], type = 'l')
-lines(p_grid[idx], alpha_p_low[idx], col = 'gray')
-lines(p_grid[idx], alpha_p_high[idx], col = 'gray')
-abline(a = 0, b = 0, lty = 'dotted')
+  ## Contrast matrix mapping model coefficients to alpha_1, ..., alpha_K
+  ## at the given impact level (main effect if present, plus interaction if
+  ## present and imp == 1). q_k's with no contributing coefficient have
+  ## alpha_k fixed at 0, so they are dropped (along with their column of L)
+  ## to keep Sigma_alpha non-singular.
+  M <- matrix(
+    0, nrow = K, ncol = length(coef_names),
+    dimnames = list(q_names, coef_names)
+  )
+  for (k in 1:K) {
+    if (!is.na(main_names[k])) {
+      M[k, main_names[k]] <- 1
+    }
+    if (imp == 1 && !is.na(inter_names[k])) {
+      M[k, inter_names[k]] <- 1
+    }
+  }
+  keep <- rowSums(M != 0) > 0
+  if (!any(keep)) {
+    warning('No q_k terms retained in model; alpha(p) is identically 0. ',
+            'Skipping plot: ', path)
+    return(invisible(NULL))
+  }
+  M <- M[keep, , drop = FALSE]
+  L <- L[, keep, drop = FALSE]
+  K <- sum(keep)
+  alpha <- as.vector(M %*% coef(model))
+  Sigma_alpha <- M %*% vcov(model) %*% t(M)
 
-## Joint bands
-B <- 5000
-Rchol <- chol(Sigma_alpha)
-M <- numeric(B)
-set.seed(12345)
-for (b in 1:B) {
-  z <- rnorm(length(alpha))
-  alpha_b <- alpha + t(Rchol) %*% z
-  alpha_b_p <- L_ %*% alpha_b
-  M[b] <- max(abs(alpha_b_p - alpha_p) / alpha_p_se)
+  ## Estimate alpha(p) and pointwise SEs
+  alpha_p <- L %*% alpha
+  alpha_p_se <- sqrt(diag(L %*% Sigma_alpha %*% t(L)))
+
+  ## Joint (max-t) bands via parametric bootstrap
+  set.seed(seed)
+  Rchol <- chol(Sigma_alpha)
+  M_boot <- numeric(B)
+  for (b in 1:B) {
+    z <- rnorm(K)
+    alpha_b <- alpha + t(Rchol) %*% z
+    alpha_b_p <- L %*% alpha_b
+    M_boot[b] <- max(abs(alpha_b_p - alpha_p) / alpha_p_se)
+  }
+  c95 <- quantile(M_boot, 0.95)
+  alpha_p_low <- alpha_p - c95 * alpha_p_se
+  alpha_p_high <- alpha_p + c95 * alpha_p_se
+
+  ## Plot joint bands
+  p_idx <- which(p_grid >= plim[1] & p_grid <= plim[2])
+  png(path, width = width, height = height)
+  plot(
+    NULL,
+    xlab = 'p', ylab = 'alpha(p)',
+    xlim = c(min(p_grid[p_idx]), max(p_grid[p_idx])),
+    ylim = c(min(alpha_p_low[p_idx]), max(alpha_p_high[p_idx]))
+  )
+  lines(p_grid[p_idx], alpha_p[p_idx])
+  lines(p_grid[p_idx], alpha_p_low[p_idx], col = 'gray')
+  lines(p_grid[p_idx], alpha_p_high[p_idx], col = 'gray')
+  abline(a = 0, b = 0, lty = 'dotted')
+  dev.off()
 }
-c95 <- quantile(M, 0.95)
-alpha_p_low <- alpha_p - c95 * alpha_p_se
-alpha_p_high <- alpha_p + c95 * alpha_p_se
 
-## Plot joint bands
-idx <- 1:length(p_grid)
-png('artifacts/analyze_chop-mims-subs/plots/alpha_bd-all_imp-2_pa-q.png', width = 500, height = 400)
-plot(
-  p_grid[idx], alpha_p[idx], type = 'l',
-  xlab = 'p', ylab = 'alpha(p)'
-)
-lines(p_grid[idx], alpha_p_low[idx], col = 'gray')
-lines(p_grid[idx], alpha_p_high[idx], col = 'gray')
-abline(a = 0, b = 0, lty = 'dotted')
-dev.off()
+## Basis mapping q-shifts to Q(p)-shifts (shared across impact/plim combos)
+qpca_state <- pipeline_qpca$stages[[3]]$state
+L <- sweep(qpca_state$E, 2, qpca_state$sd_k, FUN = "*")
+colnames(L) <- paste0('q_', 1:ncol(L))
 
-
-## ----- Interpretation: Q PCA (effect plot)
-
-## Set k_star and deltas
-# k_star <- 1
-# deltas <- seq(-5, 5, by = 1)
-k_star <- 2
-deltas <- seq(-3, 3, by = 1)
-p_idx <- 1:length(p_grid)
-
-## Get scores of Q_center
-Q_mean <- colMeans(do.call(rbind, pipeline$training$meta$Q_list))
-sqrt_w <- pipeline$training$cache$sqrt_w
-path_Qpc_res <- file.path(dir_art, str_glue('Qpc_res.rds'))
-Qpc_res <- readRDS(path_Qpc_res)
-Qw_mean  <- Q_mean * sqrt_w
-Qw_mean_ctr  <- Qw_mean - Qpc_res$center
-Vw <- Qpc_res$rotation[, 1:K]
-Q_mean_scores  <- Qw_mean_ctr %*% Vw
-
-## Create df_new
-preds_star <- data.frame(
-  age_cat = c('<=12'),
-  sex = c(1),
-  bmiz = c(0.5)
-)
-for (k in 1:K) {
-  preds_star[[str_glue('q_{k}')]] <- Q_mean_scores[,k]
+## Generate weight function plots for plim = c(0,1), c(0.95,1) and
+## impact_cat_2 = 0, 1
+plims <- list(`1` = c(0, 1), `2` = c(0.95, 1))
+for (plim_id in names(plims)) {
+  plim <- plims[[plim_id]]
+  for (imp in c(0, 1)) {
+    create_weight_plot(
+      model = model, L = L, p_grid = p_grid, plim = plim, imp = imp,
+      path = str_glue('{dir_art}/plots/alpha_plim-{plim_id}_imp-{imp}.png')
+    )
+  }
 }
-df_new <- data.frame(matrix(nrow = 0, ncol = ncol(preds_star)))
-for (delta in deltas) {
-  row <- preds_star
-  row[[str_glue('q_{k_star}')]] <- preds_star[1,c(str_glue('q_{k_star}'))] + delta
-  df_new <- rbind(df_new, row)
-}
-df_new$age_cat <- as.factor(df_new$age_cat)
-df_new$sex <- as.factor(df_new$sex)
 
-## Predict at df_new
-resp_new <- predict(model, df_new)
 
-## Map q-shifts to Q-space
-q_shifts <- as.matrix(df_new[,paste0('q_', 1:K)])
-Qw_rec <- q_shifts %*% t(Qpc_res$rotation[,1:K])
-Qw_rec <- sweep(
-  Qw_rec, 2,
-  Qpc_res$center,
-  "+"
-)
-Q_plot <- sweep(Qw_rec, 2, sqrt_w, "/")
+## ----- Interpretation: effect plots (Q-PCA and WAME)
 
-# Normalize response to [0,1]
-resp_scaled <- (resp_new - min(resp_new)) /
-  (max(resp_new) - min(resp_new))
+## create_effect_plot: plots predicted response (color) against decoded
+## quantile curves obtained by shifting embedding k_star across its
+## marginal decile range while holding all other embedding dims and
+## covariates at preds_star / the embedding median.
+create_effect_plot <- function(model, embeddings, k_star, plim, preds_star,
+                                path, decode_fn, col_prefix, p_grid,
+                                probs = seq(0.1, 0.9, by = 0.1),
+                                legend_title = 'BD',
+                                y_labs = c(1, 10, 100),
+                                n_cols = 100,
+                                width = 500, height = 400) {
 
-# Create color ramp
-col_fun <- colorRampPalette(c("blue", "gray", "red"))
-n_cols <- 100
-cols <- col_fun(n_cols)
+  K <- ncol(embeddings)
+  emb_median <- matrix(apply(embeddings, 2, median), nrow = 1)
+  deltas <- quantile(embeddings[,k_star], probs) - emb_median[,k_star]
+  p_idx <- which(p_grid >= plim[1] & p_grid <= plim[2])
 
-# Map each curve to a color
-curve_cols <- cols[ceiling(resp_scaled * (n_cols - 1)) + 1]
+  ## Create df_new
+  for (k in 1:K) {
+    preds_star[[str_glue('{col_prefix}_{k}')]] <- emb_median[,k]
+  }
+  k_star_col <- str_glue('{col_prefix}_{k_star}')
+  df_new <- do.call(rbind, lapply(deltas, function(delta) {
+    row <- preds_star
+    row[[k_star_col]] <- preds_star[1,k_star_col] + delta
+    row
+  }))
+  df_new$age_cat <- as.factor(df_new$age_cat)
+  df_new$sex <- as.factor(df_new$sex)
+  df_new$impact_cat_2 <- as.factor(df_new$impact_cat_2)
 
-# Plot first curve to initialize axes
-png(str_glue('artifacts/analyze_chop-mims-subs/plots/q{k_star}_bd-all_pa-q.png'), width = 500, height = 400)
-plot(
-  p_grid[p_idx],
-  Q_plot[1,p_idx],
-  type = "l",
-  col = curve_cols[1],
-  lwd = 2,
-  xlab = "p",
-  ylab = "Q(p)",
-  ylim = range(Q_plot),
-  yaxt = 'n',
-  main = str_glue('q_{k_star}')
-)
-y_labs <- c(1, 10, 100)
-y_ticks <- y_labs  ## identity: Y-axis transform removed from pipeline
-axis(side = 2, at = y_ticks, labels = y_labs)
+  ## Predict at df_new
+  resp_new <- predict(model, df_new)
 
-# Add remaining curves
-for (i in 2:nrow(Q_plot)) {
-  lines(
+  ## Map embedding shifts to Q-space
+  shifts <- as.matrix(df_new[,paste0(col_prefix, '_', 1:K)])
+  Q_plot <- decode_fn(shifts)
+
+  # Normalize response to [0,1]
+  resp_scaled <- (resp_new - min(resp_new)) /
+    (max(resp_new) - min(resp_new))
+
+  # Create color ramp
+  col_fun <- colorRampPalette(c("blue", "gray", "red"))
+  cols <- col_fun(n_cols)
+
+  # Map each curve to a color
+  curve_cols <- cols[ceiling(resp_scaled * (n_cols - 1)) + 1]
+
+  # Plot first curve to initialize axes
+  png(path, width = width, height = height)
+  plot(
     p_grid[p_idx],
-    Q_plot[i,p_idx],
-    col = curve_cols[i],
-    lwd = 2
+    Q_plot[1,p_idx],
+    type = "l",
+    col = curve_cols[1],
+    lwd = 2,
+    xlab = "p",
+    ylab = "Q(p)",
+    ylim = range(Q_plot[,p_idx]),
+    yaxt = 'n',
+    main = str_glue('{col_prefix}_{k_star}')
   )
+  axis(side = 2, at = y_labs, labels = y_labs)  ## identity: Y-axis transform removed from pipeline
+
+  # Add remaining curves
+  for (i in 2:nrow(Q_plot)) {
+    lines(
+      p_grid[p_idx],
+      Q_plot[i,p_idx],
+      col = curve_cols[i],
+      lwd = 2
+    )
+  }
+
+
+  usr <- par("usr")
+
+  # Legend height = 25% of plot height
+  legend_height <- 0.25 * diff(usr[3:4])
+  legend_width  <- 0.05 * diff(usr[1:2])
+
+  # Position in top-left with small margin
+  x_left  <- usr[1] + 0.05 * diff(usr[1:2])
+  x_right <- x_left + legend_width
+
+  y_top    <- usr[4] - 0.05 * diff(usr[3:4])
+  y_bottom <- y_top - legend_height
+
+  # Sequence for rectangles
+  y_seq <- seq(y_bottom, y_top, length.out = n_cols)
+
+  # Draw gradient
+  for (i in 1:(n_cols - 1)) {
+    rect(
+      x_left,  y_seq[i],
+      x_right, y_seq[i + 1],
+      col = cols[i],
+      border = NA
+    )
+  }
+
+  # Draw border box
+  rect(x_left, y_bottom, x_right, y_top)
+
+  # Add ticks (3 ticks: min, mid, max)
+  resp_min <- min(resp_new)
+  resp_max <- max(resp_new)
+  resp_mid <- (resp_min + resp_max) / 2
+
+  tick_vals  <- c(resp_min, resp_mid, resp_max)
+  tick_pos   <- y_bottom +
+    (tick_vals - resp_min) /
+    (resp_max - resp_min) *
+    legend_height
+
+  segments(x_right, tick_pos,
+           x_right + 0.01 * diff(usr[1:2]), tick_pos)
+
+  text(x_right + 0.015 * diff(usr[1:2]),
+       tick_pos,
+       labels = sprintf("%.2f", tick_vals),
+       adj = 0)
+
+  # Legend title
+  text((x_left + x_right)/2,
+       y_top + 0.03 * diff(usr[3:4]),
+       legend_title,
+       cex = 0.8)
+
+  dev.off()
 }
 
-
-usr <- par("usr")
-
-# Legend height = 25% of plot height
-legend_height <- 0.25 * diff(usr[3:4])
-legend_width  <- 0.05 * diff(usr[1:2])
-
-# Position in top-left with small margin
-x_left  <- usr[1] + 0.05 * diff(usr[1:2])
-x_right <- x_left + legend_width
-
-y_top    <- usr[4] - 0.05 * diff(usr[3:4])
-y_bottom <- y_top - legend_height
-
-# Sequence for rectangles
-y_seq <- seq(y_bottom, y_top, length.out = n_cols)
-
-# Draw gradient
-for (i in 1:(n_cols - 1)) {
-  rect(
-    x_left,  y_seq[i],
-    x_right, y_seq[i + 1],
-    col = cols[i],
-    border = NA
+## Decoders: map embedding shifts back to Q-space for each embedding type
+decode_qpc <- function(shifts) {
+  shift_ctx <- new_context(
+    payload = asplit(shifts, 1),
+    cache = pipeline_qpca$training$cache,
+    meta = list()
   )
+  do.call(rbind, decode(pipeline_qpca, shift_ctx, from = 3, to = 2)$payload)
 }
 
-# Draw border box
-rect(x_left, y_bottom, x_right, y_top)
+decode_c <- function(shifts) {
+  c_shifts_list <- asplit(shifts, MARGIN = 1)
+  c_shifts_ctx <- new_context(
+    payload = list(
+      c_list = c_shifts_list,
+      Q_star_list = replicate(length(c_shifts_list), pipeline$training$cache$Q_star, simplify = FALSE)
+    ),
+    cache = pipeline$training$cache,
+    meta = list()
+  )
+  do.call(rbind, decode(pipeline, c_shifts_ctx, from = 3, to = 2)$payload)
+}
 
-# Add ticks (3 ticks: min, mid, max)
-resp_min <- min(resp_new)
-resp_max <- max(resp_new)
-resp_mid <- (resp_min + resp_max) / 2
-
-tick_vals  <- c(resp_min, resp_mid, resp_max)
-tick_pos   <- y_bottom + 
-  (tick_vals - resp_min) /
-  (resp_max - resp_min) *
-  legend_height
-
-segments(x_right, tick_pos,
-         x_right + 0.01 * diff(usr[1:2]), tick_pos)
-
-text(x_right + 0.015 * diff(usr[1:2]),
-     tick_pos,
-     labels = sprintf("%.2f", tick_vals),
-     adj = 0)
-
-# Legend title
-text((x_left + x_right)/2,
-     y_top + 0.03 * diff(usr[3:4]),
-     "BD",
-     cex = 0.8)
-
-dev.off()
-
-
-## ---------- Interpretation: Q-G PCA (based on means)
-
-## Model summary
-model <- models[['dist_C_imp']]$model_red
-summary(model)
-
-## Set k_star and deltas
-# k_star <- 4
-# deltas <- seq(-1, 1, by = 0.25)
-k_star <- 5
-deltas <- seq(-2, 2, by = 0.5)
-# k_star <- 6
-# deltas <- seq(-2, 2, by = 0.5)
-p_idx <- 1:length(p_grid)
-
-# vec <- df$c_5
-# plot(df$c_4, vec)
-# points(mean(df$c_4), mean(vec), pch = 19, col = 'red')
-
-
-## Create df_new
-out <- qg_pca(
-  Q_obs = colMeans(do.call(rbind, pipeline$training$meta$Q_list)),
-  E = pipeline$stages[[3]]$state$child_qg_pca$state$E,
-  G_center = pipeline$stages[[3]]$state$child_qg_pca$state$G_center,
-  p_grid = pipeline$training$cache$p_grid,
-  p_star = pipeline$training$cache$p_star,
-  Q_star = pipeline$training$cache$Q_star,
-  sqrt_w = pipeline$training$cache$sqrt_w,
-  lambda = pipeline$stages[[3]]$state$child_qg_pca$state$lambda
-)
-preds_star <- data.frame(
+## Models and base covariates
+model_qpc <- models[['dist_Qpc_imp']]$model_red
+model_c <- models[['dist_C_imp']]$model_red
+preds_star_base <- data.frame(
   age_cat = c('<=12'),
   sex = c(1),
-  bmiz = 0.5,
+  bmiz = c(0.5),
   impact_cat_2 = c(1)
 )
-for (k in 1:length(out$c)) {
-  preds_star[[str_glue('c_{k}')]] <- out$c[k]
+
+## Generate effect plots for k_star = 1:4, plim = c(0,1), c(0.95,1), and
+## impact_cat_2 = 0, 1
+plims <- list(`1` = c(0, 1), `2` = c(0.95, 1))
+for (plim_id in names(plims)) {
+  plim <- plims[[plim_id]]
+  for (k_star in 1:4) {
+    for (imp in c(0, 1)) {
+      preds_star <- preds_star_base
+      preds_star$impact_cat_2 <- imp
+      create_effect_plot(
+        model = model_qpc, embeddings = Qpc, k_star = k_star, plim = plim,
+        preds_star = preds_star, decode_fn = decode_qpc,
+        col_prefix = 'q', p_grid = p_grid,
+        path = str_glue('{dir_art}/plots/q{k_star}_plim-{plim_id}_imp-{imp}.png')
+      )
+      create_effect_plot(
+        model = model_c, embeddings = C, k_star = k_star, plim = plim,
+        preds_star = preds_star, decode_fn = decode_c,
+        col_prefix = 'c', p_grid = p_grid,
+        path = str_glue('{dir_art}/plots/c{k_star}_plim-{plim_id}_imp-{imp}.png')
+      )
+    }
+  }
 }
-df_new <- data.frame(matrix(nrow = 0, ncol = ncol(preds_star)))
-for (delta in deltas) {
-  row <- preds_star
-  row[[str_glue('c_{k_star}')]] <- preds_star[1,c(str_glue('c_{k_star}'))] + delta
-  df_new <- rbind(df_new, row)
-}
-df_new$age_cat <- as.factor(df_new$age_cat)
-df_new$sex <- as.factor(df_new$sex)
-df_new$impact_cat_2 <- as.factor(df_new$impact_cat_2)
-
-## Predict at df_new
-resp_new <- predict(model, df_new)
-
-## Map c-shifts to Q-space
-c_shifts_list <- asplit(df_new[,paste0('c_', 1:K)], MARGIN = 1)
-c_shifts_ctx <- new_context(
-  payload = list(
-    c_list = c_shifts_list,
-    Q_star_list = replicate(length(c_shifts_list), pipeline$training$cache$Q_star, simplify = FALSE)
-  ),
-  cache = pipeline$training$cache,
-  meta = list()
-)
-out <- decode(pipeline, c_shifts_ctx, from = 3, to = 2)
-Q_plot <- do.call(rbind, out$payload)
-
-# Normalize response to [0,1]
-resp_scaled <- (resp_new - min(resp_new)) /
-  (max(resp_new) - min(resp_new))
-
-# Create color ramp
-col_fun <- colorRampPalette(c("blue", "gray", "red"))
-n_cols <- 100
-cols <- col_fun(n_cols)
-
-# Map each curve to a color
-curve_cols <- cols[ceiling(resp_scaled * (n_cols - 1)) + 1]
-
-# Plot first curve to initialize axes
-png(str_glue('artifacts/analyze_chop-mims-subs/plots/c{k_star}_bd-all_pa-c.png'), width = 500, height = 400)
-plot(
-  p_grid[p_idx],
-  Q_plot[1,p_idx],
-  type = "l",
-  col = curve_cols[1],
-  lwd = 2,
-  xlab = "p",
-  ylab = "Q(p)",
-  ylim = range(Q_plot),
-  yaxt = 'n',
-  main = str_glue('c_{k_star}')
-)
-y_labs <- c(1, 10, 100)
-y_ticks <- y_labs  ## identity: Y-axis transform removed from pipeline
-axis(side = 2, at = y_ticks, labels = y_labs)
-
-# Add remaining curves
-for (i in 2:nrow(Q_plot)) {
-  lines(
-    p_grid[p_idx],
-    Q_plot[i,p_idx],
-    col = curve_cols[i],
-    lwd = 2
-  )
-}
-
-
-usr <- par("usr")
-
-# Legend height = 25% of plot height
-legend_height <- 0.25 * diff(usr[3:4])
-legend_width  <- 0.05 * diff(usr[1:2])
-
-# Position in top-left with small margin
-x_left  <- usr[1] + 0.05 * diff(usr[1:2])
-x_right <- x_left + legend_width
-
-y_top    <- usr[4] - 0.05 * diff(usr[3:4])
-y_bottom <- y_top - legend_height
-
-# Sequence for rectangles
-y_seq <- seq(y_bottom, y_top, length.out = n_cols)
-
-# Draw gradient
-for (i in 1:(n_cols - 1)) {
-  rect(
-    x_left,  y_seq[i],
-    x_right, y_seq[i + 1],
-    col = cols[i],
-    border = NA
-  )
-}
-
-# Draw border box
-rect(x_left, y_bottom, x_right, y_top)
-
-# Add ticks (3 ticks: min, mid, max)
-resp_min <- min(resp_new)
-resp_max <- max(resp_new)
-resp_mid <- (resp_min + resp_max) / 2
-
-tick_vals  <- c(resp_min, resp_mid, resp_max)
-tick_pos   <- y_bottom + 
-  (tick_vals - resp_min) /
-  (resp_max - resp_min) *
-  legend_height
-
-segments(x_right, tick_pos,
-         x_right + 0.01 * diff(usr[1:2]), tick_pos)
-
-text(x_right + 0.015 * diff(usr[1:2]),
-     tick_pos,
-     labels = sprintf("%.2f", tick_vals),
-     adj = 0)
-
-# Legend title
-text((x_left + x_right)/2,
-     y_top + 0.03 * diff(usr[3:4]),
-     "BD",
-     cex = 0.8)
-
-dev.off()
 
 
 
