@@ -114,7 +114,7 @@ plot_qi_recon_grid(
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
   log_x_plus_1  = log_scale,
-  path          = file.path(dir_art, 'plots',
+  path          = file.path(dir_art, 'plots', 'representation',
                             sprintf('Qi-recon_grid_3x5%s.png',
                                     if (log_scale) '_log' else ''))
 )
@@ -135,7 +135,7 @@ col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
 
 ## Plot z-embeddings
 path_plot <- file.path(
-  dir_art, 'plots',
+  dir_art, 'plots', 'representation',
   str_glue('data_z.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -175,7 +175,7 @@ dev.off()
 
 ## Plot c-embeddings
 path_plot <- file.path(
-  dir_art, 'plots',
+  dir_art, 'plots', 'representation',
   str_glue('data_c.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -305,7 +305,7 @@ plot_qi_recon_grid(
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
   log_x_plus_1  = log_scale,
-  path          = file.path(dir_art, 'plots',
+  path          = file.path(dir_art, 'plots', 'representation',
                             sprintf('Qi-qpca-recon_grid_3x5%s.png',
                                     if (log_scale) '_log' else ''))
 )
@@ -326,7 +326,7 @@ col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
 
 ## Plot q-embeddings
 path_plot <- file.path(
-  dir_art, 'plots',
+  dir_art, 'plots', 'representation',
   str_glue('data_q_qpca.png')
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
@@ -406,8 +406,12 @@ Qpc <- readRDS(path_Qpc)
 p_grid <- readRDS(path_p_grid)
 
 ## Define factor variables
-df_misc$age_cat <- as.factor(df_misc$age_cat)
-df_misc$sex <- as.factor(df_misc$sex)
+## Binary (0/1 numeric, so coefficients print as `old` / `male` without a
+## level suffix): old = age > 12; male = sex code 2 (1 = female)
+df_misc$old <- as.integer(df_misc$age_cat == '>12')
+df_misc$male <- as.integer(df_misc$sex == 2)
+df_misc$age_cat <- NULL
+df_misc$sex <- NULL
 
 
 ## ----- Derived Variables
@@ -425,10 +429,14 @@ df_a$a_70 <- unlist(lapply(y_list, function(y) quantile(y, c(0.7))))
 df_a$a_80 <- unlist(lapply(y_list, function(y) quantile(y, c(0.8))))
 df_a$a_90 <- unlist(lapply(y_list, function(y) quantile(y, c(0.9))))
 df_a$a_95 <- unlist(lapply(y_list, function(y) quantile(y, c(0.95))))
+df_a$a_96 <- unlist(lapply(y_list, function(y) quantile(y, c(0.97))))
 df_a$a_99 <- unlist(lapply(y_list, function(y) quantile(y, c(0.99))))
 df_a$a_995 <- unlist(lapply(y_list, function(y) quantile(y, c(0.995))))
 df_a$a_999 <- unlist(lapply(y_list, function(y) quantile(y, c(0.999))))
 df_a$a_tail95_mean <- unlist(lapply(y_list, function(y) mean(y[y >= quantile(y, c(0.95))])))
+df_a$a_tail90_mean <- unlist(lapply(y_list, function(y) mean(y[y >= quantile(y, c(0.90))])))
+df_a$a_tail85_mean <- unlist(lapply(y_list, function(y) mean(y[y >= quantile(y, c(0.85))])))
+df_a$a_above60mims <- unlist(lapply(y_list, function(y) mean(y >= 60)))
 
 ## Nonwear
 df_nonwear$t_nonwear <- log((df_nonwear$nonwear + 1e-3) / (1 - df_nonwear$nonwear + 1e-3))
@@ -437,32 +445,11 @@ df_nonwear$t_nonwear <- log((df_nonwear$nonwear + 1e-3) / (1 - df_nonwear$nonwea
 df_sleep$good_sleep <- df_sleep$sleep_dur >= 8
 
 ## Misc
-imp_trans <- log((df_misc$impact23_hr_day) / (df_misc$impact01_hr_day + 1e-3) + 1)
-imp_33 <- quantile(imp_trans, c(0.33))
-imp_50 <- quantile(imp_trans, c(0.5))
-imp_66 <- quantile(imp_trans, c(0.66))
-df_misc$impact_trans <- imp_trans
-# df_misc$impact_cat_2 <- as.factor(sapply(imp_trans, function(x) {
-#   if (x < imp_50) 0 else 1
-# }))
+## NOTE: Dichotomized impact variable leads to models with better predictive 
+## performance then trichotomized impact models and continuous impact variables.
 imp_high_50 <- median(df_misc$impact23_hr_day)
-df_misc$impact_cat_2 <- as.factor(sapply(df_misc$impact23_hr_day, function(x) {
-  if (x < imp_high_50) 0 else 1
-}))
-df_misc$impact_cat_3 <- as.factor(sapply(imp_trans, function(x) {
-  if (x < imp_33) 0
-  else if (x < imp_66) 1
-  else 2
-}))
+df_misc$imp <- as.integer(df_misc$impact23_hr_day >= imp_high_50)
 
-
-###############
-# tmp1 <- log((df_misc$impact23_hr_day) / (df_misc$impact01_hr_day + 1e-3) + 1)
-# tmp2 <- df_misc$impact23_hr_day
-# bin1 <- tmp1 > median(tmp1)
-# bin2 <- tmp2 > median(tmp2)
-# cor(bin1, bin2)
-###############
 
 
 ## ----- Dataframe Assembly
@@ -502,46 +489,46 @@ saveRDS(df, path_df)
 ##     * Impact Activities
 ##     * 
 
-resps <- c(
-  # 'a_99'
-  # 'bmiz'
-  'subtot_bmd_age_z_all'
-  # 'hip_neck_bmd_age_z_all',
-  # 'spine_bmd_age_z_all',
-  # 'spine_bmad_age_z_all',
-  # 'tot_hip_bmd_age_z_all',
-  # 'radius13_bmd_age_z_all',
-  # 'udradius_bmd_age_z_all'
+# resps <- c(
+#   # 'a_99'
+#   # 'bmiz'
+#   'subtot_bmd_age_z_all'
+#   # 'hip_neck_bmd_age_z_all',
+#   # 'spine_bmd_age_z_all',
+#   # 'spine_bmad_age_z_all',
+#   # 'tot_hip_bmd_age_z_all',
+#   # 'radius13_bmd_age_z_all',
+#   # 'udradius_bmd_age_z_all'
 
-)
-preds <- c(
-  # 'bmiz',
-  # 'a_50',
-  # 'a_60',
-  # 'a_70',
-  # 'a_80',
-  # 'a_90',
-  # 'a_95',
-  # 'a_99'
-  # paste0('c_', 1:K),
-  # paste0('z_', 1:K),
-  # paste0('q_', 1:K),
-  # 't_nonwear',
-  # 'sleep_dur'
-  'impact_cat_2'
-)
-par(mfrow = c(1,1))
-for (resp in resps) {
-  for (pred in preds) {
-    x <- df[[pred]]
-    y <- df[[resp]]
-    plot(
-      x, y, 
-      # main = str_glue("{resp} vs. {pred}"), xlim = c(0,2)
-      main = str_glue("{resp} vs. {pred} | cor = {round(cor(x,y), 3)}")
-    )
-  }
-}
+# )
+# preds <- c(
+#   # 'bmiz',
+#   # 'a_50',
+#   # 'a_60',
+#   # 'a_70',
+#   # 'a_80',
+#   # 'a_90',
+#   # 'a_95',
+#   # 'a_99'
+#   # paste0('c_', 1:K),
+#   # paste0('z_', 1:K),
+#   # paste0('q_', 1:K),
+#   # 't_nonwear',
+#   # 'sleep_dur'
+#   'imp'
+# )
+# par(mfrow = c(1,1))
+# for (resp in resps) {
+#   for (pred in preds) {
+#     x <- df[[pred]]
+#     y <- df[[resp]]
+#     plot(
+#       x, y, 
+#       # main = str_glue("{resp} vs. {pred}"), xlim = c(0,2)
+#       main = str_glue("{resp} vs. {pred} | cor = {round(cor(x,y), 3)}")
+#     )
+#   }
+# }
 
 
 
@@ -745,7 +732,7 @@ pred_block <- function(prefix, K, modifier = NULL) {
 
 ## Globals
 response <- 'subtot_bmd_age_z_all'
-preds_common <- c('age_cat', 'sex', 'bmiz')
+preds_common <- c('old', 'male', 'bmiz')
 
 ## Load data and pipeline
 path_pipe <- file.path(dir_art, 'pipe.pth')
@@ -770,7 +757,7 @@ models <- list(
     f_str_abbr = 'x'
   ),
   ref_common_preds_imp = list(
-    preds = c(preds_common, 'impact_cat_2'),
+    preds = c(preds_common, 'imp'),
     f_str_abbr = 'x,imp'
   ),
 
@@ -819,60 +806,101 @@ models <- list(
     preds = c(preds_common, "a_999"),
     f_str_abbr = 'x,a_999'
   ),
-  scale_11 = list(
+  scale_11_a = list(
     preds = c(preds_common, "a_tail95_mean"),
     f_str_abbr = 'x,a_tail95_mean'
+  ),
+  scale_11_b = list(
+    preds = c(preds_common, "a_tail90_mean"),
+    f_str_abbr = 'x,a_tail90_mean'
+  ),
+  scale_11_c = list(
+    preds = c(preds_common, "a_tail85_mean"),
+    f_str_abbr = 'x,a_tail85_mean'
+  ),
+  scale_12 = list(
+    preds = c(preds_common, "a_above60mims"),
+    f_str_abbr = 'x,a_above60mims'
+  ),
+  scale_13 = list(
+    preds = c(preds_common, "a_96", "a_995"),
+    f_str_abbr = 'x,a_96,a_995'
+  ),
+  scale_14 = list(
+    preds = c(preds_common, "a_96"),
+    f_str_abbr = 'x,a_96'
   ),
   
   ## Scalar PA + Impact
   scale_imp_0 = list(
-    preds = c(preds_common, "a_mean", "impact_cat_2", "mvpa_rate:a_mean"),
+    preds = c(preds_common, "a_mean", "imp", "a_mean:imp"),
     f_str_abbr = 'x,a_mean,imp'
   ),
   scale_imp_1 = list(
-    preds = c(preds_common, "mvpa_rate", "impact_cat_2", "mvpa_rate:impact_cat_2"),
+    preds = c(preds_common, "mvpa_rate", "imp", "mvpa_rate:imp"),
     f_str_abbr = 'x,mvpa,imp'
   ),
   scale_imp_2 = list(
-    preds = c(preds_common, "a_50", "impact_cat_2", "a_50:impact_cat_2"),
+    preds = c(preds_common, "a_50", "imp", "a_50:imp"),
     f_str_abbr = 'x,a_50,imp'
   ),
   # scale_imp_3 = list(
-  #   preds = c(preds_common, "a_60", "impact_cat_2", "a_60:impact_cat_2"),
+  #   preds = c(preds_common, "a_60", "imp", "a_60:imp"),
   #   f_str_abbr = 'x,a_60,imp'
   # ),
   # scale_imp_4 = list(
-  #   preds = c(preds_common, "a_70", "impact_cat_2", "a_70:impact_cat_2"),
+  #   preds = c(preds_common, "a_70", "imp", "a_70:imp"),
   #   f_str_abbr = 'x,a_70,imp'
   # ),
   # scale_imp_5 = list(
-  #   preds = c(preds_common, "a_80", "impact_cat_2", "a_80:impact_cat_2"),
+  #   preds = c(preds_common, "a_80", "imp", "a_80:imp"),
   #   f_str_abbr = 'x,a_80,imp'
   # ),
   # scale_imp_6 = list(
-  #   preds = c(preds_common, "a_90", "impact_cat_2", "a_90:impact_cat_2"),
+  #   preds = c(preds_common, "a_90", "imp", "a_90:imp"),
   #   f_str_abbr = 'x,a_90,imp'
   # ),
   scale_imp_7 = list(
-    preds = c(preds_common, "a_95", "impact_cat_2", "a_95:impact_cat_2"),
+    preds = c(preds_common, "a_95", "imp", "a_95:imp"),
     f_str_abbr = 'x,a_95,imp'
   ),
   scale_imp_8 = list(
-    preds = c(preds_common, "a_99", "impact_cat_2", "a_99:impact_cat_2"),
+    preds = c(preds_common, "a_99", "imp", "a_99:imp"),
     f_str_abbr = 'x,a_99,imp'
   ),
   scale_imp_9 = list(
-    preds = c(preds_common, "a_995", "impact_cat_2", "a_995:impact_cat_2"),
+    preds = c(preds_common, "a_995", "imp", "a_995:imp"),
     f_str_abbr = 'x,a_995,imp'
   ),
   scale_imp_10 = list(
-    preds = c(preds_common, "a_999", "impact_cat_2", "a_999:impact_cat_2"),
+    preds = c(preds_common, "a_999", "imp", "a_999:imp"),
     f_str_abbr = 'x,a_999,imp'
   ),
-  scale_imp_11 = list(
-    preds = c(preds_common, "a_tail95_mean", "impact_cat_2", "a_tail95_mean:impact_cat_2"),
+  scale_imp_11_a = list(
+    preds = c(preds_common, "a_tail95_mean", "imp", "a_tail95_mean:imp"),
     f_str_abbr = 'x,a_tail95_mean,imp'
   ),
+  scale_imp_11_b = list(
+    preds = c(preds_common, "a_tail90_mean", "imp", "a_tail90_mean:imp"),
+    f_str_abbr = 'x,a_tail90_mean,imp'
+  ),
+  scale_imp_11_c = list(
+    preds = c(preds_common, "a_tail85_mean", "imp", "a_tail85_mean:imp"),
+    f_str_abbr = 'x,a_tail85_mean,imp'
+  ),
+  scale_imp_12 = list(
+    preds = c(preds_common, "a_above60mims", "imp", "a_above60mims:imp"),
+    f_str_abbr = 'x,a_above60mims,imp'
+  ),
+  scale_imp_13 = list(
+    preds = c(preds_common, "a_96", "a_995", "imp", "a_96:imp", "a_995:imp"),
+    f_str_abbr = 'x,a_96,a_995,imp'
+  ),
+  scale_imp_14 = list(
+    preds = c(preds_common, "a_96", "imp", "a_96:imp"),
+    f_str_abbr = 'x,a_96,imp'
+  ),
+  
 
   ## Distributional PA
   dist_Qpc = list(
@@ -890,15 +918,15 @@ models <- list(
   
   ## Distributional PA + Impact
   dist_Qpc_imp = list(
-    preds = c(preds_common, 'impact_cat_2', pred_block('q', K), pred_block('q', K, 'impact_cat_2')),
+    preds = c(preds_common, 'imp', pred_block('q', K), pred_block('q', K, 'imp')),
     f_str_abbr = 'x,q,imp'
   ),
   dist_C_imp = list(
-    preds = c(preds_common, 'impact_cat_2', pred_block('c', K), pred_block('c', K, 'impact_cat_2')),
+    preds = c(preds_common, 'imp', pred_block('c', K), pred_block('c', K, 'imp')),
     f_str_abbr = 'x,c,imp'
   ),
   dist_Z_imp = list(
-    preds = c(preds_common, 'impact_cat_2', pred_block('z', K), pred_block('z', K, 'impact_cat_2')),
+    preds = c(preds_common, 'imp', pred_block('z', K), pred_block('z', K, 'imp')),
     f_str_abbr = 'x,z,imp'
   )
   
@@ -922,7 +950,9 @@ models <- list(
 mf <- get_model_funs('lm')
 factor_vars <- names(Filter(is.factor, df))
 results <- data.frame(
-  oos_err = numeric(0),
+  oos_err_mean = numeric(0),
+  oos_err_low  = numeric(0),
+  oos_err_high = numeric(0),
   r_sq    = numeric(0),
   f_str   = character(0),
   preds   = character(0),
@@ -953,7 +983,9 @@ for (i in seq_along(models)) {
   results <- rbind(
     results,
     data.frame(
-      oos_err = sqrt(mean(cv_full$oos_error^2)),
+      oos_err_mean  = mean(abs(cv_full$oos_error)), #= sqrt(mean(cv_red$oos_error^2)),
+      oos_err_low   = mean(abs(cv_full$oos_error)) - 2*sd(abs(cv_full$oos_error))/sqrt(length(cv_full$oos_error)),
+      oos_err_high  = mean(abs(cv_full$oos_error)) + 2*sd(abs(cv_full$oos_error))/sqrt(length(cv_full$oos_error)),
       adj_r_sq    = mf$r_sq(mod_full),
       f_str   = formula_to_string(f_full),
       preds = models[[i]]$f_str_abbr,
@@ -994,7 +1026,9 @@ for (i in seq_along(models)) {
       results <- rbind(
         results,
         data.frame(
-          oos_err  = sqrt(mean(cv_red$oos_error^2)),
+          oos_err_mean  = mean(abs(cv_red$oos_error)), #= sqrt(mean(cv_red$oos_error^2)),
+          oos_err_low   = mean(abs(cv_red$oos_error)) - 2*sd(abs(cv_red$oos_error))/sqrt(length(cv_red$oos_error)),
+          oos_err_high  = mean(abs(cv_red$oos_error)) + 2*sd(abs(cv_red$oos_error))/sqrt(length(cv_red$oos_error)),
           adj_r_sq = mf$r_sq(mod_red),
           f_str    = formula_to_string(f_red),
           preds    = models[[i]]$f_str_abbr,
@@ -1004,14 +1038,16 @@ for (i in seq_along(models)) {
     }
   }
 }
-results$oos_err <- round(results$oos_err, digits = 3)
+results$oos_err_mean <- round(results$oos_err_mean, digits = 3)
+results$oos_err_low  <- round(results$oos_err_low, digits = 3)
+results$oos_err_high <- round(results$oos_err_high, digits = 3)
 results$adj_r_sq <- round(results$adj_r_sq, digits = 3)
 print_full <- FALSE
 if (!print_full) {
   results_ <- results[results$reduced,]
-  print(results_[,c('oos_err', 'adj_r_sq', 'preds', 'reduced')])
+  print(results_[,c('preds', 'oos_err_mean', 'reduced')])
 } else {
-  print(results[,c('oos_err', 'adj_r_sq', 'preds', 'reduced')])
+  print(results[,c('preds', 'oos_err_mean', 'reduced')])
 }
 
 
@@ -1034,20 +1070,23 @@ for (i in 1:length(models)) {
 ## ----- Interpretation: Q PCA (weight function)
 
 ## Get model
-model <- models[['dist_Qpc_imp']]$model_red
+## NOTE: If you were to use the reduced model to compute the weight
+## function, the corresponding uncertainty bands would be too narrow.
+## This is because the reduced model effectively fixes insigificant 
+## coefficients, which themselves carry uncertainty, at zero.
+model <- models[['dist_Qpc_imp']]$model_full
 summary(model)
 
-## create_weight_plot: plots the estimated Q-PCA weight function alpha(p)
-## (dQ(p)/dq_k, summed over k) together with bootstrap-calibrated joint
-## confidence bands, at a given level of impact_cat_2. Accounts for any
-## q_k:impact_cat_2 interaction retained in the model; alpha(p) reduces to
-## the same curve at both impact levels when no such interaction survived.
-create_weight_plot <- function(model, L, p_grid, plim, imp, path,
-                                col_prefix = 'q',
-                                imp_var = 'impact_cat_2',
-                                imp_dummy = '1',
-                                B = 5000, seed = 12345,
-                                width = 500, height = 400) {
+## qpca_joint_band: estimate of the linear functional L %*% alpha (one value per
+## row of L), where alpha_k are the q_k coefficients at a given level of
+## imp, together with bootstrap-calibrated joint (max-t) 95% bands.
+## Accounts for any q_k:imp interaction retained in the model.
+## Returns NULL if no q_k terms are retained.
+qpca_joint_band <- function(model, L, imp,
+                            col_prefix = 'q',
+                            imp_var = 'imp',
+                            imp_dummy = '',  ## imp is 0/1 numeric: coef named `imp`
+                            B = 5000, seed = 12345) {
 
   K <- ncol(L)
   coef_names <- names(coef(model))
@@ -1086,9 +1125,7 @@ create_weight_plot <- function(model, L, p_grid, plim, imp, path,
   }
   keep <- rowSums(M != 0) > 0
   if (!any(keep)) {
-    warning('No q_k terms retained in model; alpha(p) is identically 0. ',
-            'Skipping plot: ', path)
-    return(invisible(NULL))
+    return(NULL)
   }
   M <- M[keep, , drop = FALSE]
   L <- L[, keep, drop = FALSE]
@@ -1096,9 +1133,10 @@ create_weight_plot <- function(model, L, p_grid, plim, imp, path,
   alpha <- as.vector(M %*% coef(model))
   Sigma_alpha <- M %*% vcov(model) %*% t(M)
 
-  ## Estimate alpha(p) and pointwise SEs
-  alpha_p <- L %*% alpha
-  alpha_p_se <- sqrt(diag(L %*% Sigma_alpha %*% t(L)))
+  ## Estimate L %*% alpha and pointwise SEs
+  est <- as.vector(L %*% alpha)
+  se <- sqrt(diag(L %*% Sigma_alpha %*% t(L)))
+  pos <- se > 0
 
   ## Joint (max-t) bands via parametric bootstrap
   set.seed(seed)
@@ -1107,43 +1145,120 @@ create_weight_plot <- function(model, L, p_grid, plim, imp, path,
   for (b in 1:B) {
     z <- rnorm(K)
     alpha_b <- alpha + t(Rchol) %*% z
-    alpha_b_p <- L %*% alpha_b
-    M_boot[b] <- max(abs(alpha_b_p - alpha_p) / alpha_p_se)
+    est_b <- L %*% alpha_b
+    M_boot[b] <- max(abs(est_b - est)[pos] / se[pos])
   }
   c95 <- quantile(M_boot, 0.95)
-  alpha_p_low <- alpha_p - c95 * alpha_p_se
-  alpha_p_high <- alpha_p + c95 * alpha_p_se
+  list(est = est, low = est - c95 * se, high = est + c95 * se)
+}
+
+## create_weight_plot: plots the estimated Q-PCA weight function
+## alpha(p) = sum_k beta_k e_k(p) (so BMD ~ int alpha(p) (Q(p) - mu(p)) dp)
+## together with bootstrap-calibrated joint (max-t) 95% bands, at a given
+## level of imp; alpha(p) reduces to the same curve at both impact
+## levels when no q_k:imp interaction survived.
+create_weight_plot <- function(model, L, p_grid, plim, imp, path,
+                                width = 960, height = 960, pointsize = 18,
+                                ...) {
+
+  band <- qpca_joint_band(model, L, imp, ...)
+  if (is.null(band)) {
+    warning('No q_k terms retained in model; alpha(p) is identically 0. ',
+            'Skipping plot: ', path)
+    return(invisible(NULL))
+  }
+  alpha_p <- band$est
+  alpha_p_low <- band$low
+  alpha_p_high <- band$high
 
   ## Plot joint bands
   p_idx <- which(p_grid >= plim[1] & p_grid <= plim[2])
-  png(path, width = width, height = height)
+  png(path, width = width, height = height, pointsize = pointsize)
   plot(
     NULL,
     xlab = 'p', ylab = 'alpha(p)',
     xlim = c(min(p_grid[p_idx]), max(p_grid[p_idx])),
     ylim = c(min(alpha_p_low[p_idx]), max(alpha_p_high[p_idx]))
   )
-  lines(p_grid[p_idx], alpha_p[p_idx])
-  lines(p_grid[p_idx], alpha_p_low[p_idx], col = 'gray')
-  lines(p_grid[p_idx], alpha_p_high[p_idx], col = 'gray')
-  abline(a = 0, b = 0, lty = 'dotted')
+  draw_band(p_grid[p_idx], alpha_p_low[p_idx], alpha_p_high[p_idx])
+  abline(h = 0, lty = 'dashed', col = 'red')
+  lines(p_grid[p_idx], alpha_p[p_idx], lwd = 3)
   dev.off()
 }
 
 ## Basis mapping q-shifts to Q(p)-shifts (shared across impact/plim combos)
 qpca_state <- pipeline_qpca$stages[[3]]$state
-L <- sweep(qpca_state$E, 2, qpca_state$sd_k, FUN = "*")
+L <- qpca_state$E
 colnames(L) <- paste0('q_', 1:ncol(L))
 
-## Generate weight function plots for plim = c(0,1), c(0.95,1) and
-## impact_cat_2 = 0, 1
-plims <- list(`1` = c(0, 1), `2` = c(0.95, 1))
+## Generate weight function plots
+plims <- list(`1` = c(0, 1), `2` = c(0.9, 1))
 for (plim_id in names(plims)) {
   plim <- plims[[plim_id]]
   for (imp in c(0, 1)) {
     create_weight_plot(
       model = model, L = L, p_grid = p_grid, plim = plim, imp = imp,
-      path = str_glue('{dir_art}/plots/alpha_plim-{plim_id}_imp-{imp}.png')
+      path = str_glue('{dir_art}/plots/q-pca/alpha_plim-{plim_id}_imp-{imp}.png')
+    )
+  }
+}
+
+## create_tail_shift_plot: plots the predicted change in BMD from raising the
+## upper tail of the QF, Q(p) for p >= p0, by delta (MIMS), as a function of p0:
+##   Delta(p0) = delta * int_{p0}^{1} alpha(p) dp,
+## with bootstrap-calibrated joint (max-t) 95% bands. A tail shift keeps the QF
+## monotone, so each p0 corresponds to a valid distribution. w are the
+## quadrature weights on p_grid used to compute the q_k scores.
+## compute_tail_shift_band returns the estimate and joint band (one value per
+## p0 in p_grid), or NULL if no q_k terms are retained.
+compute_tail_shift_band <- function(model, L, w, imp, delta = 1, ...) {
+  ## Row j of L_tail maps alpha to delta * sum_{i >= j} w_i alpha(p_i)
+  L_tail <- delta * apply(w * L, 2, function(x) rev(cumsum(rev(x))))
+  qpca_joint_band(model, L_tail, imp, ...)
+}
+
+create_tail_shift_plot <- function(model, L, w, p_grid, plim, imp, path,
+                                    delta = 1,
+                                    width = 960, height = 960, pointsize = 18,
+                                    ...) {
+
+  band <- compute_tail_shift_band(model, L, w, imp, delta, ...)
+  if (is.null(band)) {
+    warning('No q_k terms retained in model; tail shift effect is identically 0. ',
+            'Skipping plot: ', path)
+    return(invisible(NULL))
+  }
+
+  ## Plot joint bands
+  p_idx <- which(p_grid >= plim[1] & p_grid <= plim[2])
+  png(path, width = width, height = height, pointsize = pointsize)
+  plot(
+    NULL,
+    xlab = 'p0',
+    ylab = str_glue('Change in BMD (when Q(p) raised by {delta} for all p >= p0)'),
+    xlim = c(min(p_grid[p_idx]), max(p_grid[p_idx])),
+    ylim = c(min(band$low[p_idx]), max(band$high[p_idx]))
+  )
+  draw_band(p_grid[p_idx], band$low[p_idx], band$high[p_idx])
+  abline(h = 0, lty = 'dashed', col = 'red')
+  lines(p_grid[p_idx], band$est[p_idx], lwd = 3)
+  dev.off()
+}
+
+## Quadrature weights used by the Q-PCA encoder
+w_qpca <- pipeline_qpca$training$cache$sqrt_w^2
+stopifnot(length(w_qpca) == length(p_grid))
+
+## Generate upper tail shift plots
+delta <- 10  ## MIMS; placeholder
+plims <- list(`1` = c(0, 1), `2` = c(0.8, 1))
+for (plim_id in names(plims)) {
+  plim <- plims[[plim_id]]
+  for (imp in c(0, 1)) {
+    create_tail_shift_plot(
+      model = model, L = L, w = w_qpca, p_grid = p_grid, plim = plim,
+      imp = imp, delta = delta,
+      path = str_glue('{dir_art}/plots/q-pca/tail-shift_plim-{plim_id}_imp-{imp}.png')
     )
   }
 }
@@ -1151,22 +1266,23 @@ for (plim_id in names(plims)) {
 
 ## ----- Interpretation: effect plots (Q-PCA and WAME)
 
-## create_effect_plot: plots predicted response (color) against decoded
-## quantile curves obtained by shifting embedding k_star across its
-## marginal decile range while holding all other embedding dims and
-## covariates at preds_star / the embedding median.
-create_effect_plot <- function(model, embeddings, k_star, plim, preds_star,
-                                path, decode_fn, col_prefix, p_grid,
-                                probs = seq(0.1, 0.9, by = 0.1),
-                                legend_title = 'BD',
-                                y_labs = c(1, 10, 100),
-                                n_cols = 100,
-                                width = 500, height = 400) {
+## compute_effect_curves: decoded quantile curves (rows of Q) obtained by
+## shifting embedding k_star across its marginal decile range (probs) while
+## holding all other embedding dims and covariates at preds_star / the
+## embedding median, along with the predicted response at each curve. ref_idx
+## is the row for the 0.5 decile. If contrast = TRUE, the 0.5 decile curve is
+## subtracted from every curve.
+compute_effect_curves <- function(model, embeddings, k_star, preds_star,
+                                  decode_fn, col_prefix,
+                                  probs = seq(0.1, 0.9, by = 0.1),
+                                  contrast = FALSE) {
+
+  ref_idx <- which(abs(probs - 0.5) < 1e-8)
+  if (length(ref_idx) != 1) stop('probs must contain 0.5')
 
   K <- ncol(embeddings)
   emb_median <- matrix(apply(embeddings, 2, median), nrow = 1)
   deltas <- quantile(embeddings[,k_star], probs) - emb_median[,k_star]
-  p_idx <- which(p_grid >= plim[1] & p_grid <= plim[2])
 
   ## Create df_new
   for (k in 1:K) {
@@ -1178,9 +1294,6 @@ create_effect_plot <- function(model, embeddings, k_star, plim, preds_star,
     row[[k_star_col]] <- preds_star[1,k_star_col] + delta
     row
   }))
-  df_new$age_cat <- as.factor(df_new$age_cat)
-  df_new$sex <- as.factor(df_new$sex)
-  df_new$impact_cat_2 <- as.factor(df_new$impact_cat_2)
 
   ## Predict at df_new
   resp_new <- predict(model, df_new)
@@ -1188,17 +1301,54 @@ create_effect_plot <- function(model, embeddings, k_star, plim, preds_star,
   ## Map embedding shifts to Q-space
   shifts <- as.matrix(df_new[,paste0(col_prefix, '_', 1:K)])
   Q_plot <- decode_fn(shifts)
+  if (contrast) {
+    Q_plot <- sweep(Q_plot, 2, Q_plot[ref_idx,])
+  }
 
-  # Normalize response to [0,1]
-  resp_scaled <- (resp_new - min(resp_new)) /
-    (max(resp_new) - min(resp_new))
+  list(Q = Q_plot, resp = resp_new, ref_idx = ref_idx)
+}
 
-  # Create color ramp
+## create_effect_plot: plots predicted response (color) against the curves
+## from compute_effect_curves. The color ramp is centered (gray) at the
+## response for the 0.5 decile and is symmetric about it. If contrast = TRUE,
+## the 0.5 decile curve is subtracted from every curve (so the 0.5 decile
+## curve becomes a horizontal line at zero).
+create_effect_plot <- function(model, embeddings, k_star, plim, preds_star,
+                                path, decode_fn, col_prefix, p_grid,
+                                probs = seq(0.1, 0.9, by = 0.1),
+                                contrast = FALSE,
+                                legend_title = 'BD',
+                                y_labs = c(1, 10, 100),
+                                n_cols = 100,
+                                width = 500, height = 400) {
+
+  curves <- compute_effect_curves(
+    model = model, embeddings = embeddings, k_star = k_star,
+    preds_star = preds_star, decode_fn = decode_fn, col_prefix = col_prefix,
+    probs = probs, contrast = contrast
+  )
+  Q_plot <- curves$Q
+  resp_new <- curves$resp
+  ref_idx <- curves$ref_idx
+  p_idx <- which(p_grid >= plim[1] & p_grid <= plim[2])
+
+  # Normalize response to [0,1], centered at the 0.5 decile response and
+  # symmetric about it
+  resp_ref <- resp_new[ref_idx]
+  resp_rad <- max(abs(resp_new - resp_ref))
+  resp_scaled <- if (resp_rad > 0) {
+    0.5 + (resp_new - resp_ref) / (2 * resp_rad)
+  } else {
+    rep(0.5, length(resp_new))
+  }
+
+  # Create color ramp (odd length so the gray midpoint is an exact color)
+  if (n_cols %% 2 == 0) n_cols <- n_cols + 1
   col_fun <- colorRampPalette(c("blue", "gray", "red"))
   cols <- col_fun(n_cols)
 
   # Map each curve to a color
-  curve_cols <- cols[ceiling(resp_scaled * (n_cols - 1)) + 1]
+  curve_cols <- cols[round(resp_scaled * (n_cols - 1)) + 1]
 
   # Plot first curve to initialize axes
   png(path, width = width, height = height)
@@ -1209,12 +1359,14 @@ create_effect_plot <- function(model, embeddings, k_star, plim, preds_star,
     col = curve_cols[1],
     lwd = 2,
     xlab = "p",
-    ylab = "Q(p)",
+    ylab = if (contrast) "Q(p) - Q[0.5](p)" else "Q(p)",
     ylim = range(Q_plot[,p_idx]),
-    yaxt = 'n',
+    yaxt = if (contrast) 's' else 'n',
     main = str_glue('{col_prefix}_{k_star}')
   )
-  axis(side = 2, at = y_labs, labels = y_labs)  ## identity: Y-axis transform removed from pipeline
+  if (!contrast) {
+    axis(side = 2, at = y_labs, labels = y_labs)  ## identity: Y-axis transform removed from pipeline
+  }
 
   # Add remaining curves
   for (i in 2:nrow(Q_plot)) {
@@ -1256,16 +1408,9 @@ create_effect_plot <- function(model, embeddings, k_star, plim, preds_star,
   # Draw border box
   rect(x_left, y_bottom, x_right, y_top)
 
-  # Add ticks (3 ticks: min, mid, max)
-  resp_min <- min(resp_new)
-  resp_max <- max(resp_new)
-  resp_mid <- (resp_min + resp_max) / 2
-
-  tick_vals  <- c(resp_min, resp_mid, resp_max)
-  tick_pos   <- y_bottom +
-    (tick_vals - resp_min) /
-    (resp_max - resp_min) *
-    legend_height
+  # Add ticks (3 ticks: ref - rad, ref (0.5 decile), ref + rad)
+  tick_vals  <- resp_ref + c(-1, 0, 1) * resp_rad
+  tick_pos   <- y_bottom + c(0, 0.5, 1) * legend_height
 
   segments(x_right, tick_pos,
            x_right + 0.01 * diff(usr[1:2]), tick_pos)
@@ -1308,41 +1453,503 @@ decode_c <- function(shifts) {
 }
 
 ## Models and base covariates
-model_qpc <- models[['dist_Qpc_imp']]$model_red
-model_c <- models[['dist_C_imp']]$model_red
+model_qpc <- models[['dist_Qpc_imp']]$model_full
+model_c <- models[['dist_C_imp']]$model_full
 preds_star_base <- data.frame(
-  age_cat = c('<=12'),
-  sex = c(1),
+  old = c(0),
+  male = c(0),
   bmiz = c(0.5),
-  impact_cat_2 = c(1)
+  imp = c(1)
 )
 
-## Generate effect plots for k_star = 1:4, plim = c(0,1), c(0.95,1), and
-## impact_cat_2 = 0, 1
-plims <- list(`1` = c(0, 1), `2` = c(0.95, 1))
+## model_embs: indices k (in 1:K) whose embedding direction {col_prefix}_k
+## appears in any term of the model, as a main effect or in an interaction
+model_embs <- function(model, col_prefix, K) {
+  term_vars <- unlist(strsplit(attr(terms(model), 'term.labels'), ':'))
+  which(paste0(col_prefix, '_', 1:K) %in% term_vars)
+}
+
+## Generate effect plots
+k_qpc <- model_embs(model_qpc, 'q', ncol(Qpc))
+k_c <- model_embs(model_c, 'c', ncol(C))
+plims <- list(`1` = c(0, 1), `2` = c(0.9, 1))
 for (plim_id in names(plims)) {
   plim <- plims[[plim_id]]
-  for (k_star in 1:4) {
-    for (imp in c(0, 1)) {
-      preds_star <- preds_star_base
-      preds_star$impact_cat_2 <- imp
-      create_effect_plot(
-        model = model_qpc, embeddings = Qpc, k_star = k_star, plim = plim,
-        preds_star = preds_star, decode_fn = decode_qpc,
-        col_prefix = 'q', p_grid = p_grid,
-        path = str_glue('{dir_art}/plots/q{k_star}_plim-{plim_id}_imp-{imp}.png')
-      )
-      create_effect_plot(
-        model = model_c, embeddings = C, k_star = k_star, plim = plim,
-        preds_star = preds_star, decode_fn = decode_c,
-        col_prefix = 'c', p_grid = p_grid,
-        path = str_glue('{dir_art}/plots/c{k_star}_plim-{plim_id}_imp-{imp}.png')
-      )
+  for (imp in c(0, 1)) {
+    preds_star <- preds_star_base
+    preds_star$imp <- imp
+    for (contrast in c(FALSE, TRUE)) {
+      suffix <- if (contrast) '-contrast' else ''
+      for (k_star in k_qpc) {
+        create_effect_plot(
+          model = model_qpc, embeddings = Qpc, k_star = k_star, plim = plim,
+          preds_star = preds_star, decode_fn = decode_qpc,
+          col_prefix = 'q', p_grid = p_grid, contrast = contrast,
+          path = str_glue('{dir_art}/plots/q-pca/q{k_star}{suffix}_plim-{plim_id}_imp-{imp}.png')
+        )
+      }
+      for (k_star in k_c) {
+        create_effect_plot(
+          model = model_c, embeddings = C, k_star = k_star, plim = plim,
+          preds_star = preds_star, decode_fn = decode_c,
+          col_prefix = 'c', p_grid = p_grid, contrast = contrast,
+          path = str_glue('{dir_art}/plots/wame/c{k_star}{suffix}_plim-{plim_id}_imp-{imp}.png')
+        )
+      }
     }
   }
 }
 
 
+## ========== Poster Plots ========== ##
+
+dir_poster <- file.path(dir_art, 'plots', 'poster')
+dir.create(dir_poster, recursive = TRUE, showWarnings = FALSE)
+
+
+## ----- Single QF (median, mean and MVPA rate as QF summaries)
+
+## Subject: the QF closest (L2 on p_grid) to the pointwise median QF among
+## subjects whose QF reaches the MVPA threshold
+y_thresh <- 19.6
+Q_med <- apply(Q, 2, median)
+reaches <- apply(Q, 1, max) > y_thresh
+i_qf <- which(reaches)[which.min(rowSums(sweep(Q[reaches, , drop = FALSE], 2, Q_med)^2))]
+Q_i <- Q[i_qf, ]
+
+## Q(0.5) and Q_inv(19.6) = inf{p : Q(p) >= 19.6}, linearly interpolated
+Q_half <- approx(p_grid, Q_i, xout = 0.5)$y
+j <- which(Q_i >= y_thresh)[1]
+p_thresh <- if (j == 1) p_grid[1] else
+  approx(Q_i[(j - 1):j], p_grid[(j - 1):j], xout = y_thresh)$y
+
+## Same 400 x 300 layout at res_scale x the pixel density (res = 72 * res_scale)
+res_scale <- 4
+png(file.path(dir_poster, 'qf_single.png'),
+    width = 400 * res_scale, height = 250 * res_scale,
+    res = 72 * res_scale, pointsize = 10)
+## Tight top (no title) and bottom margins; left/right at R defaults
+par(mar = c(3, 4.1, 0.5, 2.1))
+plot(
+  p_grid, Q_i, type = 'l', lwd = 4, col = 'black',
+  xlab = '', ylab = 'Q(p)', main = '',
+  xlim = c(0, 1), ylim = c(0, 1.05 * max(Q_i)),
+  xaxs = 'i', yaxs = 'i', xaxt = 'n', yaxt = 'n'
+)
+title(xlab = 'p', line = 1.9)
+axis(1, at = 0.5, labels = '0.5')
+axis(2, at = y_thresh, labels = as.character(y_thresh), las = 1)
+segments(0.5, 0, 0.5, Q_half, col = 'gray50', lty = 'dotted', lwd = 2)
+segments(0.5, Q_half, 0, Q_half, col = 'gray50', lty = 'dotted', lwd = 2)
+segments(0, y_thresh, p_thresh, y_thresh, col = 'gray50', lty = 'dotted', lwd = 2)
+segments(p_thresh, y_thresh, p_thresh, 0, col = 'gray50', lty = 'dotted', lwd = 2)
+legend(
+  'topleft',
+  legend = expression(
+    median == Q(0.5),
+    mean == integral(Q(p) * dp, 0, 1),
+    'MVPA rate' == 1 - Q^{-1} * (19.6)
+  ),
+  bty = 'n', y.intersp = 1.6
+)
+dev.off()
+
+
+## ----- All QFs
+
+plot_funs(
+  fun_list = asplit(Q, 1),
+  grid_list = rep(list(p_grid), nrow(Q)),
+  xlab = 'p', ylab = 'Q(p)', main = '',
+  colors = rep(rgb(0, 0, 0, alpha = 0.5), nrow(Q)),
+  path = file.path(dir_poster, 'qf_all.png'),
+  fig_width = 400,
+  fig_height = 300
+)
+
+
+## ----- Embedding heatmaps (Q-PCA and WAME)
+
+## plot_emb_heatmap: N x K heatmap of embeddings (row i = subject i, top to
+## bottom), blue (-max|emb|) -> white (0) -> red (+max|emb|)
+plot_emb_heatmap <- function(emb, path, n_cols = 201,
+                             width = 200, height = 400, pointsize = 10) {
+  N_emb <- nrow(emb)
+  K_emb <- ncol(emb)
+  lim <- max(abs(emb))
+  cols <- colorRampPalette(c('blue', 'white', 'red'))(n_cols)
+  png(path, width = width, height = height, pointsize = pointsize)
+  ## No tick labels, so keep margins tight and axis titles next to the image
+  par(mar = c(1.6, 1.6, 0.5, 0.5), mgp = c(0.4, 0, 0))
+  image(
+    x = 1:K_emb, y = 1:N_emb, z = t(emb[N_emb:1, , drop = FALSE]),
+    zlim = c(-lim, lim), col = cols,
+    xlab = 'k', ylab = 'Subject', xaxt = 'n', yaxt = 'n'
+  )
+  dev.off()
+}
+
+plot_emb_heatmap(Qpc, file.path(dir_poster, 'heatmap_qpc.png'))
+plot_emb_heatmap(C, file.path(dir_poster, 'heatmap_c.png'))
+
+
+## ----- QFs -> heatmaps composite
+
+## Stitches the existing qf_all (top) and heatmap (bottom left: C, bottom
+## right: Q-PC) PNGs at their native pixel sizes, with labeled arrows
+img_qf <- png::readPNG(file.path(dir_poster, 'qf_all.png'))
+img_c <- png::readPNG(file.path(dir_poster, 'heatmap_c.png'))
+img_q <- png::readPNG(file.path(dir_poster, 'heatmap_qpc.png'))
+img_w <- function(img) dim(img)[2]
+img_h <- function(img) dim(img)[1]
+## Rows (1 = top) of an image that contain any non-white pixel, used to aim
+## the arrows at drawn content rather than the PNG's white margins
+content_rows <- function(img) {
+  which(apply(img[, , 1:3, drop = FALSE] < 0.99, 1, any))
+}
+
+gap_x <- 100     ## horizontal gap between heatmaps (px)
+arrow_h <- 200   ## vertical space for arrows (px)
+row_w <- img_w(img_c) + gap_x + img_w(img_q)
+hm_h <- max(img_h(img_c), img_h(img_q))
+W <- max(row_w, img_w(img_qf))
+H <- img_h(img_qf) + arrow_h + hm_h
+
+## Positions (pixel coordinates, origin bottom left); heatmap tops aligned
+x_qf <- (W - img_w(img_qf)) / 2
+x_c <- (W - row_w) / 2
+x_q <- x_c + img_w(img_c) + gap_x
+y_top_hm <- hm_h
+y_bot_qf <- H - img_h(img_qf)
+
+png(file.path(dir_poster, 'qf_to_heatmaps.png'), width = W, height = H, pointsize = 20)
+par(mar = c(0, 0, 0, 0))
+plot.new()
+plot.window(xlim = c(0, W), ylim = c(0, H), xaxs = 'i', yaxs = 'i')
+rasterImage(img_qf, x_qf, y_bot_qf, x_qf + img_w(img_qf), H, interpolate = FALSE)
+rasterImage(img_c, x_c, y_top_hm - img_h(img_c), x_c + img_w(img_c), y_top_hm,
+            interpolate = FALSE)
+rasterImage(img_q, x_q, y_top_hm - img_h(img_q), x_q + img_w(img_q), y_top_hm,
+            interpolate = FALSE)
+
+x_from <- W / 2 + c(-1, 1) * 0.15 * img_w(img_qf)
+x_to <- c(x_c + img_w(img_c) / 2, x_q + img_w(img_q) / 2)
+y_from <- H - max(content_rows(img_qf)) - 15
+y_to <- y_top_hm - min(c(min(content_rows(img_c)), min(content_rows(img_q)))) + 15
+arrows(x_from, y_from, x_to, y_to, lwd = 3, length = 0.2)
+text((x_from + x_to) / 2, (y_from + y_to) / 2, labels = c('WAME', 'Q-PCA'),
+     pos = c(2, 4), offset = 0.8, font = 1.5)
+dev.off()
+
+
+## ----- Out-of-sample error table (LaTeX)
+
+## Squares show the variables in each full model; the error is that of the
+## reduced model when step-wise pruning dropped something, else of the full
+## model (the two coincide).
+table_models <- c(
+  'ref_common_preds', 'ref_common_preds_imp',
+  'scale_imp_0', 'scale_imp_1', 'scale_imp_8',
+  'dist_C_imp', 'dist_Qpc_imp'
+)
+
+## Columns: header -> model variables; a cell is filled if any of the
+## variables appears in any term of the full model (main effect or interaction)
+table_cols <- list(
+  'x' = preds_common,
+  'imp' = 'imp',
+  'a\\_mean' = 'a_mean',
+  'a\\_mvpa' = 'mvpa_rate',
+  'a\\_99' = 'a_99',
+  'c' = paste0('c_', 1:K),
+  'q' = paste0('q_', 1:K)
+)
+
+table_rows <- sapply(table_models, function(nm) {
+  m <- models[[nm]]
+  reduced <- !is.null(m$model_red)
+  vars <- unlist(strsplit(attr(terms(m$model_full), 'term.labels'), ':'))
+  has <- sapply(table_cols, function(v) any(v %in% vars))
+  res <- results[results$preds == m$f_str_abbr & results$reduced == reduced, ]
+  stopifnot(nrow(res) == 1)
+  cells <- c(ifelse(has, '$\\blacksquare$', '$\\square$'),
+             sprintf('%.3f', res$oos_err_mean))
+  paste0(paste(cells, collapse = ' & '), ' \\\\')
+})
+
+## Requires \usepackage{booktabs}, \usepackage{amssymb} and \usepackage{array}.
+## All columns share a fixed, centered width so they are evenly spaced.
+col_width <- '3.5cm'
+col_spec <- paste0('>{\\centering\\arraybackslash}p{', col_width, '}')
+table_tex <- c(
+  paste0('\\begin{tabular}{',
+         paste(rep(col_spec, length(table_cols) + 1), collapse = ''), '}'),
+  '\\toprule',
+  paste0(paste(c(names(table_cols), 'Error'), collapse = ' & '), ' \\\\'),
+  '\\midrule',
+  table_rows,
+  '\\bottomrule',
+  '\\end{tabular}'
+)
+writeLines(table_tex, file.path(dir_poster, 'oos_table.tex'))
+cat(table_tex, sep = '\n')
+
+
+## ----- Coefficient intervals (Q-PCA and WAME)
+
+## Orientation: FALSE = horizontal intervals stacked vertically in each plot,
+## plots stitched side by side; TRUE = vertical intervals laid out left to
+## right in each plot, plots stitched top to bottom
+coef_horizontal <- TRUE
+
+## plot_coef_intervals: (unadjusted) 95% t confidence intervals and p-values
+## for all non-intercept coefficients of an lm fit, drawn in the style of the
+## Roy-Bose interval plots (binary_plot_intervals). plot_width (and, when
+## horizontal, plot_height) give the size (px) of the plotting area itself;
+## the PNG size adds whatever the margins need (coefficient labels, p-value
+## legend), so plots with different labels/legends share the same plotting
+## area. When not horizontal, the PNG height is fixed at height.
+plot_coef_intervals <- function(model, path, main, show_legend = TRUE,
+                                horizontal = FALSE,
+                                plot_width = if (horizontal) 450 else 150,
+                                plot_height = 200,
+                                height = 600, pointsize = 14) {
+  ci <- confint(model, level = 0.95)
+  p_vals <- summary(model)$coefficients[, 'Pr(>|t|)']
+  keep <- rownames(ci) != '(Intercept)'
+  ci_df <- data.frame(
+    estimate = coef(model)[keep],
+    lower = ci[keep, 1],
+    upper = ci[keep, 2],
+    p_adj = p_vals[rownames(ci)[keep]]
+  )
+  ## Measure margins (in lines) on a scratch PNG device with the same font
+  ## metrics: the label margin (left, or bottom when horizontal) just wide
+  ## enough for the longest coefficient label, and room on the right for the
+  ## p-value legend (if shown; when horizontal it sits inside the plot box)
+  tmp <- tempfile(fileext = '.png')
+  png(tmp, width = 100, height = height, pointsize = pointsize)
+  csi <- par('csi')
+  mar_lab <- max(strwidth(rownames(ci_df), units = 'inches')) / csi + 1.5
+  mar_right <- if (show_legend && !horizontal) max(1, binary_legend_margin_in() / csi) else 1
+  dev.off()
+  unlink(tmp)
+
+  ## PNG size = margins + plotting area (png() defaults to 72 px per inch)
+  if (horizontal) {
+    mar <- c(mar_lab, 4.5, 3, mar_right)
+    height <- round(plot_height + (mar[1] + mar[3]) * csi * 72)
+  } else {
+    mar <- c(4.5, mar_lab, 3, mar_right)
+  }
+  width <- round(plot_width + (mar[2] + mar[4]) * csi * 72)
+  png(path, width = width, height = height, pointsize = pointsize)
+  binary_plot_intervals(
+    ci_df,
+    main = main,
+    labels = rownames(ci_df),
+    xlab = if (horizontal) '' else 'Estimate (95% CI)',
+    ylab = if (horizontal) 'Estimate (95% CI)' else '',
+    p_lab = 'p',
+    mar = mar,
+    legend_in_margin = TRUE,
+    show_legend = show_legend,
+    horizontal = horizontal
+  )
+  dev.off()
+}
+
+## The p-value legend goes on one plot only: Q-PCA (right) when side by side,
+## WAME (top) when stacked
+plot_coef_intervals(
+  models[['dist_Qpc_imp']]$model_full,
+  path = file.path(dir_poster, 'coefs_qpca.png'),
+  main = 'Q-PCA Model',
+  show_legend = TRUE,
+  horizontal = coef_horizontal
+)
+plot_coef_intervals(
+  models[['dist_C_imp']]$model_full,
+  path = file.path(dir_poster, 'coefs_wame.png'),
+  main = 'WAME Model',
+  show_legend = TRUE,
+  horizontal = coef_horizontal
+)
+
+## Stitch at native pixel sizes: side by side (WAME left, Q-PCA right, so the
+## Q-PCA legend sits at the right edge; tops aligned) or, when horizontal,
+## stacked (WAME top, Q-PCA bottom; left edges aligned)
+img_coef_q <- png::readPNG(file.path(dir_poster, 'coefs_qpca.png'))
+img_coef_c <- png::readPNG(file.path(dir_poster, 'coefs_wame.png'))
+gap_coef <- 20   ## gap between plots (px)
+w_c <- dim(img_coef_c)[2]; h_c <- dim(img_coef_c)[1]
+w_q <- dim(img_coef_q)[2]; h_q <- dim(img_coef_q)[1]
+if (coef_horizontal) {
+  W_coef <- max(w_c, w_q)
+  H_coef <- h_c + gap_coef + h_q
+  pos_c <- c(0, H_coef - h_c)   ## (left, bottom)
+  pos_q <- c(0, 0)
+} else {
+  W_coef <- w_c + gap_coef + w_q
+  H_coef <- max(h_c, h_q)
+  pos_c <- c(0, H_coef - h_c)
+  pos_q <- c(w_c + gap_coef, H_coef - h_q)
+}
+
+png(file.path(dir_poster, 'coefs_combined.png'), width = W_coef, height = H_coef)
+par(mar = c(0, 0, 0, 0))
+plot.new()
+plot.window(xlim = c(0, W_coef), ylim = c(0, H_coef), xaxs = 'i', yaxs = 'i')
+rasterImage(img_coef_c, pos_c[1], pos_c[2], pos_c[1] + w_c, pos_c[2] + h_c,
+            interpolate = FALSE)
+rasterImage(img_coef_q, pos_q[1], pos_q[2], pos_q[1] + w_q, pos_q[2] + h_q,
+            interpolate = FALSE)
+dev.off()
+
+
+## ----- Effect contrasts (WAME and Q-PCA, by impact)
+
+## plot_effect_contrasts: 2 x 2 effect contrast panels (rows: the two
+## components in k_stars; columns: low / high impact) plus a right-margin
+## panel with the shared color ramp beside a boxplot of observed BMD, on a
+## common BMD axis. comp_label prefixes the panel titles (e.g. 'C' -> 'C1').
+plot_effect_contrasts <- function(model, embeddings, decode_fn, col_prefix,
+                                  k_stars, comp_label, path,
+                                  plim = c(0, 1), n_cols = 101, gamma = 1.5) {
+
+  ## Panels in layout order (top left, top right, bottom left, bottom right)
+  panels <- list()
+  for (k_star in k_stars) {
+    for (imp in c(0, 1)) {
+      imp_lab <- if (imp == 0) 'low impact' else 'high impact'
+      panels[[length(panels) + 1]] <- list(
+        k_star = k_star, imp = imp,
+        main = str_glue('{comp_label}{k_star}, {imp_lab}')
+      )
+    }
+  }
+  p_idx <- which(p_grid >= plim[1] & p_grid <= plim[2])
+  for (i in seq_along(panels)) {
+    preds_star <- preds_star_base
+    preds_star$imp <- panels[[i]]$imp
+    panels[[i]]$curves <- compute_effect_curves(
+      model = model, embeddings = embeddings, k_star = panels[[i]]$k_star,
+      preds_star = preds_star, decode_fn = decode_fn, col_prefix = col_prefix,
+      contrast = TRUE
+    )
+  }
+
+  ## Shared color scale: blue (min) -> gray (midpoint) -> red (max) over the
+  ## predicted BMD of all curves in all panels; shared y-limits across panels.
+  ## gamma > 1 widens the gray band (symmetric about the midpoint); 1 = linear
+  resp_all <- unlist(lapply(panels, function(pan) pan$curves$resp))
+  resp_rng <- range(resp_all)
+  cols <- colorRampPalette(c('blue', 'gray', 'red'))(n_cols)
+  resp_to_col <- function(resp) {
+    scaled <- if (diff(resp_rng) > 0) (resp - resp_rng[1]) / diff(resp_rng) else 0.5
+    u <- 2 * scaled - 1                             ## -1 (min) .. 0 (mid) .. 1 (max)
+    scaled <- 0.5 + 0.5 * sign(u) * abs(u)^gamma
+    cols[round(scaled * (n_cols - 1)) + 1]
+  }
+  ylim_panels <- range(unlist(lapply(panels, function(pan) pan$curves$Q[, p_idx])))
+
+  png(path, width = 900, height = 600, pointsize = 20)
+  layout(matrix(c(1, 2, 5, 3, 4, 5), nrow = 2, byrow = TRUE),
+         widths = c(1, 1, 0.5))
+
+  par(mar = c(4.5, 4.5, 3, 1))
+  for (pan in panels) {
+    Q_pan <- pan$curves$Q
+    curve_cols <- resp_to_col(pan$curves$resp)
+    plot(
+      NULL,
+      xlim = range(p_grid[p_idx]), ylim = ylim_panels,
+      xlab = 'p', ylab = 'Q(p) - Q[0.5](p)', main = pan$main
+    )
+    for (r in seq_len(nrow(Q_pan))) {
+      lines(p_grid[p_idx], Q_pan[r, p_idx], col = curve_cols[r], lwd = 3)
+    }
+  }
+
+  ## Right margin: shared color ramp (left) beside boxplot of observed BMD
+  ## (right), on a common BMD axis
+  bmd <- df[[response]]
+  par(mar = c(4.5, 4.5, 3, 1))
+  plot(
+    NULL,
+    xlim = c(0.3, 2.7), ylim = range(c(bmd, resp_rng)),
+    xaxt = 'n', xlab = '', ylab = 'Total body BMD (Z-score)', main = ''
+  )
+  y_seq <- seq(resp_rng[1], resp_rng[2], length.out = n_cols + 1)
+  y_mid <- (y_seq[-1] + y_seq[-(n_cols + 1)]) / 2
+  rect(0.6, y_seq[-(n_cols + 1)], 1.2, y_seq[-1], col = resp_to_col(y_mid), border = NA)
+  rect(0.6, resp_rng[1], 1.2, resp_rng[2])
+  boxplot(bmd, at = 2, add = TRUE, axes = FALSE, boxwex = 0.9)
+  ## mtext (unlike axis) never drops labels in a narrow panel
+  mtext(c('Pred', 'Obs'), side = 1, at = c(0.9, 2), line = 1, cex = 0.7)
+  dev.off()
+}
+
+k_stars_c <- c(1, 3)
+plot_effect_contrasts(
+  model = model_c, embeddings = C, decode_fn = decode_c, col_prefix = 'c',
+  k_stars = k_stars_c, comp_label = 'C',
+  path = file.path(dir_poster, str_glue('effect_contrasts_c{k_stars_c[1]}_c{k_stars_c[2]}.png'))
+)
+
+k_stars_q <- c(1, 3)
+plot_effect_contrasts(
+  model = model_qpc, embeddings = Qpc, decode_fn = decode_qpc, col_prefix = 'q',
+  k_stars = k_stars_q, comp_label = 'Q',
+  path = file.path(dir_poster, str_glue('effect_contrasts_q{k_stars_q[1]}_q{k_stars_q[2]}.png'))
+)
+
+
+## ----- Tail shifts (Q-PCA, by impact)
+
+delta_poster <- 10         ## MIMS
+plim_tail <- c(0, 1)       ## p0 range shown (e.g. c(0.8, 1) for the right tail)
+p_idx_tail <- which(p_grid >= plim_tail[1] & p_grid <= plim_tail[2])
+tail_panels <- list(
+  list(imp = 0, main = 'Low impact'),
+  list(imp = 1, main = 'High impact')
+)
+for (i in seq_along(tail_panels)) {
+  tail_panels[[i]]$band <- compute_tail_shift_band(
+    model = models[['dist_Qpc_imp']]$model_full, L = L, w = w_qpca,
+    imp = tail_panels[[i]]$imp, delta = delta_poster
+  )
+}
+stopifnot(!any(sapply(tail_panels, function(pan) is.null(pan$band))))
+
+## Shared y-limits across panels (over the plotted p0 range)
+ylim_tail <- range(unlist(lapply(tail_panels, function(pan) {
+  c(pan$band$low[p_idx_tail], pan$band$high[p_idx_tail])
+})))
+
+## Same canvas size, pointsize and panel margins as effect_contrasts_c1_c3.png
+png(file.path(dir_poster, 'tail_shift.png'), width = 600, height = 300, pointsize = 12)
+par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+for (pan in tail_panels) {
+  plot(
+    NULL,
+    xlim = range(p_grid[p_idx_tail]), ylim = ylim_tail,
+    xlab = expression(p[0]),
+    ylab = str_glue('Change in BMD (Q + {delta_poster} above p0)'),
+    main = pan$main
+  )
+  draw_band(p_grid[p_idx_tail], pan$band$low[p_idx_tail], pan$band$high[p_idx_tail])
+  abline(h = 0, lty = 'dashed', col = 'red')
+  lines(p_grid[p_idx_tail], pan$band$est[p_idx_tail], lwd = 3)
+}
+dev.off()
+
+
+##########################################################################
+##########################################################################
+######################### OLD CODE #######################################
+##########################################################################
+##########################################################################
 
 
 
@@ -1363,10 +1970,10 @@ p_idx       <- 1:length(p_grid)
 
 ## Fixed covariates (same hardcoded values as before)
 covariates_star <- data.frame(
-  age_cat       = factor('<=12'),
-  sex           = factor(1),
+  old           = 0,
+  male          = 0,
   bmiz          = 0.5,
-  impact_cat_2  = factor(1)
+  imp           = 1
 )
 
 ## Build df_new: one row per c_k* via Nadaraya-Watson kernel-weighted
@@ -1528,10 +2135,10 @@ for (k_star in k_stars) {
 
   ## Fixed covariates (same hardcoded values as before)
   covariates_star <- data.frame(
-    age_cat       = factor('<=12'),
-    sex           = factor(1),
+    old           = 0,
+    male          = 0,
     bmiz          = 0.5,
-    impact_cat_2  = factor(1)
+    imp           = 1
   )
 
   ## Build df_new: one row per c_k* via Nadaraya-Watson kernel-weighted
@@ -2063,4 +2670,4 @@ summary(m2)
 ##   radius13_bmd_age_z_all          a_90
 ##   udradius_bmd_age_z_all          a_90
 m3 <- lm('radius13_bmd_age_z_all ~ sleep_dur + a_90 + bmiz', data = df)
-summary(m3)
+  summary(m3)

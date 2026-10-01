@@ -87,9 +87,55 @@ binary_intervals <- function(model, alpha = 0.05) {
   )
 }
 
+## Margin p-value legend geometry (inches): gap from plot box, ramp width, gap
+## from ramp to tick labels
+binary_lgd_gap_in <- 0.12
+binary_lgd_w_in   <- 0.15
+binary_lgd_lab_in <- 0.05
+
+## Width (inches) of right margin needed for the margin p-value legend on the
+## current device (depends on its font metrics, so call with the device open)
+binary_legend_margin_in <- function() {
+  lab_w_in <- max(strwidth(c("0", "0.001", "0.05", "1"), units = "inches",
+                           cex = 0.75))
+  binary_lgd_gap_in + binary_lgd_w_in + binary_lgd_lab_in + lab_w_in + 0.1
+}
+
+## In-box top p-value legend geometry (inches below the top of the plot box)
+## for the horizontal layout: a horizontal ramp with tick labels beneath it.
+## band is the height kept clear of intervals. Call with the device open.
+binary_legend_top_geom <- function() {
+  lab_h    <- strheight("0.001", units = "inches", cex = 0.75)
+  ramp_top <- 0.08
+  ramp_bot <- ramp_top + 0.13
+  lab_top  <- ramp_bot + 0.04
+  list(ramp_top = ramp_top, ramp_bot = ramp_bot, lab_top = lab_top,
+       band = lab_top + lab_h + 0.1)
+}
+
 ## Forest plot of Roy-Bose simultaneous confidence intervals.
-## rb_df is the data frame returned by binary_intervals().
-binary_plot_intervals <- function(rb_df, xlim = NULL, main = "") {
+## rb_df is the data frame returned by binary_intervals() (or any data frame
+## with estimate, lower, upper, p_adj columns). labels, xlab, ylab, p_lab and
+## mar override the per-row axis labels, axis titles, p-value legend title and
+## plot margins. legend_in_margin = TRUE draws the p-value legend in the right
+## margin (widened as needed) so it never covers an interval. show_legend =
+## FALSE omits the p-value legend (the per-row p-value boxes are still drawn).
+## horizontal = TRUE lays the coefficients out left to right with vertical
+## intervals (estimates on the y-axis, rotated labels on the x-axis, p-value
+## boxes along the bottom); xlim then gives the range of the estimate (y) axis,
+## and xlab / ylab remain the literal x / y axis titles. In the horizontal
+## layout, legend_in_margin instead puts the legend as a horizontal ramp at
+## the top middle of the plot box, extending the estimate axis upward so the
+## legend sits in a band clear of all intervals.
+binary_plot_intervals <- function(rb_df, xlim = NULL, main = "",
+                                  labels = seq_len(nrow(rb_df)),
+                                  xlab = expression(hat(beta)[k]),
+                                  ylab = "k",
+                                  p_lab = expression(p[adj]),
+                                  mar = c(4.5, 4, 3, 2),
+                                  legend_in_margin = FALSE,
+                                  show_legend = TRUE,
+                                  horizontal = FALSE) {
   K       <- nrow(rb_df)
   bright_red  <- "#FF0000"
   medium_red  <- "#C54E57"
@@ -119,44 +165,128 @@ binary_plot_intervals <- function(rb_df, xlim = NULL, main = "") {
     xlim <- c(rng[1] - pad, rng[2] + pad)
   }
 
-  y_pos <- K:1
-  old_par <- par(mar = c(4.5, 4, 3, 2))
+  ## Right-margin legend: widen the right margin to fit ramp + labels.
+  ## Horizontal layout: the legend goes in a band at the top of the box instead.
+  top_legend <- show_legend && legend_in_margin && horizontal
+  if (show_legend && legend_in_margin && !horizontal) {
+    mar[4] <- max(mar[4], binary_legend_margin_in() / par("csi"))
+  }
+
+  ## Coefficient positions: top to bottom (vertical) or left to right
+  ## (horizontal). Drawing below is written in (value, position) coordinates
+  ## and mapped to (x, y) or (y, x) by orientation.
+  pos <- if (horizontal) seq_len(K) else K:1
+  seg_vp <- function(v0, p0, v1, p1, ...) {
+    if (horizontal) segments(p0, v0, p1, v1, ...) else segments(v0, p0, v1, p1, ...)
+  }
+  rect_vp <- function(v0, p0, v1, p1, ...) {
+    if (horizontal) rect(p0, v0, p1, v1, ...) else rect(v0, p0, v1, p1, ...)
+  }
+
+  old_par <- par(mar = mar)
   on.exit(par(old_par), add = TRUE)
 
-  plot(NULL, xlim = xlim, ylim = c(0.5, K + 0.5),
-       xlab = expression(hat(beta)[k]),
-       ylab = "k",
-       yaxt = "n", main = main)
-  axis(2, at = y_pos, labels = seq_len(K), las = 1)
-  abline(v = 0, col = "gray80", lwd = 1)
+  ## Top legend band: raise the top of the estimate axis so the band (a
+  ## fraction f of the plot height) sits above the highest interval. With the
+  ## default 4% axis padding, usr = lim +/- 0.04 * diff(lim).
+  if (top_legend) {
+    top_geom <- binary_legend_top_geom()
+    f <- top_geom$band / par("pin")[2]
+    if (f >= 0.9) stop("Plot too short for the top p-value legend")
+    L <- xlim[1]
+    m <- max(rb_df$upper, rb_df$estimate)
+    U_need <- (m + 0.04 * L - 1.08 * f * L) / (1.04 - 1.08 * f)
+    xlim[2] <- max(xlim[2], U_need)
+  }
+
+  if (horizontal) {
+    plot(NULL, xlim = c(0.5, K + 0.5), ylim = xlim,
+         xlab = xlab, ylab = ylab, xaxt = "n", main = main)
+    axis(1, at = pos, labels = labels, las = 2)
+    abline(h = 0, col = "gray80", lwd = 1)
+  } else {
+    plot(NULL, xlim = xlim, ylim = c(0.5, K + 0.5),
+         xlab = xlab, ylab = ylab, yaxt = "n", main = main)
+    axis(2, at = pos, labels = labels, las = 1)
+    abline(v = 0, col = "gray80", lwd = 1)
+  }
 
   cap_h <- 0.18
   for (i in seq_len(K)) {
-    yi <- y_pos[i]
-    segments(rb_df$lower[i], yi, rb_df$upper[i], yi, col = "black", lwd = 1.5)
-    segments(rb_df$lower[i], yi - cap_h, rb_df$lower[i], yi + cap_h,
-             col = "black", lwd = 1.5)
-    segments(rb_df$upper[i], yi - cap_h, rb_df$upper[i], yi + cap_h,
-             col = "black", lwd = 1.5)
-    points(rb_df$estimate[i], yi, pch = 19, cex = 1.0)
+    pi_ <- pos[i]
+    seg_vp(rb_df$lower[i], pi_, rb_df$upper[i], pi_, col = "black", lwd = 1.5)
+    seg_vp(rb_df$lower[i], pi_ - cap_h, rb_df$lower[i], pi_ + cap_h,
+           col = "black", lwd = 1.5)
+    seg_vp(rb_df$upper[i], pi_ - cap_h, rb_df$upper[i], pi_ + cap_h,
+           col = "black", lwd = 1.5)
+    if (horizontal) {
+      points(pi_, rb_df$estimate[i], pch = 19, cex = 1.0)
+    } else {
+      points(rb_df$estimate[i], pi_, pch = 19, cex = 1.0)
+    }
   }
 
   usr <- par("usr")
   xr  <- diff(usr[1:2])
   yr  <- diff(usr[3:4])
-  box_w <- 0.022 * xr
+  ## p-value boxes along the low end of the value axis (left or bottom edge)
+  vr <- if (horizontal) yr else xr
+  v_min <- if (horizontal) usr[3] else usr[1]
+  box_w <- 0.022 * vr
   box_h <- 0.35
-  box_x0 <- usr[1] + 0.006 * xr
-  box_x1 <- box_x0 + box_w
+  box_v0 <- v_min + 0.006 * vr
+  box_v1 <- box_v0 + box_w
   cols_p <- p_to_color(rb_df$p_adj)
   for (i in seq_len(K)) {
-    yi <- y_pos[i]
-    rect(box_x0, yi - box_h / 2, box_x1, yi + box_h / 2,
-         col = cols_p[i], border = "black", lwd = 0.5)
+    pi_ <- pos[i]
+    rect_vp(box_v0, pi_ - box_h / 2, box_v1, pi_ + box_h / 2,
+            col = cols_p[i], border = "black", lwd = 0.5)
   }
 
-  lx0 <- usr[1] + 0.89 * xr
-  lx1 <- usr[1] + 0.93 * xr
+  if (!show_legend) return(invisible(NULL))
+
+  ## Horizontal ramp at the top middle of the plot box (in the band kept clear
+  ## above the intervals): p = 0 (red) on the left to p = 1 (blue) on the
+  ## right, tick labels below, p_lab to the left
+  if (top_legend) {
+    x_per_in <- xr / par("pin")[1]
+    y_per_in <- yr / par("pin")[2]
+    ramp_w <- min(2, 0.5 * par("pin")[1]) * x_per_in
+    lx0 <- mean(usr[1:2]) - ramp_w / 2
+    lx1 <- lx0 + ramp_w
+    ry0 <- usr[4] - top_geom$ramp_bot * y_per_in
+    ry1 <- usr[4] - top_geom$ramp_top * y_per_in
+    third <- (lx1 - lx0) / 3
+    draw_hseg <- function(xl, xr_, col_lo, col_hi, n = 60) {
+      ramp <- colorRamp(c(col_lo, col_hi))
+      xs <- seq(xl, xr_, length.out = n + 1)
+      for (s in seq_len(n)) {
+        v <- ramp((s - 0.5) / n)
+        rect(xs[s], ry0, xs[s + 1], ry1,
+             col = rgb(v[1], v[2], v[3], maxColorValue = 255), border = NA)
+      }
+    }
+    draw_hseg(lx0,             lx0 + third,     bright_red, medium_red)
+    draw_hseg(lx0 + third,     lx0 + 2 * third, medium_red, dark_red)
+    draw_hseg(lx0 + 2 * third, lx1,             dark_blue,  bright_blue)
+    rect(lx0, ry0, lx1, ry1, col = NA, border = "black")
+    lab_y <- usr[4] - top_geom$lab_top * y_per_in
+    text(lx0 + (0:3) * third, lab_y, labels = c("0", "0.001", "0.05", "1"),
+         adj = c(0.5, 1), cex = 0.75)
+    text(lx0 - 0.08 * x_per_in, (ry0 + ry1) / 2, labels = p_lab, adj = c(1, 0.5))
+    return(invisible(NULL))
+  }
+
+  if (legend_in_margin) {
+    x_per_in <- xr / par("pin")[1]
+    lx0 <- usr[2] + binary_lgd_gap_in * x_per_in
+    lx1 <- lx0 + binary_lgd_w_in * x_per_in
+    old_xpd <- par(xpd = NA)
+    on.exit(par(old_xpd), add = TRUE)
+  } else {
+    lx0 <- usr[1] + 0.89 * xr
+    lx1 <- usr[1] + 0.93 * xr
+  }
   ly0 <- usr[3] + 0.75 * yr
   ly1 <- usr[3] + 0.92 * yr
   third <- (ly1 - ly0) / 3
@@ -175,13 +305,13 @@ binary_plot_intervals <- function(rb_df, xlim = NULL, main = "") {
   draw_seg(ly0 + 2 * third, ly1,             dark_blue,   bright_blue)
   rect(lx0, ly0, lx1, ly1, col = NA, border = "black")
 
-  lab_x <- lx1 + 0.008 * xr
+  lab_x <- if (legend_in_margin) lx1 + binary_lgd_lab_in * x_per_in else lx1 + 0.008 * xr
   text(lab_x, ly0,             labels = "0",     adj = c(0, 0.5), cex = 0.75)
   text(lab_x, ly0 + third,     labels = "0.001", adj = c(0, 0.5), cex = 0.75)
   text(lab_x, ly0 + 2 * third, labels = "0.05",  adj = c(0, 0.5), cex = 0.75)
   text(lab_x, ly1,             labels = "1",     adj = c(0, 0.5), cex = 0.75)
   text((lx0 + lx1) / 2, ly1 + 0.025 * yr,
-       labels = expression(p[adj]), adj = c(0.5, 0))
+       labels = p_lab, adj = c(0.5, 0))
 
   invisible(NULL)
 }

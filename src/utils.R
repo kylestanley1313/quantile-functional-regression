@@ -1209,11 +1209,13 @@ plot_funs <- function(
     legend_loc = 'topleft',
     main = '',
     path = NULL,
+    fig_width = 800,
+    fig_height = 600,
     bands = NULL
 ) {
   ## bands: optional list of list(x, lo, hi), shaded beneath the curves.
   if (!is.null(path)) {
-    png(path, width = 800, height = 600)
+    png(path, width = fig_width, height = fig_height)
   }
   
   n_funs <- length(fun_list)
