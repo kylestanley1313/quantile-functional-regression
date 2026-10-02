@@ -1264,6 +1264,171 @@ for (plim_id in names(plims)) {
 }
 
 
+## ----- Interpretation: activity substitution curves (Q-PCA)
+
+## Activity substitution: replace a reference child's least active delta
+## fraction of time with activity of intensity Q(p0), for p0 in [delta, 1].
+## The substituted QF is
+##   Q~(p) = Q(p + delta)  for p in [0, p0 - delta]
+##           Q(p0)         for p in (p0 - delta, p0]
+##           Q(p)          for p in (p0, 1],
+## and the predicted change in BMD is
+##   Delta(p0, delta) = int_0^1 alpha(p) {Q~(p) - Q(p)} dp
+##                    = int_0^{p0 - delta} alpha(p) {Q(p + delta) - Q(p)} dp
+##                      + int_{p0 - delta}^{p0} alpha(p) {Q(p0) - Q(p)} dp.
+## For small delta, Delta ~ delta * int_{Q(0)}^{Q(p0)} alpha(F(y)) dy: alpha
+## accumulated along the intensity scale from sedentary up to Q(p0).
+## The reference Q for each impact group is the pointwise mean of the group's
+## QFs (the QF of their Wasserstein barycenter). Delta is linear in the q_k
+## coefficients, so joint bands come from qpca_joint_band (conditional on the
+## Q-PCA basis and the reference QF). Integrals are computed on an augmented
+## p-grid (p_grid plus evenly spaced points), onto which the Q-PCA basis E is
+## linearly interpolated, so that small delta spans many grid points.
+
+## NOTE: (WAME Analogue)
+## The WAME model is also linear in its embeddings c, even though the WAME
+## encoder c(.) is nonlinear. For a fixed fitted pipeline,
+##   Delta_WAME(p0) = sum_k beta_k^(g) {c_k(Q~_{p0}) - c_k(Q_ref)},
+## where beta^(g) are the c_k coefficients at impact level g (main effects plus
+## c_k:imp interactions when g = 1). Encoding each Q~_{p0} once and stacking
+## the differences c(Q~_{p0}) - c(Q_ref) as rows gives a matrix that plays the
+## role of L_sub below, so the same vcov-based max-t bands apply (conditional
+## on the fitted encoder). To also reflect encoder (and reference) estimation
+## uncertainty, use a nonparametric bootstrap: resample children with
+## replacement B times (B ~ 200-500); in each replicate refit the WAME stage
+## (the flow stage is not needed), re-encode, refit the lm, recompute the
+## reference QFs and Delta*(p0); then form pointwise percentile bands or
+## max-t bands from the 95th percentile of max_{p0} |Delta* - Delta| / sd*(p0).
+## Delta is a difference of predictions, so it is invariant to rotations or
+## sign flips of the embeddings across refits and no alignment is needed.
+
+## Augmented grid, quadrature weights and Q-PCA basis on it
+J_aug <- 500
+p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(J_aug - length(p_grid)))))
+w_aug <- get_quadrature_weights(p_grid_aug)
+E_aug <- apply(qpca_state$E, 2, function(e) {
+  approx(p_grid, e, xout = p_grid_aug, rule = 2)$y
+})
+
+## Reference QFs: pointwise mean, on the augmented grid, of the QFs of the
+## children in each impact group (children in df, matched to y_list by sub_id)
+Qi_aug <- do.call(rbind, encode_y_to_Qi_aug(pipeline_qpca, y_list, p_grid_aug))
+Q_ref_sub <- lapply(c(`0` = 0, `1` = 1), function(g) {
+  idx <- match(df$sub_id[df$imp == g], names(y_list))
+  stopifnot(!anyNA(idx))
+  colMeans(Qi_aug[idx, , drop = FALSE])
+})
+
+## compute_substitution_band: Delta(p0, delta) for each p0 in p_grid_aug with
+## p0 >= delta, with joint (max-t) 95% bands. Returns the qpca_joint_band list
+## plus p0 and Q_ref(p0), or NULL if no q_k terms are retained.
+compute_substitution_band <- function(model, E_aug, w_aug, p_grid_aug, Q_ref,
+                                      imp, delta, ...) {
+  p0 <- p_grid_aug[p_grid_aug >= delta]
+  Q_shift <- approx(p_grid_aug, Q_ref, xout = p_grid_aug + delta, rule = 2)$y
+  Q_p0 <- approx(p_grid_aug, Q_ref, xout = p0, rule = 2)$y
+
+  ## Row j: Q~ - Q_ref for p0 = p0[j], on p_grid_aug
+  D <- t(vapply(seq_along(p0), function(j) {
+    ifelse(p_grid_aug <= p0[j] - delta, Q_shift - Q_ref,
+           ifelse(p_grid_aug <= p0[j], Q_p0[j] - Q_ref, 0))
+  }, numeric(length(p_grid_aug))))
+
+  ## Row j of L_sub maps the q_k coefficients to sum_i w_i D_ji alpha(p_i)
+  L_sub <- sweep(D, 2, w_aug, '*') %*% E_aug
+  band <- qpca_joint_band(model, L_sub, imp, ...)
+  if (is.null(band)) return(NULL)
+  c(band, list(p0 = p0, Q_p0 = Q_p0))
+}
+
+## draw_substitution_panel: plots a substitution band over the p0 (>= delta)
+## in plim whose intensity Q_ref(p0) lies in qlim. With x_intensity = TRUE
+## the x-axis is the substituted intensity Q* = Q_ref(p0) in MIMS (by default
+## spanning qlim; p0 itself is not shown) and the usual top margin suffices.
+## With FALSE the x-axis is p0, with Q* on a top axis, and a top margin of
+## about 5 lines is expected. Stretches of the bottom axis where the joint
+## band excludes zero are drawn in sig_col.
+sub_panel_idx <- function(band, delta, plim = c(0, 1), qlim = c(-Inf, Inf)) {
+  which(band$p0 >= max(plim[1], delta) & band$p0 <= min(plim[2], 1) &
+          band$Q_p0 >= qlim[1] & band$Q_p0 <= qlim[2])
+}
+draw_substitution_panel <- function(band, delta, plim = c(0, 1),
+                                    qlim = c(-Inf, Inf),
+                                    xlim = NULL, ylim = NULL, main = '',
+                                    ylab = 'Change in BMD Z-score',
+                                    x_intensity = TRUE, sig_col = 'red') {
+  idx <- sub_panel_idx(band, delta, plim, qlim)
+  x <- if (x_intensity) band$Q_p0[idx] else band$p0[idx]
+  lab_int <- expression(Q^'*' ~ '(MIMS)')
+  lab_p0 <- expression(p[0])
+  if (is.null(xlim)) {
+    xlim <- if (x_intensity && all(is.finite(qlim))) qlim else range(x)
+  }
+  if (is.null(ylim)) ylim <- range(c(band$low[idx], band$high[idx]))
+  plot(
+    NULL, xlim = xlim, ylim = ylim,
+    xlab = if (x_intensity) lab_int else lab_p0, ylab = ylab,
+    main = if (x_intensity) main else ''
+  )
+  draw_band(x, band$low[idx], band$high[idx])
+  abline(h = 0, lty = 'dashed', col = 'red')
+  lines(x, band$est[idx], lwd = 3)
+
+  ## Bottom axis in sig_col where the joint band excludes zero; each point
+  ## covers the half-gaps to its neighbors so isolated points still show
+  sig <- band$low[idx] > 0 | band$high[idx] < 0
+  if (any(sig)) {
+    n <- length(x)
+    mids <- (x[-1] + x[-n]) / 2
+    left <- c(x[1], mids)
+    right <- c(mids, x[n])
+    runs <- rle(sig)
+    ends <- cumsum(runs$lengths)
+    starts <- ends - runs$lengths + 1
+    usr <- par('usr')
+    for (r in which(runs$values)) {
+      segments(left[starts[r]], usr[3], right[ends[r]], usr[3],
+               col = sig_col, lwd = 5, lend = 'butt', xpd = NA)
+    }
+  }
+
+  ## p0 on the x-axis: Q* on a top axis at the bottom-axis tick positions (a
+  ## p0 = 1 tick is labeled with Q_ref at the last grid point)
+  if (!x_intensity) {
+    at <- axTicks(1)
+    at <- at[at >= min(band$p0) & at <= 1]
+    q_at <- approx(band$p0, band$Q_p0, xout = at, rule = 2)$y
+    axis(3, at = at, labels = signif(q_at, 2))
+    mtext(lab_int, side = 3, line = 2)
+    title(main = main, line = 3.5)
+  }
+}
+
+## Generate activity substitution plots
+delta_sub <- 0.01     ## proportion of least active time substituted
+qlims_sub <- list(`1` = c(-Inf, Inf), `2` = c(0, 100))   ## Q(p0) ranges (MIMS)
+for (imp in c(0, 1)) {
+  band_sub <- compute_substitution_band(
+    model = model, E_aug = E_aug, w_aug = w_aug, p_grid_aug = p_grid_aug,
+    Q_ref = Q_ref_sub[[as.character(imp)]], imp = imp, delta = delta_sub
+  )
+  if (is.null(band_sub)) {
+    warning('No q_k terms retained in model; skipping substitution plots (imp = ', imp, ')')
+    next
+  }
+  for (qlim_id in names(qlims_sub)) {
+    png(str_glue('{dir_art}/plots/q-pca/substitution_qlim-{qlim_id}_imp-{imp}.png'),
+        width = 960, height = 960, pointsize = 18)
+    par(mar = c(4.5, 4.5, 3, 1))
+    draw_substitution_panel(
+      band_sub, delta = delta_sub, qlim = qlims_sub[[qlim_id]],
+      main = str_glue('Activity substitution (imp = {imp}, delta = {delta_sub})')
+    )
+    dev.off()
+  }
+}
+
+
 ## ----- Interpretation: effect plots (Q-PCA and WAME)
 
 ## compute_effect_curves: decoded quantile curves (rows of Q) obtained by
@@ -1506,6 +1671,15 @@ for (plim_id in names(plims)) {
 dir_poster <- file.path(dir_art, 'plots', 'poster')
 dir.create(dir_poster, recursive = TRUE, showWarnings = FALSE)
 
+## Poster resolution: plot sizes below are given in px at 72 dpi (which sets
+## the layout); poster_png renders them at poster_scale x the pixel density
+## (res = 72 * poster_scale), so text, lines and layout keep their proportions
+poster_scale <- 4
+poster_png <- function(path, width, height, pointsize = 12) {
+  png(path, width = round(width * poster_scale), height = round(height * poster_scale),
+      res = 72 * poster_scale, pointsize = pointsize)
+}
+
 
 ## ----- Single QF (median, mean and MVPA rate as QF summaries)
 
@@ -1557,15 +1731,15 @@ dev.off()
 
 ## ----- All QFs
 
+## plot_funs draws onto the device opened by poster_png (no path given)
+poster_png(file.path(dir_poster, 'qf_all.png'), width = 400, height = 300)
 plot_funs(
   fun_list = asplit(Q, 1),
   grid_list = rep(list(p_grid), nrow(Q)),
   xlab = 'p', ylab = 'Q(p)', main = '',
-  colors = rep(rgb(0, 0, 0, alpha = 0.5), nrow(Q)),
-  path = file.path(dir_poster, 'qf_all.png'),
-  fig_width = 400,
-  fig_height = 300
+  colors = rep(rgb(0, 0, 0, alpha = 0.5), nrow(Q))
 )
+dev.off()
 
 
 ## ----- Embedding heatmaps (Q-PCA and WAME)
@@ -1578,7 +1752,7 @@ plot_emb_heatmap <- function(emb, path, n_cols = 201,
   K_emb <- ncol(emb)
   lim <- max(abs(emb))
   cols <- colorRampPalette(c('blue', 'white', 'red'))(n_cols)
-  png(path, width = width, height = height, pointsize = pointsize)
+  poster_png(path, width = width, height = height, pointsize = pointsize)
   ## No tick labels, so keep margins tight and axis titles next to the image
   par(mar = c(1.6, 1.6, 0.5, 0.5), mgp = c(0.4, 0, 0))
   image(
@@ -1596,46 +1770,56 @@ plot_emb_heatmap(C, file.path(dir_poster, 'heatmap_c.png'))
 ## ----- QFs -> heatmaps composite
 
 ## Stitches the existing qf_all (top) and heatmap (bottom left: C, bottom
-## right: Q-PC) PNGs at their native pixel sizes, with labeled arrows
-img_qf <- png::readPNG(file.path(dir_poster, 'qf_all.png'))
-img_c <- png::readPNG(file.path(dir_poster, 'heatmap_c.png'))
-img_q <- png::readPNG(file.path(dir_poster, 'heatmap_qpc.png'))
+## right: Q-PC) PNGs, each cropped to its drawn content (no resampling), with
+## labeled arrows
+## crop_white: drop the white margins of an image (any pixel darker than
+## near-white counts as content), keeping pad px around the content
+crop_white <- function(img, pad = 0) {
+  ink <- apply(img[, , 1:3, drop = FALSE] < 0.99, c(1, 2), any)
+  r <- range(which(rowSums(ink) > 0))
+  c_ <- range(which(colSums(ink) > 0))
+  r <- c(max(1, r[1] - pad), min(dim(img)[1], r[2] + pad))
+  c_ <- c(max(1, c_[1] - pad), min(dim(img)[2], c_[2] + pad))
+  img[r[1]:r[2], c_[1]:c_[2], , drop = FALSE]
+}
+img_qf <- crop_white(png::readPNG(file.path(dir_poster, 'qf_all.png')))
+img_c <- crop_white(png::readPNG(file.path(dir_poster, 'heatmap_c.png')))
+img_q <- crop_white(png::readPNG(file.path(dir_poster, 'heatmap_qpc.png')))
 img_w <- function(img) dim(img)[2]
 img_h <- function(img) dim(img)[1]
-## Rows (1 = top) of an image that contain any non-white pixel, used to aim
-## the arrows at drawn content rather than the PNG's white margins
-content_rows <- function(img) {
-  which(apply(img[, , 1:3, drop = FALSE] < 0.99, 1, any))
-}
 
-gap_x <- 100     ## horizontal gap between heatmaps (px)
-arrow_h <- 200   ## vertical space for arrows (px)
+## Pixel sizes at 72 dpi, scaled to the source images' poster_scale density
+pad <- 10 * poster_scale        ## outer border
+gap_x <- 100 * poster_scale     ## horizontal gap between heatmaps
+arrow_h <- 200 * poster_scale   ## vertical space for arrows
 row_w <- img_w(img_c) + gap_x + img_w(img_q)
 hm_h <- max(img_h(img_c), img_h(img_q))
-W <- max(row_w, img_w(img_qf))
-H <- img_h(img_qf) + arrow_h + hm_h
+W <- max(row_w, img_w(img_qf)) + 2 * pad
+H <- img_h(img_qf) + arrow_h + hm_h + 2 * pad
 
 ## Positions (pixel coordinates, origin bottom left); heatmap tops aligned
 x_qf <- (W - img_w(img_qf)) / 2
 x_c <- (W - row_w) / 2
 x_q <- x_c + img_w(img_c) + gap_x
-y_top_hm <- hm_h
-y_bot_qf <- H - img_h(img_qf)
+y_top_hm <- pad + hm_h
+y_bot_qf <- H - pad - img_h(img_qf)
 
-png(file.path(dir_poster, 'qf_to_heatmaps.png'), width = W, height = H, pointsize = 20)
+png(file.path(dir_poster, 'qf_to_heatmaps.png'), width = W, height = H,
+    res = 72 * poster_scale, pointsize = 20)
 par(mar = c(0, 0, 0, 0))
 plot.new()
 plot.window(xlim = c(0, W), ylim = c(0, H), xaxs = 'i', yaxs = 'i')
-rasterImage(img_qf, x_qf, y_bot_qf, x_qf + img_w(img_qf), H, interpolate = FALSE)
+rasterImage(img_qf, x_qf, y_bot_qf, x_qf + img_w(img_qf), H - pad, interpolate = FALSE)
 rasterImage(img_c, x_c, y_top_hm - img_h(img_c), x_c + img_w(img_c), y_top_hm,
             interpolate = FALSE)
 rasterImage(img_q, x_q, y_top_hm - img_h(img_q), x_q + img_w(img_q), y_top_hm,
             interpolate = FALSE)
 
+## Arrows from just below qf_all to just above the top center of each heatmap
 x_from <- W / 2 + c(-1, 1) * 0.15 * img_w(img_qf)
 x_to <- c(x_c + img_w(img_c) / 2, x_q + img_w(img_q) / 2)
-y_from <- H - max(content_rows(img_qf)) - 15
-y_to <- y_top_hm - min(c(min(content_rows(img_c)), min(content_rows(img_q)))) + 15
+y_from <- y_bot_qf - 15 * poster_scale
+y_to <- y_top_hm + 15 * poster_scale
 arrows(x_from, y_from, x_to, y_to, lwd = 3, length = 0.2)
 text((x_from + x_to) / 2, (y_from + y_to) / 2, labels = c('WAME', 'Q-PCA'),
      pos = c(2, 4), offset = 0.8, font = 1.5)
@@ -1648,7 +1832,7 @@ dev.off()
 ## reduced model when step-wise pruning dropped something, else of the full
 ## model (the two coincide).
 table_models <- c(
-  'ref_common_preds', 'ref_common_preds_imp',
+  'ref_common_preds_imp',
   'scale_imp_0', 'scale_imp_1', 'scale_imp_8',
   'dist_C_imp', 'dist_Qpc_imp'
 )
@@ -1656,7 +1840,9 @@ table_models <- c(
 ## Columns: header -> model variables; a cell is filled if any of the
 ## variables appears in any term of the full model (main effect or interaction)
 table_cols <- list(
-  'x' = preds_common,
+  'old' = 'old',
+  'male' = 'male',
+  'bmiz' = 'bmiz',
   'imp' = 'imp',
   'a\\_mean' = 'a_mean',
   'a\\_mvpa' = 'mvpa_rate',
@@ -1702,6 +1888,12 @@ cat(table_tex, sep = '\n')
 ## right in each plot, plots stitched top to bottom
 coef_horizontal <- TRUE
 
+## Plotting-area height (px) in the stacked layout. The in-box p-value legend
+## sits in a band reserved above the highest interval, so it cannot overlap
+## any CI at any height (binary_plot_intervals stops if the plot is too short
+## for the band)
+plot_height_coef <- 130
+
 ## plot_coef_intervals: (unadjusted) 95% t confidence intervals and p-values
 ## for all non-intercept coefficients of an lm fit, drawn in the style of the
 ## Roy-Bose interval plots (binary_plot_intervals). plot_width (and, when
@@ -1735,15 +1927,15 @@ plot_coef_intervals <- function(model, path, main, show_legend = TRUE,
   dev.off()
   unlink(tmp)
 
-  ## PNG size = margins + plotting area (png() defaults to 72 px per inch)
+  ## PNG size = margins + plotting area, in px at 72 dpi (poster_png scales)
   if (horizontal) {
     mar <- c(mar_lab, 4.5, 3, mar_right)
-    height <- round(plot_height + (mar[1] + mar[3]) * csi * 72)
+    height <- plot_height + (mar[1] + mar[3]) * csi * 72
   } else {
     mar <- c(4.5, mar_lab, 3, mar_right)
   }
-  width <- round(plot_width + (mar[2] + mar[4]) * csi * 72)
-  png(path, width = width, height = height, pointsize = pointsize)
+  width <- plot_width + (mar[2] + mar[4]) * csi * 72
+  poster_png(path, width = width, height = height, pointsize = pointsize)
   binary_plot_intervals(
     ci_df,
     main = main,
@@ -1766,14 +1958,16 @@ plot_coef_intervals(
   path = file.path(dir_poster, 'coefs_qpca.png'),
   main = 'Q-PCA Model',
   show_legend = TRUE,
-  horizontal = coef_horizontal
+  horizontal = coef_horizontal,
+  plot_height = plot_height_coef
 )
 plot_coef_intervals(
   models[['dist_C_imp']]$model_full,
   path = file.path(dir_poster, 'coefs_wame.png'),
   main = 'WAME Model',
   show_legend = TRUE,
-  horizontal = coef_horizontal
+  horizontal = coef_horizontal,
+  plot_height = plot_height_coef
 )
 
 ## Stitch at native pixel sizes: side by side (WAME left, Q-PCA right, so the
@@ -1781,7 +1975,7 @@ plot_coef_intervals(
 ## stacked (WAME top, Q-PCA bottom; left edges aligned)
 img_coef_q <- png::readPNG(file.path(dir_poster, 'coefs_qpca.png'))
 img_coef_c <- png::readPNG(file.path(dir_poster, 'coefs_wame.png'))
-gap_coef <- 20   ## gap between plots (px)
+gap_coef <- 20 * poster_scale   ## gap between plots (px at 72 dpi, scaled)
 w_c <- dim(img_coef_c)[2]; h_c <- dim(img_coef_c)[1]
 w_q <- dim(img_coef_q)[2]; h_q <- dim(img_coef_q)[1]
 if (coef_horizontal) {
@@ -1796,7 +1990,8 @@ if (coef_horizontal) {
   pos_q <- c(w_c + gap_coef, H_coef - h_q)
 }
 
-png(file.path(dir_poster, 'coefs_combined.png'), width = W_coef, height = H_coef)
+png(file.path(dir_poster, 'coefs_combined.png'), width = W_coef, height = H_coef,
+    res = 72 * poster_scale)
 par(mar = c(0, 0, 0, 0))
 plot.new()
 plot.window(xlim = c(0, W_coef), ylim = c(0, H_coef), xaxs = 'i', yaxs = 'i')
@@ -1853,7 +2048,7 @@ plot_effect_contrasts <- function(model, embeddings, decode_fn, col_prefix,
   }
   ylim_panels <- range(unlist(lapply(panels, function(pan) pan$curves$Q[, p_idx])))
 
-  png(path, width = 900, height = 600, pointsize = 20)
+  poster_png(path, width = 900, height = 600, pointsize = 20)
   layout(matrix(c(1, 2, 5, 3, 4, 5), nrow = 2, byrow = TRUE),
          widths = c(1, 1, 0.5))
 
@@ -1928,7 +2123,7 @@ ylim_tail <- range(unlist(lapply(tail_panels, function(pan) {
 })))
 
 ## Same canvas size, pointsize and panel margins as effect_contrasts_c1_c3.png
-png(file.path(dir_poster, 'tail_shift.png'), width = 600, height = 300, pointsize = 12)
+poster_png(file.path(dir_poster, 'tail_shift.png'), width = 600, height = 300, pointsize = 12)
 par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
 for (pan in tail_panels) {
   plot(
@@ -1941,6 +2136,48 @@ for (pan in tail_panels) {
   draw_band(p_grid[p_idx_tail], pan$band$low[p_idx_tail], pan$band$high[p_idx_tail])
   abline(h = 0, lty = 'dashed', col = 'red')
   lines(p_grid[p_idx_tail], pan$band$est[p_idx_tail], lwd = 3)
+}
+dev.off()
+
+
+## ----- Activity substitution curves (Q-PCA, by impact)
+
+delta_sub_poster <- 0.01   ## proportion of least active time substituted
+qlim_sub_poster <- c(0, 90)    ## intensity Q(p0) range shown (MIMS)
+x_intensity_poster <- TRUE      ## FALSE: p0 on the bottom axis, Q* on top
+sub_panels <- list(
+  list(imp = 0, main = 'Low impact'),
+  list(imp = 1, main = 'High impact')
+)
+for (i in seq_along(sub_panels)) {
+  sub_panels[[i]]$band <- compute_substitution_band(
+    model = models[['dist_Qpc_imp']]$model_full, E_aug = E_aug, w_aug = w_aug,
+    p_grid_aug = p_grid_aug, Q_ref = Q_ref_sub[[as.character(sub_panels[[i]]$imp)]],
+    imp = sub_panels[[i]]$imp, delta = delta_sub_poster
+  )
+}
+stopifnot(!any(sapply(sub_panels, function(pan) is.null(pan$band))))
+
+## Shared y-limits across panels (over the plotted intensity range); with
+## intensity on the x-axis, both panels span qlim_sub_poster
+sub_idx <- lapply(sub_panels, function(pan) {
+  sub_panel_idx(pan$band, delta_sub_poster, qlim = qlim_sub_poster)
+})
+ylim_sub <- range(unlist(Map(function(pan, idx) {
+  c(pan$band$low[idx], pan$band$high[idx])
+}, sub_panels, sub_idx)))
+
+## Same canvas size and pointsize as tail_shift.png (taller top margin only
+## when p0 is on the x-axis, for the Q* top axis)
+poster_png(file.path(dir_poster, 'activity_substitution.png'), width = 600, height = 300, pointsize = 12)
+par(mfrow = c(1, 2), mar = c(4.5, 4.5, if (x_intensity_poster) 3 else 5, 1))
+for (pan in sub_panels) {
+  draw_substitution_panel(
+    pan$band, delta = delta_sub_poster, qlim = qlim_sub_poster,
+    ylim = ylim_sub, main = pan$main,
+    ylab = bquote('Change in BMD Z-score (' * delta == .(delta_sub_poster) * ')'),
+    x_intensity = x_intensity_poster
+  )
 }
 dev.off()
 
