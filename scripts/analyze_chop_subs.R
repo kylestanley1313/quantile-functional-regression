@@ -548,11 +548,17 @@ cv_oos_errors <- function(
     fit_fun,
     pred_fun,
     V = 5,
-    seed = gen_seed()
+    seed = gen_seed(),
+    folds = NULL
 ) {
+  ## folds: optional precomputed fold assignment (length nrow(df)); pass the
+  ## same vector to every model so their errors are on identical splits
   N <- nrow(df)
-  set.seed(seed)
-  folds <- sample(rep(seq_len(V), length.out = N))
+  if (is.null(folds)) {
+    set.seed(seed)
+    folds <- sample(rep(seq_len(V), length.out = N))
+  }
+  V <- max(folds)
   
   y <- df[[all.vars(formula)[1]]]
   y_hat <- rep(NA_real_, N)
@@ -748,32 +754,32 @@ df <- readRDS(path_df)
 models <- list(
   
   ## Reference
-  ref_mean = list(
-    preds = c('1'),
-    f_str_abbr = '--'
-  ),
-  ref_common_preds = list(
-    preds = c(preds_common),
-    f_str_abbr = 'x'
-  ),
+  # ref_mean = list(
+  #   preds = c('1'),
+  #   f_str_abbr = '--'
+  # ),
+  # ref_common_preds = list(
+  #   preds = c(preds_common),
+  #   f_str_abbr = 'x'
+  # ),
   ref_common_preds_imp = list(
     preds = c(preds_common, 'imp'),
     f_str_abbr = 'x,imp'
   ),
 
   ## Scalar PA
-  scale_0 = list(
-    preds = c(preds_common, "a_mean"),
-    f_str_abbr = 'x,a_mean'
-  ),
-  scale_1 = list(
-    preds = c(preds_common, "mvpa_rate"),
-    f_str_abbr = 'x,mvpa'
-  ),
-  scale_2 = list(
-    preds = c(preds_common, "a_50"),
-    f_str_abbr = 'x,a_50'
-  ),
+  # scale_0 = list(
+  #   preds = c(preds_common, "a_mean"),
+  #   f_str_abbr = 'x,a_mean'
+  # ),
+  # scale_1 = list(
+  #   preds = c(preds_common, "mvpa_rate"),
+  #   f_str_abbr = 'x,mvpa'
+  # ),
+  # scale_2 = list(
+  #   preds = c(preds_common, "a_50"),
+  #   f_str_abbr = 'x,a_50'
+  # ),
   # scale_3 = list(
   #   preds = c(preds_common, "a_60"),
   #   f_str_abbr = 'x,a_60'
@@ -790,46 +796,46 @@ models <- list(
   #   preds = c(preds_common, "a_90"),
   #   f_str_abbr = 'x,a_90'
   # ),
-  scale_7 = list(
-    preds = c(preds_common, "a_95"),
-    f_str_abbr = 'x,a_95'
-  ),
-  scale_8 = list(
-    preds = c(preds_common, "a_99"),
-    f_str_abbr = 'x,a_99'
-  ),
-  scale_9 = list(
-    preds = c(preds_common, "a_995"),
-    f_str_abbr = 'x,a_995'
-  ),
-  scale_10 = list(
-    preds = c(preds_common, "a_999"),
-    f_str_abbr = 'x,a_999'
-  ),
-  scale_11_a = list(
-    preds = c(preds_common, "a_tail95_mean"),
-    f_str_abbr = 'x,a_tail95_mean'
-  ),
-  scale_11_b = list(
-    preds = c(preds_common, "a_tail90_mean"),
-    f_str_abbr = 'x,a_tail90_mean'
-  ),
-  scale_11_c = list(
-    preds = c(preds_common, "a_tail85_mean"),
-    f_str_abbr = 'x,a_tail85_mean'
-  ),
-  scale_12 = list(
-    preds = c(preds_common, "a_above60mims"),
-    f_str_abbr = 'x,a_above60mims'
-  ),
-  scale_13 = list(
-    preds = c(preds_common, "a_96", "a_995"),
-    f_str_abbr = 'x,a_96,a_995'
-  ),
-  scale_14 = list(
-    preds = c(preds_common, "a_96"),
-    f_str_abbr = 'x,a_96'
-  ),
+  # scale_7 = list(
+  #   preds = c(preds_common, "a_95"),
+  #   f_str_abbr = 'x,a_95'
+  # ),
+  # scale_8 = list(
+  #   preds = c(preds_common, "a_99"),
+  #   f_str_abbr = 'x,a_99'
+  # ),
+  # scale_9 = list(
+  #   preds = c(preds_common, "a_995"),
+  #   f_str_abbr = 'x,a_995'
+  # ),
+  # scale_10 = list(
+  #   preds = c(preds_common, "a_999"),
+  #   f_str_abbr = 'x,a_999'
+  # ),
+  # scale_11_a = list(
+  #   preds = c(preds_common, "a_tail95_mean"),
+  #   f_str_abbr = 'x,a_tail95_mean'
+  # ),
+  # scale_11_b = list(
+  #   preds = c(preds_common, "a_tail90_mean"),
+  #   f_str_abbr = 'x,a_tail90_mean'
+  # ),
+  # scale_11_c = list(
+  #   preds = c(preds_common, "a_tail85_mean"),
+  #   f_str_abbr = 'x,a_tail85_mean'
+  # ),
+  # scale_12 = list(
+  #   preds = c(preds_common, "a_above60mims"),
+  #   f_str_abbr = 'x,a_above60mims'
+  # ),
+  # scale_13 = list(
+  #   preds = c(preds_common, "a_96", "a_995"),
+  #   f_str_abbr = 'x,a_96,a_995'
+  # ),
+  # scale_14 = list(
+  #   preds = c(preds_common, "a_96"),
+  #   f_str_abbr = 'x,a_96'
+  # ),
   
   ## Scalar PA + Impact
   scale_imp_0 = list(
@@ -876,45 +882,45 @@ models <- list(
     preds = c(preds_common, "a_999", "imp", "a_999:imp"),
     f_str_abbr = 'x,a_999,imp'
   ),
-  scale_imp_11_a = list(
-    preds = c(preds_common, "a_tail95_mean", "imp", "a_tail95_mean:imp"),
-    f_str_abbr = 'x,a_tail95_mean,imp'
-  ),
-  scale_imp_11_b = list(
-    preds = c(preds_common, "a_tail90_mean", "imp", "a_tail90_mean:imp"),
-    f_str_abbr = 'x,a_tail90_mean,imp'
-  ),
-  scale_imp_11_c = list(
-    preds = c(preds_common, "a_tail85_mean", "imp", "a_tail85_mean:imp"),
-    f_str_abbr = 'x,a_tail85_mean,imp'
-  ),
-  scale_imp_12 = list(
-    preds = c(preds_common, "a_above60mims", "imp", "a_above60mims:imp"),
-    f_str_abbr = 'x,a_above60mims,imp'
-  ),
-  scale_imp_13 = list(
-    preds = c(preds_common, "a_96", "a_995", "imp", "a_96:imp", "a_995:imp"),
-    f_str_abbr = 'x,a_96,a_995,imp'
-  ),
-  scale_imp_14 = list(
-    preds = c(preds_common, "a_96", "imp", "a_96:imp"),
-    f_str_abbr = 'x,a_96,imp'
-  ),
+  # scale_imp_11_a = list(
+  #   preds = c(preds_common, "a_tail95_mean", "imp", "a_tail95_mean:imp"),
+  #   f_str_abbr = 'x,a_tail95_mean,imp'
+  # ),
+  # scale_imp_11_b = list(
+  #   preds = c(preds_common, "a_tail90_mean", "imp", "a_tail90_mean:imp"),
+  #   f_str_abbr = 'x,a_tail90_mean,imp'
+  # ),
+  # scale_imp_11_c = list(
+  #   preds = c(preds_common, "a_tail85_mean", "imp", "a_tail85_mean:imp"),
+  #   f_str_abbr = 'x,a_tail85_mean,imp'
+  # ),
+  # scale_imp_12 = list(
+  #   preds = c(preds_common, "a_above60mims", "imp", "a_above60mims:imp"),
+  #   f_str_abbr = 'x,a_above60mims,imp'
+  # ),
+  # scale_imp_13 = list(
+  #   preds = c(preds_common, "a_96", "a_995", "imp", "a_96:imp", "a_995:imp"),
+  #   f_str_abbr = 'x,a_96,a_995,imp'
+  # ),
+  # scale_imp_14 = list(
+  #   preds = c(preds_common, "a_96", "imp", "a_96:imp"),
+  #   f_str_abbr = 'x,a_96,imp'
+  # ),
   
 
   ## Distributional PA
-  dist_Qpc = list(
-    preds = c(preds_common, pred_block('q', K)),
-    f_str_abbr = 'x,q'
-  ),
-  dist_C = list(
-    preds = c(preds_common, pred_block('c', K)),
-    f_str_abbr = 'x,c'
-  ),
-  dist_Z_imp = list(
-    preds = c(preds_common, pred_block('z', K)),
-    f_str_abbr = 'x,z'
-  ),
+  # dist_Qpc = list(
+  #   preds = c(preds_common, pred_block('q', K)),
+  #   f_str_abbr = 'x,q'
+  # ),
+  # dist_C = list(
+  #   preds = c(preds_common, pred_block('c', K)),
+  #   f_str_abbr = 'x,c'
+  # ),
+  # dist_Z_imp = list(
+  #   preds = c(preds_common, pred_block('z', K)),
+  #   f_str_abbr = 'x,z'
+  # ),
   
   ## Distributional PA + Impact
   dist_Qpc_imp = list(
@@ -947,113 +953,179 @@ models <- list(
 
 
 ## Compute OOS Errors
+##
+## Every model is cross-validated on one shared fold assignment (folds_cv), so
+## per-child errors are paired across models. Two errors (two results rows)
+## per model:
+##  - full: the full formula, refit in each training fold
+##  - reduced: the pruning strategy (prune_pval_all) rerun inside each
+##    training fold, so selection never sees the held-out fold (this avoids
+##    the optimism of selecting on all the data and then CV-ing the selected
+##    formula)
+## models[[i]]$model_red is the pruned model on all data when pruning drops
+## something (but not everything).
+## oos_err_low/high: 95% CI for MAE (mean +/- 1.96 SE of per-child absolute
+## errors). Paired differences vs. the baseline model (delta_*) compare
+## per-child absolute errors on the same folds: full vs. baseline full,
+## reduced vs. baseline reduced.
+## Reduced rows also describe the pruning: n_terms (terms kept on all data /
+## candidate terms), mean_terms_cv (average terms kept per training fold),
+## pa_keep_share (share of training folds keeping at least one PA term;
+## strictly between 0 and 1 = PA selection unstable across folds) and kept
+## (terms kept on all data).
 mf <- get_model_funs('lm')
 factor_vars <- names(Filter(is.factor, df))
-results <- data.frame(
-  oos_err_mean = numeric(0),
-  oos_err_low  = numeric(0),
-  oos_err_high = numeric(0),
-  r_sq    = numeric(0),
-  f_str   = character(0),
-  preds   = character(0),
-  reduced = logical(0)
-)
+V_cv <- N
+set.seed(12345)
+folds_cv <- sample(rep(seq_len(V_cv), length.out = nrow(df)))
+baseline_model <- 'ref_common_preds_imp'
 fit_reduced <- TRUE
-# worst_list <- list()
+
+## ----- Pruning strategy
+
+## prune_backward_pval: p-value backward elimination. Repeatedly drops the
+## worst term (get_worst_lm_predictor, alpha = 0.05; main effects kept while
+## their interactions remain) until all remaining terms are significant.
+## Returns list(preds, model): the terms kept (character(0) if all dropped)
+## and the last fitted model.
+norm_term <- function(t) vapply(
+  strsplit(t, ":", fixed = TRUE),
+  function(p) paste(sort(p), collapse = ":"),
+  character(1)
+)
+prune_backward_pval <- function(preds, data) {
+  preds_curr <- preds
+  mod_curr <- mf$fit(make_formula(response, preds_curr, 'lm', factor_vars), data)
+  repeat {
+    worst <- get_worst_lm_predictor(mod_curr, alpha = 0.05)
+    if (is.null(worst)) break                  # all predictors significant
+    preds_curr <- preds_curr[norm_term(preds_curr) != norm_term(worst)]
+    if (length(preds_curr) == 0) break         # nothing left to fit
+    mod_curr <- mf$fit(make_formula(response, preds_curr, 'lm', factor_vars), data)
+  }
+  list(preds = preds_curr, model = mod_curr)
+}
+
+## Strategy 'pval_all': p-value backward elimination over all terms,
+## covariates included
+prune_pval_all <- function(preds, data) {
+  prune_backward_pval(preds, data)
+}
+
+## is_pa_term: TRUE for terms involving a PA variable (anything outside the
+## covariates old, male, bmiz and imp)
+is_pa_term <- function(t) vapply(strsplit(t, ':', fixed = TRUE), function(v) {
+  !all(v %in% c(preds_common, 'imp'))
+}, logical(1))
+
+## err_row: one results row from a vector of per-child OOS errors; prune is
+## NULL for full rows, else list(preds, kept_cv, n_candidates) for reduced rows
+err_row <- function(err, adj_r_sq, f_str, preds, reduced, prune = NULL) {
+  ae <- abs(err)
+  se <- sd(ae) / sqrt(length(ae))
+  data.frame(
+    oos_err_mean  = mean(ae),
+    oos_err_low   = mean(ae) - 1.96 * se,
+    oos_err_high  = mean(ae) + 1.96 * se,
+    adj_r_sq      = adj_r_sq,
+    f_str         = f_str,
+    preds         = preds,
+    reduced       = reduced,
+    n_terms       = if (is.null(prune)) NA_character_ else
+      as.character(str_glue('{length(prune$preds)}/{prune$n_candidates}')),
+    mean_terms_cv = if (is.null(prune)) NA_real_ else mean(lengths(prune$kept_cv)),
+    pa_keep_share = if (is.null(prune)) NA_real_ else
+      mean(vapply(prune$kept_cv, function(k) any(is_pa_term(k)), logical(1))),
+    kept          = if (is.null(prune)) NA_character_ else
+      paste(prune$preds, collapse = ',')
+  )
+}
+
+results <- data.frame()
+row_err <- list()   ## per-child OOS errors for each row of results
 for (i in seq_along(models)) {
   print(str_glue("{i}/{length(models)}"))
-  set.seed(12345)
   preds <- models[[i]]$preds
-  
-  ## Fit model
+
+  ## Full model: fit on all data; CV on the shared folds
   f_full <- make_formula(response, preds, 'lm', factor_vars)
   mod_full <- mf$fit(f_full, df)
   models[[i]]$model_full <- mod_full
-  
-  ## Cross validation
-  cv_full <- cv_oos_errors(
-    df, f_full,
-    fit_fun  = mf$fit,
-    pred_fun = mf$pred,
-    V = 10,
-    seed = gen_seed()
-  )
-  
-  ## Save results
-  results <- rbind(
-    results,
-    data.frame(
-      oos_err_mean  = mean(abs(cv_full$oos_error)), #= sqrt(mean(cv_red$oos_error^2)),
-      oos_err_low   = mean(abs(cv_full$oos_error)) - 2*sd(abs(cv_full$oos_error))/sqrt(length(cv_full$oos_error)),
-      oos_err_high  = mean(abs(cv_full$oos_error)) + 2*sd(abs(cv_full$oos_error))/sqrt(length(cv_full$oos_error)),
-      adj_r_sq    = mf$r_sq(mod_full),
-      f_str   = formula_to_string(f_full),
-      preds = models[[i]]$f_str_abbr,
-      reduced = FALSE
-    )
-  )
+  cv_full <- cv_oos_errors(df, f_full, fit_fun = mf$fit, pred_fun = mf$pred,
+                           folds = folds_cv)
+  models[[i]]$cv_err_full <- cv_full$oos_error
+  results <- rbind(results, err_row(
+    cv_full$oos_error, mf$r_sq(mod_full), formula_to_string(f_full),
+    models[[i]]$f_str_abbr, reduced = FALSE
+  ))
+  row_err[[nrow(results)]] <- cv_full$oos_error
 
-  ## Step-wise pruning (drop the worst predictor one at a time)
   if (fit_reduced) {
-    preds_curr <- preds
-    mod_curr   <- mod_full
-    repeat {
-      worst <- get_worst_lm_predictor(mod_curr, alpha = 0.05)
-      # worst_list[[length(worst_list)+1]] <- worst
-      if (is.null(worst)) break                  # all predictors significant
-      norm_term <- function(t) vapply(
-        strsplit(t, ":", fixed = TRUE),
-        function(p) paste(sort(p), collapse = ":"),
-        character(1)
-      )
-      preds_curr <- preds_curr[norm_term(preds_curr) != norm_term(worst)]
-      if (length(preds_curr) == 0) break         # nothing left to fit
-      f_curr   <- make_formula(response, preds_curr, "lm", factor_vars)
-      mod_curr <- mf$fit(f_curr, df)
+    ## Pruned model on all data (for interpretation and n_terms / kept)
+    pruned <- prune_pval_all(preds, df)
+    p_red <- if (length(pruned$preds) > 0) pruned$preds else '1'
+    f_red <- make_formula(response, p_red, 'lm', factor_vars)
+    mod_red <- mf$fit(f_red, df)
+    if (length(pruned$preds) > 0 && length(pruned$preds) < length(preds)) {
+      models[[i]]$model_red <- mod_red
     }
 
-    if (length(preds_curr) > 0 && length(preds_curr) < length(preds)) {
-      f_red   <- make_formula(response, preds_curr, "lm", factor_vars)
-      mod_red <- mod_curr
-      models[[i]]$model_red <- mod_red
-      cv_red <- cv_oos_errors(
-        df, f_red,
-        fit_fun  = fit_lm,
-        pred_fun = pred_lm,
-        V = 10,
-        seed = 12345
-      )
-      results <- rbind(
-        results,
-        data.frame(
-          oos_err_mean  = mean(abs(cv_red$oos_error)), #= sqrt(mean(cv_red$oos_error^2)),
-          oos_err_low   = mean(abs(cv_red$oos_error)) - 2*sd(abs(cv_red$oos_error))/sqrt(length(cv_red$oos_error)),
-          oos_err_high  = mean(abs(cv_red$oos_error)) + 2*sd(abs(cv_red$oos_error))/sqrt(length(cv_red$oos_error)),
-          adj_r_sq = mf$r_sq(mod_red),
-          f_str    = formula_to_string(f_red),
-          preds    = models[[i]]$f_str_abbr,
-          reduced  = TRUE
-        )
-      )
+    ## Pruning CV'd on the shared folds: prune inside each training fold (an
+    ## all-pruned fold falls back to intercept only); kept_cv records the
+    ## terms kept in each fold
+    kept_cv <- list()
+    fit_pruned <- function(formula, data) {
+      p_sel <- prune_pval_all(preds, data)$preds
+      kept_cv[[length(kept_cv) + 1]] <<- p_sel
+      if (length(p_sel) == 0) p_sel <- '1'
+      mf$fit(make_formula(response, p_sel, 'lm', factor_vars), data)
     }
+    cv_red <- cv_oos_errors(df, f_full, fit_fun = fit_pruned, pred_fun = mf$pred,
+                            folds = folds_cv)
+    models[[i]]$cv_err_red <- cv_red$oos_error
+    models[[i]]$kept_cv_red <- kept_cv
+    results <- rbind(results, err_row(
+      cv_red$oos_error, mf$r_sq(mod_red), formula_to_string(f_red),
+      models[[i]]$f_str_abbr, reduced = TRUE,
+      prune = list(preds = pruned$preds, kept_cv = kept_cv,
+                   n_candidates = length(preds))
+    ))
+    row_err[[nrow(results)]] <- cv_red$oos_error
   }
 }
-results$oos_err_mean <- round(results$oos_err_mean, digits = 3)
-results$oos_err_low  <- round(results$oos_err_low, digits = 3)
-results$oos_err_high <- round(results$oos_err_high, digits = 3)
-results$adj_r_sq <- round(results$adj_r_sq, digits = 3)
-print_full <- FALSE
-if (!print_full) {
-  results_ <- results[results$reduced,]
-  print(results_[,c('preds', 'oos_err_mean', 'reduced')])
-} else {
-  print(results[,c('preds', 'oos_err_mean', 'reduced')])
+
+## Paired differences vs. the baseline (same children, same folds):
+## d_j = |e_model,j| - |e_baseline,j|; mean, SE and 95% CI over children.
+## Negative delta = lower error than the baseline.
+base <- models[[baseline_model]]
+stopifnot(!is.null(base$cv_err_full))
+paired <- do.call(rbind, lapply(seq_len(nrow(results)), function(r) {
+  e_base <- if (results$reduced[r]) base$cv_err_red else base$cv_err_full
+  d <- abs(row_err[[r]]) - abs(e_base)
+  se <- sd(d) / sqrt(length(d))
+  data.frame(delta_mean = mean(d), delta_se = se,
+             delta_low = mean(d) - 1.96 * se, delta_high = mean(d) + 1.96 * se)
+}))
+results <- cbind(results, paired)
+
+num_cols <- c('oos_err_mean', 'oos_err_low', 'oos_err_high', 'adj_r_sq',
+              'delta_mean', 'delta_se', 'delta_low', 'delta_high', 'pa_keep_share')
+results[num_cols] <- lapply(results[num_cols], round, digits = 3)
+results$mean_terms_cv <- round(results$mean_terms_cv, 2)
+print_full <- TRUE
+print_reduced <- TRUE
+print_cols <- c('preds', 'oos_err_mean', 'delta_mean', 'delta_low', 'delta_high')
+if (print_full) {
+  print(results[!results$reduced, print_cols])
+}
+if (print_reduced) {
+  print(results[results$reduced, c(print_cols, 'n_terms', 'mean_terms_cv',
+                                   'pa_keep_share')])
 }
 
-
 ## Summaries
-print_full <- FALSE
-print_reduced <- TRUE
+print_full <- TRUE
+print_reduced <- FALSE
 for (i in 1:length(models)) {
   if (print_full) {
     print(summary(models[[i]]$model_full))
@@ -1706,17 +1778,22 @@ png(file.path(dir_poster, 'qf_single.png'),
 par(mar = c(3, 4.1, 0.5, 2.1))
 plot(
   p_grid, Q_i, type = 'l', lwd = 4, col = 'black',
-  xlab = '', ylab = 'Q(p)', main = '',
+  xlab = '', ylab = 'Q(p) (MIMS)', main = '',
   xlim = c(0, 1), ylim = c(0, 1.05 * max(Q_i)),
   xaxs = 'i', yaxs = 'i', xaxt = 'n', yaxt = 'n'
 )
-title(xlab = 'p', line = 1.9)
-axis(1, at = 0.5, labels = '0.5')
+title(xlab = 'Quantile level p', line = 1.9)
+axis(1, at = c(0, 0.5, 1), labels = c('0', '0.5', '1'))
 axis(2, at = y_thresh, labels = as.character(y_thresh), las = 1)
 segments(0.5, 0, 0.5, Q_half, col = 'gray50', lty = 'dotted', lwd = 2)
 segments(0.5, Q_half, 0, Q_half, col = 'gray50', lty = 'dotted', lwd = 2)
 segments(0, y_thresh, p_thresh, y_thresh, col = 'gray50', lty = 'dotted', lwd = 2)
 segments(p_thresh, y_thresh, p_thresh, 0, col = 'gray50', lty = 'dotted', lwd = 2)
+text(0.02, y_thresh, 'MVPA cutpoint (19.6 MIMS)', adj = c(0, -0.5),
+     cex = 0.8, col = 'gray30')
+## MVPA rate: the interval [Q_inv(19.6), 1] marked along the x-axis
+segments(p_thresh, 0, 1, 0, lwd = 6, col = 'gray20', lend = 'butt', xpd = NA)
+text((p_thresh + 1) / 2, 0, 'MVPA rate', adj = c(0.5, -0.8), cex = 0.8, col = 'gray20')
 legend(
   'topleft',
   legend = expression(
@@ -1724,7 +1801,7 @@ legend(
     mean == integral(Q(p) * dp, 0, 1),
     'MVPA rate' == 1 - Q^{-1} * (19.6)
   ),
-  bty = 'n', y.intersp = 1.6
+  bty = 'n', y.intersp = 1.6, cex = 1.25
 )
 dev.off()
 
@@ -1736,7 +1813,7 @@ poster_png(file.path(dir_poster, 'qf_all.png'), width = 400, height = 300)
 plot_funs(
   fun_list = asplit(Q, 1),
   grid_list = rep(list(p_grid), nrow(Q)),
-  xlab = 'p', ylab = 'Q(p)', main = '',
+  xlab = 'Quantile level p', ylab = 'Q(p) (MIMS)', main = '',
   colors = rep(rgb(0, 0, 0, alpha = 0.5), nrow(Q))
 )
 dev.off()
@@ -1828,52 +1905,83 @@ dev.off()
 
 ## ----- Out-of-sample error table (LaTeX)
 
-## Squares show the variables in each full model; the error is that of the
-## reduced model when step-wise pruning dropped something, else of the full
-## model (the two coincide).
-table_models <- c(
-  'ref_common_preds_imp',
-  'scale_imp_0', 'scale_imp_1', 'scale_imp_8',
-  'dist_C_imp', 'dist_Qpc_imp'
+## One row per PA summary. The two change columns give the paired change in
+## CV MAE relative to the covariates-only model ('None'): for the full models
+## (each model's full formula) and for the pruned models (prune_pval_all,
+## rerun inside each training fold, compared with the pruned None model).
+## Values are mean (95% CI) over children of |error_model| - |error_None| on
+## the shared folds; negative = lower error than None. The None row shows its
+## MAE instead. In each change column the most negative change is bold. A
+## suggested caption is written as comments at the top of the .tex file. Edit
+## table_spec to change rows. Requires \usepackage{booktabs}.
+table_spec <- data.frame(
+  model = c('ref_common_preds_imp', 'scale_imp_0', 'scale_imp_1',
+            'scale_imp_8', 'dist_C_imp', 'dist_Qpc_imp'),
+  label = c('None (Baseline)', 'Mean (\\texttt{a\\_mean})', 'MVPA (\\texttt{a\\_mvpa})', '99th pct. (\\texttt{a\\_99})', 'WAME (\\texttt{c})', 'Q-PCA (\\texttt{q})'),
+  type = c('--', 'Scalar', 'Scalar', 'Scalar',
+           'Distributional', 'Distributional')
+)
+stopifnot(all(table_spec$model %in% names(models)), fit_reduced)
+
+table_vals <- do.call(rbind, lapply(seq_len(nrow(table_spec)), function(r) {
+  abbr <- models[[table_spec$model[r]]]$f_str_abbr
+  full <- results[results$preds == abbr & !results$reduced, ]
+  pr <- results[results$preds == abbr & results$reduced, ]
+  stopifnot(nrow(full) == 1, nrow(pr) == 1)
+  data.frame(full_mae = full$oos_err_mean, pruned_mae = pr$oos_err_mean,
+             full_d = full$delta_mean, full_lo = full$delta_low,
+             full_hi = full$delta_high,
+             pruned_d = pr$delta_mean, pruned_lo = pr$delta_low,
+             pruned_hi = pr$delta_high)
+}))
+is_pa_row <- table_spec$type != '--'
+
+## Cell text: change (95% CI), 3 decimals, true minus signs; bold = most
+## negative change among PA rows; the None row shows its MAE as the
+## reference
+num <- function(x) sub('^-', '$-$', sprintf('%.3f', x))
+fmt_col <- function(d, lo, hi, mae) {
+  txt <- num(d)
+  best <- is_pa_row & d == min(d[is_pa_row])
+  txt[best] <- paste0('\\textbf{', txt[best], '}')
+  txt <- paste0(txt, ' (', num(lo), ', ', num(hi), ')')
+  txt[!is_pa_row] <- paste0('Baseline (MAE = ', sprintf('%.3f', mae[!is_pa_row]), ')')
+  txt
+}
+full_txt <- fmt_col(table_vals$full_d, table_vals$full_lo, table_vals$full_hi,
+                    table_vals$full_mae)
+pruned_txt <- fmt_col(table_vals$pruned_d, table_vals$pruned_lo,
+                      table_vals$pruned_hi, table_vals$pruned_mae)
+
+body <- paste0(
+  paste(table_spec$label, table_spec$type, full_txt, pruned_txt, sep = ' & '),
+  ' \\\\'
 )
 
-## Columns: header -> model variables; a cell is filled if any of the
-## variables appears in any term of the full model (main effect or interaction)
-table_cols <- list(
-  'old' = 'old',
-  'male' = 'male',
-  'bmiz' = 'bmiz',
-  'imp' = 'imp',
-  'a\\_mean' = 'a_mean',
-  'a\\_mvpa' = 'mvpa_rate',
-  'a\\_99' = 'a_99',
-  'c' = paste0('c_', 1:K),
-  'q' = paste0('q_', 1:K)
-)
+## Suggested caption (written as LaTeX comments above the tabular)
+cv_desc <- if (V_cv == nrow(df)) 'leave-one-out' else paste0(V_cv, '-fold')
+table_caption <- strwrap(paste0(
+  'Out-of-sample prediction of total-body BMD Z-score. The baseline model ',
+  'includes age group, sex, BMI Z-score and high-impact activity; each other ',
+  'row adds the listed physical-activity (PA) summary and its interaction ',
+  'with high-impact activity. $\\Delta$MAE is the paired difference in ',
+  cv_desc, ' cross-validated mean absolute error from the baseline, averaged ',
+  'over children (negative = lower error than the baseline), with 95\\% CI. ',
+  'Full: all terms retained. Pruned: backward selection ($p < 0.05$) ',
+  'repeated within each cross-validation fit, applied to the baseline as ',
+  'well. Bold: largest reduction in each column.'
+), width = 76)
 
-table_rows <- sapply(table_models, function(nm) {
-  m <- models[[nm]]
-  reduced <- !is.null(m$model_red)
-  vars <- unlist(strsplit(attr(terms(m$model_full), 'term.labels'), ':'))
-  has <- sapply(table_cols, function(v) any(v %in% vars))
-  res <- results[results$preds == m$f_str_abbr & results$reduced == reduced, ]
-  stopifnot(nrow(res) == 1)
-  cells <- c(ifelse(has, '$\\blacksquare$', '$\\square$'),
-             sprintf('%.3f', res$oos_err_mean))
-  paste0(paste(cells, collapse = ' & '), ' \\\\')
-})
-
-## Requires \usepackage{booktabs}, \usepackage{amssymb} and \usepackage{array}.
-## All columns share a fixed, centered width so they are evenly spaced.
-col_width <- '3.5cm'
-col_spec <- paste0('>{\\centering\\arraybackslash}p{', col_width, '}')
 table_tex <- c(
-  paste0('\\begin{tabular}{',
-         paste(rep(col_spec, length(table_cols) + 1), collapse = ''), '}'),
+  '% Suggested caption:',
+  paste('%', table_caption),
+  '\\begin{tabular}{llcc}',
   '\\toprule',
-  paste0(paste(c(names(table_cols), 'Error'), collapse = ' & '), ' \\\\'),
+  paste0('PA summary & Type & ',
+         '$\\Delta$ Full MAE vs.\\ baseline (95\\% CI) & ',
+         '$\\Delta$ Pruned MAE vs.\\ baseline (95\\% CI) \\\\'),
   '\\midrule',
-  table_rows,
+  body,
   '\\bottomrule',
   '\\end{tabular}'
 )
@@ -2052,17 +2160,24 @@ plot_effect_contrasts <- function(model, embeddings, decode_fn, col_prefix,
   layout(matrix(c(1, 2, 5, 3, 4, 5), nrow = 2, byrow = TRUE),
          widths = c(1, 1, 0.5))
 
+  ## Axis titles only on the outer panels: y on the left column, x on the
+  ## bottom row. The most extreme decile curves (first and last) are bold.
   par(mar = c(4.5, 4.5, 3, 1))
-  for (pan in panels) {
+  for (i in seq_along(panels)) {
+    pan <- panels[[i]]
     Q_pan <- pan$curves$Q
     curve_cols <- resp_to_col(pan$curves$resp)
     plot(
       NULL,
       xlim = range(p_grid[p_idx]), ylim = ylim_panels,
-      xlab = 'p', ylab = 'Q(p) - Q[0.5](p)', main = pan$main
+      xlab = if (i > 2) 'Quantile level p' else '',
+      ylab = if (i %% 2 == 1) expression(Q(p) - Q[0.5](p) ~ '(MIMS)') else '',
+      main = pan$main
     )
-    for (r in seq_len(nrow(Q_pan))) {
-      lines(p_grid[p_idx], Q_pan[r, p_idx], col = curve_cols[r], lwd = 3)
+    n_curves <- nrow(Q_pan)
+    for (r in seq_len(n_curves)) {
+      lines(p_grid[p_idx], Q_pan[r, p_idx], col = curve_cols[r],
+            lwd = if (r %in% c(1, n_curves)) 3 else 1.5)
     }
   }
 
@@ -2073,7 +2188,7 @@ plot_effect_contrasts <- function(model, embeddings, decode_fn, col_prefix,
   plot(
     NULL,
     xlim = c(0.3, 2.7), ylim = range(c(bmd, resp_rng)),
-    xaxt = 'n', xlab = '', ylab = 'Total body BMD (Z-score)', main = ''
+    xaxt = 'n', xlab = '', ylab = 'Predicted / observed BMD Z-score', main = ''
   )
   y_seq <- seq(resp_rng[1], resp_rng[2], length.out = n_cols + 1)
   y_mid <- (y_seq[-1] + y_seq[-(n_cols + 1)]) / 2
@@ -2175,9 +2290,12 @@ for (pan in sub_panels) {
   draw_substitution_panel(
     pan$band, delta = delta_sub_poster, qlim = qlim_sub_poster,
     ylim = ylim_sub, main = pan$main,
-    ylab = bquote('Change in BMD Z-score (' * delta == .(delta_sub_poster) * ')'),
+    ylab = 'Change in BMD Z-score',
     x_intensity = x_intensity_poster
   )
+  ## delta as a small in-panel annotation
+  legend('topleft', legend = as.expression(bquote(delta == .(delta_sub_poster))),
+         bty = 'n', cex = 0.8)
 }
 dev.off()
 
