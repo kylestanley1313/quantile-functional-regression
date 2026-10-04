@@ -1806,6 +1806,15 @@ hca_qf_barycenter <- function(Q_aug, idx) {
   rowMeans(Q_aug[, idx, drop = FALSE])
 }
 
+## Relabel clusters 1..k by ascending median of `v`, so that cluster 1 has the
+## lowest median. cutree() numbers clusters by first appearance in the data,
+## which carries no meaning. Ties keep their cutree order; a cluster with no
+## observed `v` sorts last.
+hca_relabel_by_median <- function(cl, v) {
+  meds <- tapply(v, cl, median, na.rm = TRUE)
+  match(cl, as.integer(names(meds))[order(meds)])
+}
+
 ## Overlaid per-cluster densities of a covariate.
 hca_plot_density <- function(v, cl, cols, xlab, main, path) {
   ok    <- !is.na(v)
@@ -1917,6 +1926,9 @@ hca_legend_ramp <- function(pal, y0, y1, title, labels) {
 ##   n_clusts   positive integer -> cutree(hc, n_clusts) to partition the rows;
 ##              NULL (default) leaves the rows unmarked and makes the two
 ##              flags below no-ops
+##   cl         optional cluster label per row, used in place of the raw
+##              cutree() ids so relabelled clusters print consistently with
+##              the other figures. Must be a relabelling of that same cut.
 ##   cluster_lines   draw green rules between the row blocks
 ##   label_clusters  print each cluster's number in the right margin, centred
 ##                   on its block
@@ -1930,7 +1942,7 @@ hca_legend_ramp <- function(pal, y0, y1, title, labels) {
 ##              sliver when K is in the hundreds
 ##   path       output png
 hca_plot_heatmap <- function(hc, Z, covs, path,
-                            cov_types = NULL, n_clusts = NULL,
+                            cov_types = NULL, n_clusts = NULL, cl = NULL,
                             cluster_lines = TRUE, label_clusters = TRUE,
                             na_col = hca_na_col, z_labs = NULL,
                             cov_frac = NULL,
@@ -2022,7 +2034,10 @@ hca_plot_heatmap <- function(hc, Z, covs, path,
     stopifnot(length(n_clusts) == 1, n_clusts == round(n_clusts), n_clusts >= 1)
     ## Clusters are contiguous in dendrogram order, so run-lengths give both
     ## the cut points and each block's extent in one pass
-    runs <- rle(cutree(hc, k = n_clusts)[ord])
+    if (is.null(cl)) cl <- cutree(hc, k = n_clusts)
+    stopifnot(length(cl) == nr)
+    runs <- rle(unname(cl[ord]))
+    stopifnot(length(runs$values) == n_clusts)
     ends <- cumsum(runs$lengths)
     if (cluster_lines) {
       abline(h = head(ends, -1) + 0.5, col = 'green', lwd = 2)
@@ -2072,7 +2087,7 @@ Q_lvl_hca <- t(hca_qf_aug(Qi_ctx$payload, hca_q_levels,
 ## themselves, on the augmented p-grid under the Wasserstein metric. Qi is not
 ## a latent representation, so it skips the pairwise-embedding scatter plot --
 ## every other figure is produced for it exactly as for the embeddings.
-for (hca_latent in c('c', 'z_rot', 'qi')) {
+for (hca_latent in c('c')) {
 
   hca_is_qi     <- hca_latent == 'qi'
   hca_rep_label <- switch(
@@ -2156,14 +2171,16 @@ for (hca_latent in c('c', 'z_rot', 'qi')) {
     cov_frac_hca <- NULL   # equal-width columns, as before
   }
 
-  for (hca_k in c(10, 11, 15, 20)) {
+  for (hca_k in c(11)) {
 
     ## One directory per k: the figure names below carry no k suffix,
     ## so the path alone identifies a plot.
     dir_hca_k <- file.path(dir_hca, str_glue('k-{hca_k}'))
     if (!dir.exists(dir_hca_k)) dir.create(dir_hca_k, recursive = TRUE)
 
-    cl_hca   <- cutree(hc_hca, k = hca_k)
+    ## Number clusters by median age (youngest = 1) so that ids, and hence
+    ## colors, are interpretable and comparable across representations.
+    cl_hca   <- hca_relabel_by_median(cutree(hc_hca, k = hca_k), df_cov$age)
     cols_hca <- hcl.colors(hca_k, palette = 'Dark 3')
 
     ## rect.hclust() fills `border` left-to-right along hc$order, not by cluster id,
@@ -2189,6 +2206,7 @@ for (hca_latent in c('c', 'z_rot', 'qi')) {
       Z              = Z_heat_hca,
       covs           = df_cov[, c('male', 'age', 'pir', 'bmd_l_min_adj', 'hdl_adj', 'ghb_adj')],
       n_clusts       = hca_k,
+      cl             = cl_hca,
       cluster_lines  = TRUE,
       label_clusters = TRUE,
       z_labs         = z_labs_hca,
