@@ -628,7 +628,7 @@ df_cov$bmd_ll_adj <- residuals(
 df_cov$bmd_rl_adj <- residuals(
   gam(bmd_l_min ~ male + s(age), data = df_cov, na.action = na.exclude)
 )
-df_cov$bmd_l_min_adj <- residuals(
+df_cov$bmd_adj <- residuals(
   gam(bmd_l_min ~ male + s(age), data = df_cov, na.action = na.exclude)
 )
 df_cov$hdl_adj <- residuals(
@@ -1815,6 +1815,27 @@ hca_relabel_by_median <- function(cl, v) {
   match(cl, as.integer(names(meds))[order(meds)])
 }
 
+## Per-column signs (+1/-1) that orient an embedding so that increasing any one
+## dimension, holding the others fixed, raises the p-th quantile. The decoder
+## is nonlinear, so the direction is evaluated locally: each dimension is
+## perturbed +/- 1 SD about the component-wise median embedding and decoded.
+## `decode_fun` maps one embedding vector to a Qi.
+hca_quantile_signs <- function(Z, decode_fun, supp_Y, p = 0.99) {
+  z_med <- apply(Z, 2, median)
+  z_sd  <- apply(Z, 2, sd)
+  vapply(
+    seq_len(ncol(Z)),
+    function(k) {
+      step <- replace(numeric(ncol(Z)), k, z_sd[k])
+      q <- hca_qf_aug(
+        list(decode_fun(z_med + step), decode_fun(z_med - step)), p, supp_Y
+      )
+      if (q[1] < q[2]) -1 else 1
+    },
+    numeric(1)
+  )
+}
+
 ## Overlaid per-cluster densities of a covariate.
 hca_plot_density <- function(v, cl, cols, xlab, main, path) {
   ok    <- !is.na(v)
@@ -1910,6 +1931,28 @@ hca_legend_ramp <- function(pal, y0, y1, title, labels) {
   text(0.34, seq(y1, y0, length.out = length(labels)), labels, adj = 0)
 }
 
+## Color each dendrogram branch that lies wholly inside one cluster with that
+## cluster's color; branches above the cut keep the default. `cl` is indexed by
+## observation, as returned by cutree(), and `cols` by cluster id.
+hca_color_dendrogram <- function(dend, cl, cols) {
+  rec <- function(node) {
+    if (is.leaf(node)) {
+      g <- cl[as.integer(node)]
+    } else {
+      gs <- integer(length(node))
+      for (i in seq_along(node)) {
+        child     <- rec(node[[i]])
+        node[[i]] <- child$node
+        gs[i]     <- child$g
+      }
+      g <- if (!anyNA(gs) && all(gs == gs[1])) gs[1] else NA_integer_
+    }
+    if (!is.na(g)) attr(node, 'edgePar') <- list(col = cols[g])
+    list(node = node, g = g)
+  }
+  rec(dend)$node
+}
+
 ## Clustered heatmap: an N x (A + K) raster of covariate and latent values,
 ## rows in dendrogram order with the tree drawn alongside (one leaf per row).
 ## Columns are never re-ordered, so the latent block stays in component order.
@@ -1924,12 +1967,14 @@ hca_legend_ramp <- function(pal, y0, y1, title, labels) {
 ##   cov_types  optional 'binary'/'continuous' per covariate; the default
 ##              infers 'binary' when every non-NA value of a column is 0 or 1
 ##   n_clusts   positive integer -> cutree(hc, n_clusts) to partition the rows;
-##              NULL (default) leaves the rows unmarked and makes the two
-##              flags below no-ops
+##              NULL (default) leaves the rows unmarked, the dendrogram
+##              uncolored, and makes the two flags below no-ops
 ##   cl         optional cluster label per row, used in place of the raw
 ##              cutree() ids so relabelled clusters print consistently with
 ##              the other figures. Must be a relabelling of that same cut.
-##   cluster_lines   draw green rules between the row blocks
+##   cl_cols    color per cluster id, for the dendrogram branches; defaults
+##              to the 'Dark 3' palette used by the other figures
+##   cluster_lines   draw rules (in `line_col`) between the row blocks
 ##   label_clusters  print each cluster's number in the right margin, centred
 ##                   on its block
 ##   na_col     colour for missing covariate values, in both column types
@@ -1941,12 +1986,19 @@ hca_legend_ramp <- function(pal, y0, y1, title, labels) {
 ##              right for a K-column latent but squeezes the covariates to a
 ##              sliver when K is in the hundreds
 ##   path       output png
+##   width, height   figure size in pixels at 72 dpi; the file written is
+##                   res / 72 times larger in each direction
+##   res        resolution in dpi. Text, lines and layout scale with it, so
+##              raising it sharpens the figure without changing its look.
 hca_plot_heatmap <- function(hc, Z, covs, path,
                             cov_types = NULL, n_clusts = NULL, cl = NULL,
+                            cl_cols = NULL,
                             cluster_lines = TRUE, label_clusters = TRUE,
+                            line_col = 'green3',
                             na_col = hca_na_col, z_labs = NULL,
                             cov_frac = NULL,
-                            width = 1000, height = 1200, pointsize = 16) {
+                            width = 1000, height = 1200, pointsize = 16,
+                            res = 288) {
   covs <- as.data.frame(covs)
   nr   <- nrow(Z)
   A    <- ncol(covs)
@@ -1996,14 +2048,23 @@ hca_plot_heatmap <- function(hc, Z, covs, path,
   if (is.null(cov_frac)) cov_frac <- A / (A + K)
   stopifnot(cov_frac > 0, cov_frac < 1)
 
-  png(path, width = width, height = height, pointsize = pointsize)
+  dend <- as.dendrogram(hc)
+  if (!is.null(n_clusts)) {
+    stopifnot(length(n_clusts) == 1, n_clusts == round(n_clusts), n_clusts >= 1)
+    if (is.null(cl)) cl <- cutree(hc, k = n_clusts)
+    if (is.null(cl_cols)) cl_cols <- hcl.colors(n_clusts, palette = 'Dark 3')
+    stopifnot(length(cl) == nr, length(cl_cols) == n_clusts)
+    dend <- hca_color_dendrogram(dend, cl, cl_cols)
+  }
+
+  png(path, width = width * res / 72, height = height * res / 72,
+      pointsize = pointsize, res = res)
   on.exit({dev.off(); layout(1)}, add = TRUE)
   layout(matrix(1:3, nrow = 1), widths = c(1.1, 2.4, 0.9))
 
   ## Dendrogram: yaxs = 'i' makes leaf i sit at y = i, matching the raster
   par(mar = c(5, 2, 6, 0))
-  plot(as.dendrogram(hc), horiz = TRUE, axes = FALSE,
-      yaxs = 'i', leaflab = 'none')
+  plot(dend, horiz = TRUE, axes = FALSE, yaxs = 'i', leaflab = 'none')
 
   ## Heatmap. as.raster() draws its first row at the top, so flip to put
   ## dendrogram-order row 1 at the bottom where the first leaf is.
@@ -2031,16 +2092,13 @@ hca_plot_heatmap <- function(hc, Z, covs, path,
   }
   abline(v = cov_frac, lwd = 2)
   if (!is.null(n_clusts)) {
-    stopifnot(length(n_clusts) == 1, n_clusts == round(n_clusts), n_clusts >= 1)
     ## Clusters are contiguous in dendrogram order, so run-lengths give both
     ## the cut points and each block's extent in one pass
-    if (is.null(cl)) cl <- cutree(hc, k = n_clusts)
-    stopifnot(length(cl) == nr)
     runs <- rle(unname(cl[ord]))
     stopifnot(length(runs$values) == n_clusts)
     ends <- cumsum(runs$lengths)
     if (cluster_lines) {
-      abline(h = head(ends, -1) + 0.5, col = 'green', lwd = 2)
+      abline(h = head(ends, -1) + 0.5, col = line_col, lwd = 2)
     }
     if (label_clusters) {
       ## mtext rather than axis() so no label is dropped when a block is thin
@@ -2133,10 +2191,18 @@ for (hca_latent in c('c')) {
     grid_hca <- pi_grid_hca
     pipe_hca <- pipeline
     pipe_hca$latent <- hca_latent
-    hca_rep_mean <- function(idx) {
-      z_bar <- colMeans(Z_hca[idx, , drop = FALSE])
-      decode_latent_to_Qi(pipe_hca, list(z_bar), Ji_hca)[[1]]
+    hca_decode <- function(z) decode_latent_to_Qi(pipe_hca, list(z), Ji_hca)[[1]]
+    hca_rep_mean <- function(idx) hca_decode(colMeans(Z_hca[idx, , drop = FALSE]))
+    ## Orient the c-embeddings so that every dimension increases Q(0.99).
+    ## Display only: distances are sign-invariant, so the tree and clusters are
+    ## unaffected, and Z_hca itself stays unflipped because hca_rep_mean
+    ## decodes from it.
+    sgn_hca <- if (hca_latent == 'c') {
+      hca_quantile_signs(Z_hca, hca_decode, pipeline$training$cache$supp_Y)
+    } else {
+      rep(1, ncol(Z_hca))
     }
+    cat(str_glue("{hca_latent} display signs: {toString(sgn_hca)}"), '\n')
   }
   N_hca <- nrow(Z_hca)
   K_hca <- ncol(Z_hca)
@@ -2166,7 +2232,7 @@ for (hca_latent in c('c')) {
     ## ~500 Z columns vs a handful of covariates, so fix the split by width
     cov_frac_hca <- 0.3
   } else {
-    Z_heat_hca   <- Z_hca
+    Z_heat_hca   <- sweep(Z_hca, 2, sgn_hca, `*`)
     z_labs_hca   <- NULL
     cov_frac_hca <- NULL   # equal-width columns, as before
   }
@@ -2204,9 +2270,10 @@ for (hca_latent in c('c')) {
     hca_plot_heatmap(
       hc             = hc_hca,
       Z              = Z_heat_hca,
-      covs           = df_cov[, c('male', 'age', 'pir', 'bmd_l_min_adj', 'hdl_adj', 'ghb_adj')],
+      covs           = df_cov[, c('male', 'age', 'pir', 'bmd_adj', 'hdl_adj')],
       n_clusts       = hca_k,
       cl             = cl_hca,
+      cl_cols        = cols_hca,
       cluster_lines  = TRUE,
       label_clusters = TRUE,
       z_labs         = z_labs_hca,
@@ -2225,7 +2292,7 @@ for (hca_latent in c('c')) {
       png(file.path(dir_hca_k, 'embeddings.png'),
           width = 960, height = 960, pointsize = 18)
       plot_embeddings(
-        Z_hca[,k_from:k_to],
+        Z_heat_hca[,k_from:k_to],
         colors = adjustcolor(cols_hca[cl_hca], alpha.f = 0.3),
         shapes = rep(19, N_hca),
         sizes  = rep(0.5, N_hca),
@@ -2311,7 +2378,7 @@ for (hca_latent in c('c')) {
 
     ## Each continuous covariate gets a density overlay and a stack of
     ## cluster-wise boxplots. File stems match the previous explicit calls.
-    hca_cov_plots <- c('age', 'pir', 'bmd_l_min_adj', 'hdl_adj', 'ghb_adj')
+    hca_cov_plots <- c('age', 'pir', 'bmd_adj', 'hdl_adj', 'ghb_adj')
     for (cv in hca_cov_plots) {
       slug <- gsub('_', '-', cv)
       hca_plot_density(
