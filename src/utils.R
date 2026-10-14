@@ -1245,6 +1245,23 @@ draw_band <- function(x, lo, hi, col = adjustcolor("gray50", alpha.f = 0.25)) {
 }
 
 
+## Sets text sizes and margins for enlarged titles / axis labels, growing the
+## margins with the label sizes so text isn't clipped. cex (if non-NULL)
+## overrides the base text size -- e.g. cex = 1 undoes mfrow's automatic
+## shrink so the png pointsize is the true base size in multi-panel layouts.
+## cex_axis (if non-NULL) sets the tick-label size.
+## Returns the previous par values (for on.exit restore).
+fig_par <- function(cex_main = 1.2, cex_lab = 1, cex = NULL, cex_axis = NULL) {
+  lab_mar <- 1.5 + 1.5 * cex_lab
+  args <- list(cex.main = cex_main, cex.lab = cex_lab,
+               mar = c(lab_mar, lab_mar, 1 + cex_main, 1),
+               mgp = c(0.6 + cex_lab, 0.5, 0))
+  if (!is.null(cex)) args <- c(list(cex = cex), args)
+  if (!is.null(cex_axis)) args$cex.axis <- cex_axis
+  do.call(par, args)
+}
+
+
 plot_funs <- function(
     fun_list,
     grid_list,
@@ -1261,8 +1278,13 @@ plot_funs <- function(
     path = NULL,
     fig_width = 800,
     fig_height = 600,
-    bands = NULL
+    bands = NULL,
+    cex_main = NULL,
+    cex = NULL,
+    cex_axis = NULL,
+    legend_cex = 1
 ) {
+  ## cex_main / cex / cex_axis: if any is set, text and margins follow fig_par().
   ## bands: optional list of list(x, lo, hi), shaded beneath the curves.
   if (!is.null(path)) {
     png(path, width = fig_width, height = fig_height)
@@ -1303,6 +1325,11 @@ plot_funs <- function(
     ylim <- range(c(unlist(fun_list), band_vals), finite = TRUE)
   }
   par(mfrow = c(1, 1))
+  if (!is.null(cex_main) || !is.null(cex) || !is.null(cex_axis)) {
+    old_par <- fig_par(cex_main %||% 1.2, cex.lab, cex, cex_axis)
+    on.exit(par(old_par), add = TRUE)
+    if (main == '') par(mar = replace(par("mar"), 3, 1))
+  }
   plot(
     NULL,
     xlim = xlim,
@@ -1338,6 +1365,7 @@ plot_funs <- function(
       col    = color_width_type_labels$color,
       lwd    = color_width_type_labels$width,
       lty    = color_width_type_labels$type,
+      cex    = legend_cex,
       bty    = "n"
     )
   }
@@ -1355,8 +1383,14 @@ plot_embeddings <- function(
     stats = TRUE,
     path = NULL,
     legend_cex = 1,
-    legend_ncol = 1
+    legend_ncol = 1,
+    cex_main = NULL,
+    cex_lab = NULL,
+    cex = NULL,
+    cex_axis = NULL
 ) {
+  ## cex_main / cex_lab / cex / cex_axis: if any is set, text and margins
+  ## follow fig_par().
   if (!is.null(path)) {
     png(path, width = 800, height = 600)
   }
@@ -1409,7 +1443,12 @@ plot_embeddings <- function(
   }
   
   par(mfrow = c(K, K))
-  
+  if (!is.null(cex_main) || !is.null(cex_lab) || !is.null(cex) ||
+      !is.null(cex_axis)) {
+    old_par <- fig_par(cex_main %||% 1.2, cex_lab %||% 1, cex, cex_axis)
+    on.exit(par(old_par), add = TRUE)
+  }
+
   for (k1 in 1:K) {
     for (k2 in 1:K) {
       
@@ -1487,10 +1526,21 @@ plot_embeddings <- function(
 ##   upper_mat      n_row x n_col numeric matrix of interval upper bounds
 ##   log_x_plus_1   if TRUE, plot log(Q(p) + 1) instead of Q(p)
 ##   path           optional output png path; if NULL, draws to active device
+##   res            png resolution (ppi); layout is fixed in inches, so higher
+##                  res gives more pixels without changing relative sizes
+##   cex_main       magnification of panel titles
+##   cex_lab        magnification of x/y axis labels (margins scale to fit)
+##   cex            base text size; NULL keeps mfrow's automatic shrink
+##   cex_axis       magnification of tick labels; NULL keeps the default
 plot_qi_recon_grid <- function(Qi_orig_list, Qi_recon_list, recon_losses,
                                 lower_mat, upper_mat,
                                 log_x_plus_1 = FALSE,
-                                path = NULL) {
+                                path = NULL,
+                                res = 72,
+                                cex_main = 1,
+                                cex_lab = 1,
+                                cex = NULL,
+                                cex_axis = NULL) {
   stopifnot(identical(dim(lower_mat), dim(upper_mat)))
   stopifnot(all(lower_mat <  upper_mat),
             all(lower_mat >= 0), all(upper_mat <= 1))
@@ -1499,9 +1549,9 @@ plot_qi_recon_grid <- function(Qi_orig_list, Qi_recon_list, recon_losses,
   N_    <- length(recon_losses)
   recon_losses_sort <- sort(recon_losses)
 
-  if (!is.null(path)) png(path, width = 320 * n_col, height = 280 * n_row)
-  old_par <- par(mfrow = c(n_row, n_col), mar = c(3, 3, 2, 1),
-                 mgp = c(1.6, 0.5, 0))
+  if (!is.null(path)) png(path, width = 320 * n_col / 72, height = 280 * n_row / 72,
+                          units = "in", res = res)
+  old_par <- c(par(mfrow = c(n_row, n_col)), fig_par(cex_main, cex_lab, cex, cex_axis))
   on.exit(par(old_par), add = TRUE)
 
   for (i in seq_len(n_row)) {
@@ -1528,9 +1578,9 @@ plot_qi_recon_grid <- function(Qi_orig_list, Qi_recon_list, recon_losses,
       plot(pg, Qi_disp, type = "l",
            xlab = "p", ylab = ylab,
            ylim = range(c(0, Qi_disp, Qi_recon_disp), finite = TRUE),
-           main = sprintf("p ~ U(%.3g, %.3g)  p=%.4g", lower_mat[i, j], upper_mat[i, j], p),
+           main = bquote(tau == .(sprintf("%.4f", p))),   # loss quantile
            # main = str_glue("{lower_mat[i, j]*100}%-{upper_mat[i, j]*100}%tile, p={round(p,3)}"),
-           cex.main = 2
+           cex.main = cex_main
       )
       lines(pg, Qi_recon_disp, col = rgb(0, 1, 0, alpha = 1.0))
     }

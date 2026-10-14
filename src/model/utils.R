@@ -117,13 +117,195 @@ default_y_grid_two_group <- function(Qi_hat_0, Qi_hat_1,
 }
 
 ## Draw a point estimate with nested intervals at x: a thick bar for the
-## pointwise interval and a thin capped whisker for the joint interval.
-.draw_interval_pair <- function(x, v_hat, iv, k, col) {
-  arrows(x, iv$jt_lo[k], x, iv$jt_hi[k], angle = 90, code = 3, length = 0.08,
-         col = col, lwd = 1.5)
+## pointwise interval and a thin capped whisker for the joint interval. size
+## scales the line widths, cap length and point size together.
+.draw_interval_pair <- function(x, v_hat, iv, k, col, size = 1) {
+  arrows(x, iv$jt_lo[k], x, iv$jt_hi[k], angle = 90, code = 3,
+         length = 0.08 * size, col = col, lwd = 1.5 * size)
   segments(x, iv$pw_lo[k], x, iv$pw_hi[k], col = adjustcolor(col, 0.5),
-           lwd = 8, lend = "butt")
-  points(x, v_hat[k], col = col, pch = 19, cex = 1.6)
+           lwd = 8 * size, lend = "butt")
+  points(x, v_hat[k], col = col, pch = 19, cex = 1.6 * size)
+}
+
+## par() for a row of panels: mfrow, margins and outer title room (none when
+## main is blank); cex (if non-NULL) then overrides mfrow's automatic text
+## shrink. Returns old par.
+.panel_row_par <- function(n_panels, mar, cex = NULL, main = "") {
+  oma_top <- if (.is_blank(main)) 0 else 2
+  old_par <- par(mfrow = c(1, n_panels), mar = mar, oma = c(0, 0, oma_top, 0))
+  if (!is.null(cex)) old_par <- c(old_par, par(cex = cex))
+  old_par
+}
+
+## Outer (figure) title for a row of panels: the original 1.1 when cex is NULL,
+## otherwise the current title size.
+.panel_row_title <- function(main, cex = NULL) {
+  mtext(main, outer = TRUE, font = 2,
+        cex = if (is.null(cex)) 1.1 else cex * par("cex.main"))
+}
+
+
+## ---------- Legend placement ----------
+
+## Choose where a legend goes so it sits inside the plot box without covering
+## any drawn object, raising (or lowering) one end of ylim if no corner is
+## clear. Starts a new plot on the current device (plot.new + a provisional
+## plot.window); the caller then draws with .draw_frame(xlim, out$ylim, ...)
+## and places the legend at out$pos. objs is a list of list(x, lo, hi), one
+## per curve (lo = hi = y), band (lo/hi edges) or vertical line (x = v,
+## lo/hi = its extent). pref is tried first; pad is the clearance between
+## legend and objects as a fraction of the plot height.
+.legend_layout <- function(leg_args, xlim, ylim, objs, pref = "topleft",
+                           pad = 0.02, extend = c("top", "bottom")) {
+  plot.new()
+  plot.window(xlim = xlim, ylim = ylim)
+  usr  <- par("usr")
+  span <- diff(usr[3:4])
+  ext  <- 0.04   # yaxs = "r" pads usr by 4% of the ylim range on each side
+  corners <- unique(c(pref, "topleft", "topright", "bottomleft", "bottomright"))
+  ## Corners on a side that may not be extended are only used if already clear
+  can_extend <- function(pos) {
+    any(vapply(extend, function(s) grepl(paste0("^", s), pos), logical(1)))
+  }
+
+  ## Objects' y-extent under the legend's x-span
+  y_under <- function(r) {
+    vals <- unlist(lapply(objs, function(o) {
+      k <- o$x >= r$left & o$x <= r$left + r$w
+      c(o$lo[k], o$hi[k])
+    }))
+    if (length(vals)) range(vals) else NULL
+  }
+
+  best <- NULL
+  for (pos in corners) {
+    r  <- do.call(legend, c(list(pos), leg_args, plot = FALSE))$rect
+    yr <- y_under(r)
+    y0 <- r$top - r$h - pad * span
+    y1 <- r$top + pad * span
+    if (is.null(yr) || yr[2] < y0 || yr[1] > y1) {
+      return(list(ylim = ylim, pos = pos))
+    }
+    if (!can_extend(pos)) next
+    ## Smallest ylim end-shift that clears the objects at this corner
+    f  <- r$h / span
+    c_ <- ext - (1 + 2 * ext) * (f + pad)
+    if (grepl("^top", pos)) {
+      new_ylim <- c(ylim[1], max(ylim[2], (yr[2] + c_ * ylim[1]) / (1 + c_)))
+    } else {
+      new_ylim <- c(min(ylim[1], (yr[1] + c_ * ylim[2]) / (1 + c_)), ylim[2])
+    }
+    if (is.null(best) || diff(new_ylim) < diff(best$ylim)) {
+      best <- list(ylim = new_ylim, pos = pos)
+    }
+  }
+  best
+}
+
+## TRUE for a title / axis label that draws nothing ("" or NULL); expressions
+## count as non-blank.
+.is_blank <- function(x) {
+  is.null(x) || (is.character(x) && !any(nzchar(x)))
+}
+
+## Margins with the whitespace for an omitted title or axis label removed: the
+## top shrinks to a small gap without a title, and a side without an axis label
+## keeps only the room its tick labels need. Returns the margins (does not set
+## them).
+.trimmed_mar <- function(mar, main = "", xlab = "", ylab = "") {
+  tick_room <- par("mgp")[2] + par("cex.axis") * 1.2 + 0.3
+  if (.is_blank(main)) mar[3] <- 0.5
+  if (.is_blank(xlab)) mar[1] <- min(mar[1], tick_room)
+  if (.is_blank(ylab)) mar[2] <- min(mar[2], tick_room)
+  mar
+}
+
+## Axes, box and titles for a plot whose plot.new() has already been called
+## (e.g. by .legend_layout). y ticks are labelled only within ylim_data (the
+## data range before any legend headroom was added), so headroom stays blank.
+## main_line (if non-NULL) sets the title's margin line, e.g. to sit above
+## threshold labels.
+.draw_frame <- function(xlim, ylim, main = "", xlab = "", ylab = "",
+                        ylim_data = ylim, main_line = NULL) {
+  plot.window(xlim = xlim, ylim = ylim)
+  axis(1)
+  ## Label ticks within the data range plus the usual 4% axis padding
+  y_at  <- axTicks(2)
+  y_pad <- 0.04 * diff(range(ylim_data)) + 1e-8 * diff(ylim)
+  axis(2, at = y_at[y_at >= min(ylim_data) - y_pad &
+                    y_at <= max(ylim_data) + y_pad])
+  box()
+  title(xlab = xlab, ylab = ylab)
+  if (is.null(main_line)) title(main = main) else title(main = main, line = main_line)
+}
+
+## Bottom margin (lines) for the panel plots: the larger of mar_bottom and the
+## room the group labels need (the 0.2-line gap .axis_group_labels leaves,
+## their line count at tick-label size and 1.2 line spacing, and a small gap),
+## so multi-line labels fit without extra whitespace.
+.group_label_mar <- function(mar_bottom, labels) {
+  ## No labels, no axis: keep room for the lowest y tick label, which runs
+  ## parallel to the axis and can extend below the frame
+  if (.is_blank(labels)) return(max(mar_bottom, 1))
+  n_lines <- max(lengths(strsplit(as.character(labels), "\n")))
+  max(mar_bottom, 0.2 + n_lines * 1.2 * par("cex.axis") + 0.5)
+}
+
+## x-axis group labels for the panel plots; multi-line labels hang below the
+## axis instead of being centred on it. Blank labels draw no axis at all.
+.axis_group_labels <- function(at, labels) {
+  if (.is_blank(labels)) return(invisible(NULL))
+  if (any(grepl("\n", labels))) {
+    axis(1, at = at, labels = labels, padj = 1, mgp = c(3, 0.2, 0))
+  } else {
+    axis(1, at = at, labels = labels)
+  }
+}
+
+## Vertical threshold lines drawn only over [y0, y1] (the data range), so a
+## legend placed in headroom added above or below them stays clear.
+.draw_thresholds <- function(thr_vals, thr_cols, y0, y1, lwd = 2) {
+  segments(thr_vals, y0, thr_vals, y1, col = thr_cols, lty = 4, lwd = lwd)
+}
+
+## Objects (for .legend_layout) for vertical lines at thr_vals over [y0, y1]
+.threshold_objs <- function(thr_vals, y0, y1) {
+  lapply(thr_vals, function(v) list(x = v, lo = y0, hi = y1))
+}
+
+## Threshold labels in the top margin, centred over their lines at tick-label
+## size; a label that would overlap one to its left moves up a row. Call
+## before plot.new() (it widens the top margin, which the caller restores via
+## the returned old_par). Returns the rows and the title line that clears them.
+.threshold_label_layout <- function(thr_vals, thr_labels, xlim,
+                                    row_h = 0.9, gap_in = 0.04) {
+  cex_lab <- par("cex") * par("cex.axis")
+  w_in    <- strwidth(thr_labels, units = "inches", cex = cex_lab)
+  x_in_per_unit <- par("pin")[1] / (diff(xlim) * 1.08)   # xaxs = "r" padding
+  ctr <- (thr_vals - xlim[1]) * x_in_per_unit
+  lo  <- ctr - w_in / 2 - gap_in
+  hi  <- ctr + w_in / 2 + gap_in
+  rows <- integer(length(thr_vals))
+  row_end <- numeric(0)   # right edge of the last label placed in each row
+  for (k in order(thr_vals)) {
+    r <- which(row_end < lo[k])[1]
+    if (is.na(r)) {
+      r <- length(row_end) + 1
+      row_end[r] <- -Inf
+    }
+    rows[k] <- r
+    row_end[r] <- hi[k]
+  }
+  n_rows  <- length(row_end)
+  old_par <- par(mar = par("mar") + c(0, 0, n_rows * row_h, 0))
+  list(rows = rows, row_h = row_h, cex = cex_lab, old_par = old_par,
+       main_line = 0.5 + n_rows * row_h + 0.2)
+}
+
+## Draw the labels laid out by .threshold_label_layout
+.draw_threshold_labels <- function(thr_vals, thr_labels, thr_cols, lay) {
+  mtext(thr_labels, side = 3, at = thr_vals, col = thr_cols, cex = lay$cex,
+        line = 0.2 + (lay$rows - 1) * lay$row_h)
 }
 
 
@@ -147,6 +329,19 @@ default_y_grid_two_group <- function(Qi_hat_0, Qi_hat_1,
 ## the two groups, computes pointwise quantile bands internally, and draws to
 ## the active device. The caller manages png/dev.off.
 
+## Shared arguments of the single-panel plots below:
+##   legend_loc  preferred legend corner; if any curve, band or reference line
+##               would sit under the legend there, the other corners are tried
+##               and, failing those, the y-axis is extended to make room (see
+##               .legend_layout), so the legend always stays inside the axes.
+##   threshold_labels  (CDF / survival plots) "legend" lists the thresholds in
+##               the legend; "top" labels each threshold line above the plot
+##               frame instead (keeping the legend small), and any legend
+##               headroom is then added at the bottom.
+##   legend_cex  legend text size.
+##   lwd         line width of the estimates, legend keys and threshold lines;
+##               NULL keeps the original widths.
+
 ## Two-group conditional QFs on the (0,1) p-grid with pointwise or joint
 ## (sup-t across p) bootstrap bands.
 plot_decoded_conditional_qfs <- function(
@@ -155,7 +350,9 @@ plot_decoded_conditional_qfs <- function(
     group_labels = c("0", "1"),
     group_colors = c("black", "red"),
     band_type = c("joint", "pointwise"),
-    legend_loc = 'topleft'
+    legend_loc = 'topleft',
+    legend_cex = 1,
+    lwd = NULL
 ) {
   band_type <- match.arg(band_type)
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
@@ -166,20 +363,30 @@ plot_decoded_conditional_qfs <- function(
   b0 <- .boot_band(Qi_boot_0, Qi_hat_0, alpha, band_type)
   b1 <- .boot_band(Qi_boot_1, Qi_hat_1, alpha, band_type)
 
-  fun_list  <- list(Qi_hat_0, Qi_hat_1)
-  grid_list <- rep(list(pi_grid), length(fun_list))
-  cwt_lbl   <- data.frame(
-    color = group_colors, width = c(4, 4),
-    type  = c(1, 1), label = group_labels
+  lwd_est <- lwd %||% 1
+  lwd_leg <- lwd %||% 4
+  xlim <- range(pi_grid)
+  ylim <- range(c(Qi_hat_0, Qi_hat_1, b0$lo, b0$hi, b1$lo, b1$hi), finite = TRUE)
+  leg_args <- list(legend = group_labels, col = group_colors,
+                   lwd = lwd_leg, lty = 1, cex = legend_cex, bty = "n")
+  objs <- list(
+    list(x = pi_grid, lo = b0$lo, hi = b0$hi),
+    list(x = pi_grid, lo = b1$lo, hi = b1$hi),
+    list(x = pi_grid, lo = Qi_hat_0, hi = Qi_hat_0),
+    list(x = pi_grid, lo = Qi_hat_1, hi = Qi_hat_1)
   )
-  plot_funs(
-    fun_list  = fun_list, grid_list = grid_list,
-    colors    = group_colors, widths = c(1, 1), types = c(1, 1),
-    ylab      = "Q(p)",
-    color_width_type_labels = cwt_lbl, main = main,
-    legend_loc = legend_loc,
-    bands     = list(c(list(x = pi_grid), b0), c(list(x = pi_grid), b1))
-  )
+  ## Drop margin space for an omitted title
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, "p", "Q(p)"))
+  on.exit(par(old_mar), add = TRUE)
+  lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc)
+
+  .draw_frame(xlim, lay$ylim, main = main, xlab = "p", ylab = "Q(p)",
+              ylim_data = ylim)
+  draw_band(pi_grid, b0$lo, b0$hi)
+  draw_band(pi_grid, b1$lo, b1$hi)
+  lines(pi_grid, Qi_hat_0, col = group_colors[1], lwd = lwd_est)
+  lines(pi_grid, Qi_hat_1, col = group_colors[2], lwd = lwd_est)
+  do.call(legend, c(list(lay$pos), leg_args))
   invisible(NULL)
 }
 
@@ -190,7 +397,9 @@ plot_decoded_conditional_qf_diff <- function(
     Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
     alpha = 0.05, main = "", diff_label = "1 - 0",
     band_type = c("joint", "pointwise"),
-    legend_loc = 'topleft'
+    legend_loc = 'topleft',
+    legend_cex = 1,
+    lwd = NULL
 ) {
   band_type <- match.arg(band_type)
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
@@ -202,23 +411,27 @@ plot_decoded_conditional_qf_diff <- function(
   mat_boot_diff <- Qi_boot_1 - Qi_boot_0
   bd <- .boot_band(mat_boot_diff, Qi_hat_diff, alpha, band_type)
 
-  zero_line <- rep(0, length(pi_grid))
-  fun_list  <- list(Qi_hat_diff, zero_line)
-  grid_list <- rep(list(pi_grid), length(fun_list))
-  colors    <- c("black", "red")
-  widths    <- c(4, 1)
-  types     <- c(1, 2)
-  cwt_lbl   <- data.frame(
-    color = "black", width = 4, type = 1, label = diff_label
+  lwd_est <- lwd %||% 4
+  xlim <- range(pi_grid)
+  ylim <- range(c(Qi_hat_diff, bd$lo, bd$hi, 0), finite = TRUE)
+  leg_args <- list(legend = diff_label, col = "black",
+                   lwd = lwd_est, lty = 1, cex = legend_cex, bty = "n")
+  objs <- list(
+    list(x = pi_grid, lo = bd$lo, hi = bd$hi),
+    list(x = pi_grid, lo = Qi_hat_diff, hi = Qi_hat_diff),
+    list(x = pi_grid, lo = 0 * pi_grid, hi = 0 * pi_grid)   # zero reference line
   )
-  plot_funs(
-    fun_list  = fun_list, grid_list = grid_list,
-    colors    = colors, widths = widths, types = types,
-    ylab      = "Q(p) Contrast",
-    color_width_type_labels = cwt_lbl, main = main,
-    legend_loc = legend_loc,
-    bands     = list(c(list(x = pi_grid), bd))
-  )
+  ## Drop margin space for an omitted title
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, "p", "Q(p) Contrast"))
+  on.exit(par(old_mar), add = TRUE)
+  lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc)
+
+  .draw_frame(xlim, lay$ylim, main = main, xlab = "p", ylab = "Q(p) Contrast",
+              ylim_data = ylim)
+  draw_band(pi_grid, bd$lo, bd$hi)
+  abline(h = 0, col = "red", lty = 2)
+  lines(pi_grid, Qi_hat_diff, col = "black", lwd = lwd_est)
+  do.call(legend, c(list(lay$pos), leg_args))
   invisible(NULL)
 }
 
@@ -232,9 +445,13 @@ plot_decoded_conditional_cdfs <- function(
     group_colors = c("black", "red"),
     thresholds = NULL,
     band_type = c("joint", "pointwise"),
-    legend_loc = 'topleft'
+    legend_loc = 'topleft',
+    threshold_labels = c("legend", "top"),
+    legend_cex = 1,
+    lwd = NULL
 ) {
   band_type <- match.arg(band_type)
+  threshold_labels <- match.arg(threshold_labels)
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
   if (is.null(y_grid)) {
@@ -252,24 +469,57 @@ plot_decoded_conditional_cdfs <- function(
   thr_vals   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "value") else NULL
   thr_cols   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "col")   else NULL
   thr_labels <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "label") else NULL
+  thr_in_leg <- threshold_labels == "legend"
+  leg_thr     <- if (thr_in_leg) thr_labels else NULL
+  leg_thr_col <- if (thr_in_leg) thr_cols   else NULL
 
-  plot(NULL, xlim = range(y_grid), ylim = c(0, 1),
-       xlab = "y", ylab = "F(y)", main = main)
+  lwd_est <- lwd %||% 4
+  lwd_thr <- lwd %||% 2
+  xlim <- range(y_grid)
+  ylim <- c(0, 1)
+  thr_y <- ylim + c(-1, 1) * 0.04 * diff(ylim)   # full height before any extension
+  leg_args <- list(
+    legend = c(group_labels, leg_thr),
+    col    = c(group_colors, leg_thr_col),
+    lwd    = c(lwd_est, lwd_est, rep(lwd_thr, length(leg_thr))),
+    lty    = c(1, 1, rep(4, length(leg_thr))),
+    cex    = legend_cex,
+    bty    = "n"
+  )
+  objs <- c(
+    list(
+      list(x = y_grid, lo = b0$lo, hi = b0$hi),
+      list(x = y_grid, lo = b1$lo, hi = b1$hi),
+      list(x = y_grid, lo = F_hat_0, hi = F_hat_0),
+      list(x = y_grid, lo = F_hat_1, hi = F_hat_1)
+    ),
+    .threshold_objs(thr_vals, thr_y[1], thr_y[2])
+  )
+  ## Drop margin space for an omitted title
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, "y", "F(y)"))
+  on.exit(par(old_mar), add = TRUE)
+  ## Thresholds labelled above the frame: widen the top margin for them, and
+  ## add any legend headroom at the bottom so the lines still reach their labels
+  top_lab <- !thr_in_leg && !is.null(thresholds)
+  if (top_lab) {
+    tl <- .threshold_label_layout(thr_vals, thr_labels, xlim)
+    on.exit(par(tl$old_par), add = TRUE, after = FALSE)   # undo before old_mar
+  }
+  lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc,
+                        extend = if (top_lab) "bottom" else c("top", "bottom"))
+
+  .draw_frame(xlim, lay$ylim, main = main, xlab = "y", ylab = "F(y)",
+              ylim_data = ylim,
+              main_line = if (top_lab) tl$main_line else NULL)
   draw_band(y_grid, b0$lo, b0$hi)
   draw_band(y_grid, b1$lo, b1$hi)
   if (!is.null(thresholds)) {
-    abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 2)
+    .draw_thresholds(thr_vals, thr_cols, thr_y[1], thr_y[2], lwd = lwd_thr)
   }
-  lines(y_grid, F_hat_0, col = group_colors[1], lwd = 4)
-  lines(y_grid, F_hat_1, col = group_colors[2], lwd = 4)
-
-  legend(legend_loc,
-    legend = c(group_labels, thr_labels),
-    col    = c(group_colors, thr_cols),
-    lwd    = c(4, 4, rep(2, length(thr_labels))),
-    lty    = c(1, 1, rep(4, length(thr_labels))),
-    bty    = "n"
-  )
+  lines(y_grid, F_hat_0, col = group_colors[1], lwd = lwd_est)
+  lines(y_grid, F_hat_1, col = group_colors[2], lwd = lwd_est)
+  do.call(legend, c(list(lay$pos), leg_args))
+  if (top_lab) .draw_threshold_labels(thr_vals, thr_labels, thr_cols, tl)
   invisible(NULL)
 }
 
@@ -281,9 +531,13 @@ plot_decoded_conditional_cdf_diff <- function(
     y_grid = NULL, diff_label = "1 - 0",
     thresholds = NULL,
     band_type = c("joint", "pointwise"),
-    legend_loc = 'topleft'
+    legend_loc = 'topleft',
+    threshold_labels = c("legend", "top"),
+    legend_cex = 1,
+    lwd = NULL
 ) {
   band_type <- match.arg(band_type)
+  threshold_labels <- match.arg(threshold_labels)
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
   if (is.null(y_grid)) {
@@ -304,24 +558,56 @@ plot_decoded_conditional_cdf_diff <- function(
   thr_vals   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "value") else NULL
   thr_cols   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "col")   else NULL
   thr_labels <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "label") else NULL
+  thr_in_leg <- threshold_labels == "legend"
+  leg_thr     <- if (thr_in_leg) thr_labels else NULL
+  leg_thr_col <- if (thr_in_leg) thr_cols   else NULL
 
+  lwd_est     <- lwd %||% 4
+  lwd_thr     <- lwd %||% 2
+  lwd_thr_leg <- lwd %||% 1.5
+  xlim  <- range(y_grid)
   y_lim <- range(c(F_hat_diff, band_lo_diff, band_hi_diff, 0))
-  plot(NULL, xlim = range(y_grid), ylim = y_lim,
-       xlab = "y", ylab = "F(y) Contrast", main = main)
+  thr_y <- y_lim + c(-1, 1) * 0.04 * diff(y_lim)
+  leg_args <- list(
+    legend = c(diff_label, leg_thr),
+    col    = c("black", leg_thr_col),
+    lwd    = c(lwd_est, rep(lwd_thr_leg, length(leg_thr))),
+    lty    = c(1, rep(4, length(leg_thr))),
+    cex    = legend_cex,
+    bty    = "n"
+  )
+  objs <- c(
+    list(
+      list(x = y_grid, lo = band_lo_diff, hi = band_hi_diff),
+      list(x = y_grid, lo = F_hat_diff, hi = F_hat_diff),
+      list(x = y_grid, lo = 0 * y_grid, hi = 0 * y_grid)   # zero reference line
+    ),
+    .threshold_objs(thr_vals, thr_y[1], thr_y[2])
+  )
+  ## Drop margin space for an omitted title
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, "y", "F(y) Contrast"))
+  on.exit(par(old_mar), add = TRUE)
+  ## Thresholds labelled above the frame: widen the top margin for them, and
+  ## add any legend headroom at the bottom so the lines still reach their labels
+  top_lab <- !thr_in_leg && !is.null(thresholds)
+  if (top_lab) {
+    tl <- .threshold_label_layout(thr_vals, thr_labels, xlim)
+    on.exit(par(tl$old_par), add = TRUE, after = FALSE)   # undo before old_mar
+  }
+  lay <- .legend_layout(leg_args, xlim, y_lim, objs, pref = legend_loc,
+                        extend = if (top_lab) "bottom" else c("top", "bottom"))
+
+  .draw_frame(xlim, lay$ylim, main = main, xlab = "y", ylab = "F(y) Contrast",
+              ylim_data = y_lim,
+              main_line = if (top_lab) tl$main_line else NULL)
   draw_band(y_grid, band_lo_diff, band_hi_diff)
   abline(h = 0, col = "red", lty = 2)
   if (!is.null(thresholds)) {
-    abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 2)
+    .draw_thresholds(thr_vals, thr_cols, thr_y[1], thr_y[2], lwd = lwd_thr)
   }
-  lines(y_grid, F_hat_diff, col = "black", lwd = 4)
-
-  legend(legend_loc,
-    legend = c(diff_label, thr_labels),
-    col    = c("black", thr_cols),
-    lwd    = c(4, rep(1.5, length(thr_labels))),
-    lty    = c(1, rep(4, length(thr_labels))),
-    bty    = "n"
-  )
+  lines(y_grid, F_hat_diff, col = "black", lwd = lwd_est)
+  do.call(legend, c(list(lay$pos), leg_args))
+  if (top_lab) .draw_threshold_labels(thr_vals, thr_labels, thr_cols, tl)
   invisible(NULL)
 }
 
@@ -337,9 +623,13 @@ plot_decoded_conditional_survivals <- function(
     group_colors = c("black", "red"),
     thresholds = NULL,
     band_type = c("joint", "pointwise"),
-    legend_loc = 'topright'
+    legend_loc = 'topright',
+    threshold_labels = c("legend", "top"),
+    legend_cex = 1,
+    lwd = NULL
 ) {
   band_type <- match.arg(band_type)
+  threshold_labels <- match.arg(threshold_labels)
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
   if (is.null(y_grid)) {
@@ -357,24 +647,57 @@ plot_decoded_conditional_survivals <- function(
   thr_vals   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "value") else NULL
   thr_cols   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "col")   else NULL
   thr_labels <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "label") else NULL
+  thr_in_leg <- threshold_labels == "legend"
+  leg_thr     <- if (thr_in_leg) thr_labels else NULL
+  leg_thr_col <- if (thr_in_leg) thr_cols   else NULL
 
-  plot(NULL, xlim = range(y_grid), ylim = c(0, 1),
-       xlab = "y", ylab = "1 - F(y)", main = main)
+  lwd_est <- lwd %||% 4
+  lwd_thr <- lwd %||% 2
+  xlim <- range(y_grid)
+  ylim <- c(0, 1)
+  thr_y <- ylim + c(-1, 1) * 0.04 * diff(ylim)
+  leg_args <- list(
+    legend = c(group_labels, leg_thr),
+    col    = c(group_colors, leg_thr_col),
+    lwd    = c(lwd_est, lwd_est, rep(lwd_thr, length(leg_thr))),
+    lty    = c(1, 1, rep(4, length(leg_thr))),
+    cex    = legend_cex,
+    bty    = "n"
+  )
+  objs <- c(
+    list(
+      list(x = y_grid, lo = b0$lo, hi = b0$hi),
+      list(x = y_grid, lo = b1$lo, hi = b1$hi),
+      list(x = y_grid, lo = S_hat_0, hi = S_hat_0),
+      list(x = y_grid, lo = S_hat_1, hi = S_hat_1)
+    ),
+    .threshold_objs(thr_vals, thr_y[1], thr_y[2])
+  )
+  ## Drop margin space for an omitted title
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, "y", "1 - F(y)"))
+  on.exit(par(old_mar), add = TRUE)
+  ## Thresholds labelled above the frame: widen the top margin for them, and
+  ## add any legend headroom at the bottom so the lines still reach their labels
+  top_lab <- !thr_in_leg && !is.null(thresholds)
+  if (top_lab) {
+    tl <- .threshold_label_layout(thr_vals, thr_labels, xlim)
+    on.exit(par(tl$old_par), add = TRUE, after = FALSE)   # undo before old_mar
+  }
+  lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc,
+                        extend = if (top_lab) "bottom" else c("top", "bottom"))
+
+  .draw_frame(xlim, lay$ylim, main = main, xlab = "y", ylab = "1 - F(y)",
+              ylim_data = ylim,
+              main_line = if (top_lab) tl$main_line else NULL)
   draw_band(y_grid, b0$lo, b0$hi)
   draw_band(y_grid, b1$lo, b1$hi)
   if (!is.null(thresholds)) {
-    abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 2)
+    .draw_thresholds(thr_vals, thr_cols, thr_y[1], thr_y[2], lwd = lwd_thr)
   }
-  lines(y_grid, S_hat_0, col = group_colors[1], lwd = 4)
-  lines(y_grid, S_hat_1, col = group_colors[2], lwd = 4)
-
-  legend(legend_loc,
-    legend = c(group_labels, thr_labels),
-    col    = c(group_colors, thr_cols),
-    lwd    = c(4, 4, rep(2, length(thr_labels))),
-    lty    = c(1, 1, rep(4, length(thr_labels))),
-    bty    = "n"
-  )
+  lines(y_grid, S_hat_0, col = group_colors[1], lwd = lwd_est)
+  lines(y_grid, S_hat_1, col = group_colors[2], lwd = lwd_est)
+  do.call(legend, c(list(lay$pos), leg_args))
+  if (top_lab) .draw_threshold_labels(thr_vals, thr_labels, thr_cols, tl)
   invisible(NULL)
 }
 
@@ -388,9 +711,13 @@ plot_decoded_conditional_survival_diff <- function(
     y_grid = NULL, diff_label = "1 - 0",
     thresholds = NULL,
     band_type = c("joint", "pointwise"),
-    legend_loc = 'topleft'
+    legend_loc = 'topleft',
+    threshold_labels = c("legend", "top"),
+    legend_cex = 1,
+    lwd = NULL
 ) {
   band_type <- match.arg(band_type)
+  threshold_labels <- match.arg(threshold_labels)
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
   if (is.null(y_grid)) {
@@ -409,24 +736,56 @@ plot_decoded_conditional_survival_diff <- function(
   thr_vals   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "value") else NULL
   thr_cols   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "col")   else NULL
   thr_labels <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "label") else NULL
+  thr_in_leg <- threshold_labels == "legend"
+  leg_thr     <- if (thr_in_leg) thr_labels else NULL
+  leg_thr_col <- if (thr_in_leg) thr_cols   else NULL
 
+  lwd_est     <- lwd %||% 4
+  lwd_thr     <- lwd %||% 2
+  lwd_thr_leg <- lwd %||% 1.5
+  xlim  <- range(y_grid)
   y_lim <- range(c(S_hat_diff, bd$lo, bd$hi, 0))
-  plot(NULL, xlim = range(y_grid), ylim = y_lim,
-       xlab = "y", ylab = "(1 - F(y)) Contrast", main = main)
+  thr_y <- y_lim + c(-1, 1) * 0.04 * diff(y_lim)
+  leg_args <- list(
+    legend = c(diff_label, leg_thr),
+    col    = c("black", leg_thr_col),
+    lwd    = c(lwd_est, rep(lwd_thr_leg, length(leg_thr))),
+    lty    = c(1, rep(4, length(leg_thr))),
+    cex    = legend_cex,
+    bty    = "n"
+  )
+  objs <- c(
+    list(
+      list(x = y_grid, lo = bd$lo, hi = bd$hi),
+      list(x = y_grid, lo = S_hat_diff, hi = S_hat_diff),
+      list(x = y_grid, lo = 0 * y_grid, hi = 0 * y_grid)   # zero reference line
+    ),
+    .threshold_objs(thr_vals, thr_y[1], thr_y[2])
+  )
+  ## Drop margin space for an omitted title
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, "y", "(1 - F(y)) Contrast"))
+  on.exit(par(old_mar), add = TRUE)
+  ## Thresholds labelled above the frame: widen the top margin for them, and
+  ## add any legend headroom at the bottom so the lines still reach their labels
+  top_lab <- !thr_in_leg && !is.null(thresholds)
+  if (top_lab) {
+    tl <- .threshold_label_layout(thr_vals, thr_labels, xlim)
+    on.exit(par(tl$old_par), add = TRUE, after = FALSE)   # undo before old_mar
+  }
+  lay <- .legend_layout(leg_args, xlim, y_lim, objs, pref = legend_loc,
+                        extend = if (top_lab) "bottom" else c("top", "bottom"))
+
+  .draw_frame(xlim, lay$ylim, main = main, xlab = "y",
+              ylab = "(1 - F(y)) Contrast", ylim_data = y_lim,
+              main_line = if (top_lab) tl$main_line else NULL)
   draw_band(y_grid, bd$lo, bd$hi)
   abline(h = 0, col = "red", lty = 2)
   if (!is.null(thresholds)) {
-    abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 2)
+    .draw_thresholds(thr_vals, thr_cols, thr_y[1], thr_y[2], lwd = lwd_thr)
   }
-  lines(y_grid, S_hat_diff, col = "black", lwd = 4)
-
-  legend(legend_loc,
-    legend = c(diff_label, thr_labels),
-    col    = c("black", thr_cols),
-    lwd    = c(4, rep(1.5, length(thr_labels))),
-    lty    = c(1, rep(4, length(thr_labels))),
-    bty    = "n"
-  )
+  lines(y_grid, S_hat_diff, col = "black", lwd = lwd_est)
+  do.call(legend, c(list(lay$pos), leg_args))
+  if (top_lab) .draw_threshold_labels(thr_vals, thr_labels, thr_cols, tl)
   invisible(NULL)
 }
 
@@ -484,25 +843,34 @@ plot_decoded_conditional_survival_diff <- function(
 ## pointwise / joint intervals.
 .plot_two_group_cross_sections <- function(v_hat_0, v_hat_1, iv_0, iv_1,
                                            panel_mains, panel_ylabs,
-                                           main, group_labels, group_colors) {
+                                           main, group_labels, group_colors,
+                                           cex = NULL,
+                                           mar = c(2.5, 4.5, 3, 1),
+                                           size = 1,
+                                           xlim = NULL) {
   n_pts   <- length(v_hat_0)
-  old_par <- par(mfrow = c(1, n_pts), mar = c(2.5, 4.5, 3, 1), oma = c(0, 0, 2, 0))
+  old_par <- .panel_row_par(n_pts, mar, cex, main)
   on.exit(par(old_par), add = TRUE)
   for (k in seq_len(n_pts)) {
     y_vals <- c(v_hat_0[k], v_hat_1[k],
                 sapply(iv_0, `[`, k), sapply(iv_1, `[`, k))
     y_pad  <- 0.08 * diff(range(y_vals))
+    ## Trim the top / left margin for an omitted panel title / y label (the
+    ## bottom keeps its room: the group labels sit there)
+    mar_k <- .trimmed_mar(mar, panel_mains[k], "x", panel_ylabs[k])
+    mar_k[1] <- .group_label_mar(mar[1], group_labels)
+    par(mar = mar_k)
     plot(NULL,
-         xlim = c(0.5, 2.5),
+         xlim = xlim %||% c(0.5, 2.5),
          ylim = c(min(y_vals) - y_pad, max(y_vals) + y_pad),
          xaxt = "n", xlab = "",
          ylab = panel_ylabs[k],
          main = panel_mains[k])
-    axis(1, at = c(1, 2), labels = group_labels)
-    .draw_interval_pair(1, v_hat_0, iv_0, k, group_colors[1])
-    .draw_interval_pair(2, v_hat_1, iv_1, k, group_colors[2])
+    .axis_group_labels(c(1, 2), group_labels)
+    .draw_interval_pair(1, v_hat_0, iv_0, k, group_colors[1], size)
+    .draw_interval_pair(2, v_hat_1, iv_1, k, group_colors[2], size)
   }
-  mtext(main, outer = TRUE, cex = 1.1, font = 2)
+  .panel_row_title(main, cex)
   invisible(NULL)
 }
 
@@ -510,24 +878,33 @@ plot_decoded_conditional_survival_diff <- function(
 ## nested pointwise / joint intervals and a zero reference line.
 .plot_contrast_cross_sections <- function(v_hat_diff, iv_diff,
                                           panel_mains, panel_ylabs,
-                                          main, diff_label) {
+                                          main, diff_label,
+                                          cex = NULL,
+                                          mar = c(2.5, 4.5, 3, 1),
+                                          size = 1,
+                                          xlim = NULL) {
   n_pts   <- length(v_hat_diff)
-  old_par <- par(mfrow = c(1, n_pts), mar = c(2.5, 4.5, 3, 1), oma = c(0, 0, 2, 0))
+  old_par <- .panel_row_par(n_pts, mar, cex, main)
   on.exit(par(old_par), add = TRUE)
   for (k in seq_len(n_pts)) {
     y_vals <- c(v_hat_diff[k], sapply(iv_diff, `[`, k), 0)
     y_pad  <- 0.08 * diff(range(y_vals))
+    ## Trim the top / left margin for an omitted panel title / y label (the
+    ## bottom keeps its room: the group labels sit there)
+    mar_k <- .trimmed_mar(mar, panel_mains[k], "x", panel_ylabs[k])
+    mar_k[1] <- .group_label_mar(mar[1], diff_label)
+    par(mar = mar_k)
     plot(NULL,
-         xlim = c(0.5, 1.5),
+         xlim = xlim %||% c(0.5, 1.5),
          ylim = c(min(y_vals) - y_pad, max(y_vals) + y_pad),
          xaxt = "n", xlab = "",
          ylab = panel_ylabs[k],
          main = panel_mains[k])
-    axis(1, at = 1, labels = diff_label)
+    .axis_group_labels(1, diff_label)
     abline(h = 0, col = "red", lty = 2)
-    .draw_interval_pair(1, v_hat_diff, iv_diff, k, "black")
+    .draw_interval_pair(1, v_hat_diff, iv_diff, k, "black", size)
   }
-  mtext(main, outer = TRUE, cex = 1.1, font = 2)
+  .panel_row_title(main, cex)
   invisible(NULL)
 }
 
@@ -552,7 +929,11 @@ plot_decoded_conditional_thresholds <- function(
     y_grid = NULL,
     alpha = 0.05, main = "",
     group_labels = c("0", "1"),
-    group_colors = c("black", "red")
+    group_colors = c("black", "red"),
+    cex = NULL,
+    mar = c(2.5, 4.5, 3, 1),
+    size = 1,
+    xlim = NULL
 ) {
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
@@ -589,7 +970,9 @@ plot_decoded_conditional_thresholds <- function(
     v_hat_0, v_hat_1,
     .boot_intervals_at(v_boot_0, v_hat_0, crit_0, alpha),
     .boot_intervals_at(v_boot_1, v_hat_1, crit_1, alpha),
-    panel_mains, panel_ylabs, main, group_labels, group_colors
+    panel_mains, panel_ylabs, main, group_labels, group_colors,
+    cex = cex, mar = mar, size = size,
+    xlim = xlim
   )
 }
 
@@ -607,7 +990,11 @@ plot_decoded_conditional_threshold_diff <- function(
     panel_mains = NULL,
     panel_ylabs = NULL,
     y_grid = NULL,
-    alpha = 0.05, main = "", diff_label = "1 - 0"
+    alpha = 0.05, main = "", diff_label = "1 - 0",
+    cex = NULL,
+    mar = c(2.5, 4.5, 3, 1),
+    size = 1,
+    xlim = NULL
 ) {
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
@@ -647,7 +1034,9 @@ plot_decoded_conditional_threshold_diff <- function(
   .plot_contrast_cross_sections(
     v_hat_diff,
     .boot_intervals_at(v_boot_diff, v_hat_diff, crit_diff, alpha),
-    panel_mains, panel_ylabs, main, diff_label
+    panel_mains, panel_ylabs, main, diff_label,
+    cex = cex, mar = mar, size = size,
+    xlim = xlim
   )
 }
 
@@ -664,7 +1053,11 @@ plot_decoded_conditional_quantile_levels <- function(
     panel_ylabs = NULL,
     alpha = 0.05, main = "",
     group_labels = c("0", "1"),
-    group_colors = c("black", "red")
+    group_colors = c("black", "red"),
+    cex = NULL,
+    mar = c(2.5, 4.5, 3, 1),
+    size = 1,
+    xlim = NULL
 ) {
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
@@ -691,7 +1084,9 @@ plot_decoded_conditional_quantile_levels <- function(
     v_hat_0, v_hat_1,
     .boot_intervals_at(v_boot_0, v_hat_0, crit_0, alpha),
     .boot_intervals_at(v_boot_1, v_hat_1, crit_1, alpha),
-    panel_mains, panel_ylabs, main, group_labels, group_colors
+    panel_mains, panel_ylabs, main, group_labels, group_colors,
+    cex = cex, mar = mar, size = size,
+    xlim = xlim
   )
 }
 
@@ -704,7 +1099,11 @@ plot_decoded_conditional_quantile_level_diff <- function(
     quantile_levels,
     panel_mains = NULL,
     panel_ylabs = NULL,
-    alpha = 0.05, main = "", diff_label = "1 - 0"
+    alpha = 0.05, main = "", diff_label = "1 - 0",
+    cex = NULL,
+    mar = c(2.5, 4.5, 3, 1),
+    size = 1,
+    xlim = NULL
 ) {
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
@@ -728,7 +1127,9 @@ plot_decoded_conditional_quantile_level_diff <- function(
   .plot_contrast_cross_sections(
     v_hat_diff,
     .boot_intervals_at(v_boot_diff, v_hat_diff, crit_diff, alpha),
-    panel_mains, panel_ylabs, main, diff_label
+    panel_mains, panel_ylabs, main, diff_label,
+    cex = cex, mar = mar, size = size,
+    xlim = xlim
   )
 }
 
@@ -738,7 +1139,12 @@ plot_decoded_conditional_moments <- function(
     Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
     alpha = 0.05, main = "",
     group_labels = c("0", "1"),
-    group_colors = c("black", "red")
+    group_colors = c("black", "red"),
+    cex = NULL,
+    mar = c(2.5, 4.5, 3, 1),
+    size = 1,
+    panel_ylabs = NULL,
+    xlim = NULL
 ) {
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
@@ -753,28 +1159,31 @@ plot_decoded_conditional_moments <- function(
   band_hi_1  <- apply(mom_boot_1, 2, quantile, probs = 1 - alpha / 2)
 
   moment_names <- c("Mean", "Variance", "Skewness", "Kurtosis")
-  old_par <- par(mfrow = c(1, 4), mar = c(2.5, 4.5, 3, 1), oma = c(0, 0, 2, 0))
+  if (is.null(panel_ylabs)) panel_ylabs <- moment_names
+  mar[1]  <- .group_label_mar(mar[1], group_labels)
+  old_par <- .panel_row_par(4, mar, cex, main)
   on.exit(par(old_par), add = TRUE)
   for (k in seq_along(moment_names)) {
     y_vals <- c(band_lo_0[k], band_hi_0[k], mom_hat_0[k],
                 band_lo_1[k], band_hi_1[k], mom_hat_1[k])
     y_pad <- 0.08 * diff(range(y_vals))
+    par(mar = .trimmed_mar(mar, moment_names[k], "x", panel_ylabs[k]))
     plot(NULL,
-         xlim = c(0.5, 2.5),
+         xlim = xlim %||% c(0.5, 2.5),
          ylim = c(min(y_vals) - y_pad, max(y_vals) + y_pad),
-         xaxt = "n", xlab = "", ylab = moment_names[k],
+         xaxt = "n", xlab = "", ylab = panel_ylabs[k],
          main = moment_names[k])
-    axis(1, at = c(1, 2), labels = group_labels)
+    .axis_group_labels(c(1, 2), group_labels)
     arrows(1, band_lo_0[k], 1, band_hi_0[k],
-           angle = 90, code = 3, length = 0.08,
-           col = group_colors[1], lwd = 1.5)
-    points(1, mom_hat_0[k], col = group_colors[1], pch = 19, cex = 1.6)
+           angle = 90, code = 3, length = 0.08 * size,
+           col = group_colors[1], lwd = 1.5 * size)
+    points(1, mom_hat_0[k], col = group_colors[1], pch = 19, cex = 1.6 * size)
     arrows(2, band_lo_1[k], 2, band_hi_1[k],
-           angle = 90, code = 3, length = 0.08,
-           col = group_colors[2], lwd = 1.5)
-    points(2, mom_hat_1[k], col = group_colors[2], pch = 19, cex = 1.6)
+           angle = 90, code = 3, length = 0.08 * size,
+           col = group_colors[2], lwd = 1.5 * size)
+    points(2, mom_hat_1[k], col = group_colors[2], pch = 19, cex = 1.6 * size)
   }
-  mtext(main, outer = TRUE, cex = 1.1, font = 2)
+  .panel_row_title(main, cex)
   invisible(NULL)
 }
 
@@ -782,7 +1191,12 @@ plot_decoded_conditional_moments <- function(
 ## within-replicate bootstrap contrast.
 plot_decoded_conditional_moment_diff <- function(
     Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
-    alpha = 0.05, main = "", diff_label = "1 - 0"
+    alpha = 0.05, main = "", diff_label = "1 - 0",
+    cex = NULL,
+    mar = c(2.5, 4.5, 3, 1),
+    size = 1,
+    panel_ylabs = NULL,
+    xlim = NULL
 ) {
   Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
   Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
@@ -797,24 +1211,27 @@ plot_decoded_conditional_moment_diff <- function(
   band_hi_diff  <- apply(mom_boot_diff, 2, quantile, probs = 1 - alpha / 2)
 
   moment_names <- c("Mean", "Variance", "Skewness", "Kurtosis")
-  old_par <- par(mfrow = c(1, 4), mar = c(2.5, 4.5, 3, 1), oma = c(0, 0, 2, 0))
+  if (is.null(panel_ylabs)) panel_ylabs <- paste(moment_names, "Contrast")
+  mar[1]  <- .group_label_mar(mar[1], diff_label)
+  old_par <- .panel_row_par(4, mar, cex, main)
   on.exit(par(old_par), add = TRUE)
   for (k in seq_along(moment_names)) {
     y_vals <- c(band_lo_diff[k], band_hi_diff[k], mom_hat_diff[k], 0)
     y_pad  <- 0.08 * diff(range(y_vals))
+    par(mar = .trimmed_mar(mar, moment_names[k], "x", panel_ylabs[k]))
     plot(NULL,
-         xlim = c(0.5, 1.5),
+         xlim = xlim %||% c(0.5, 1.5),
          ylim = c(min(y_vals) - y_pad, max(y_vals) + y_pad),
          xaxt = "n", xlab = "",
-         ylab = str_glue("{moment_names[k]} Contrast"),
+         ylab = panel_ylabs[k],
          main = moment_names[k])
-    axis(1, at = 1, labels = diff_label)
+    .axis_group_labels(1, diff_label)
     abline(h = 0, col = "red", lty = 2)
     arrows(1, band_lo_diff[k], 1, band_hi_diff[k],
-           angle = 90, code = 3, length = 0.08,
-           col = "black", lwd = 1.5)
-    points(1, mom_hat_diff[k], col = "black", pch = 19, cex = 1.6)
+           angle = 90, code = 3, length = 0.08 * size,
+           col = "black", lwd = 1.5 * size)
+    points(1, mom_hat_diff[k], col = "black", pch = 19, cex = 1.6 * size)
   }
-  mtext(main, outer = TRUE, cex = 1.1, font = 2)
+  .panel_row_title(main, cex)
   invisible(NULL)
 }

@@ -124,6 +124,29 @@ Z_latent <- switch(
 )
 
 
+## ----- Paper figure spec
+
+## Render every paper figure at its final printed size (inches) and include it
+## in LaTeX at that same width, so fig_pointsize is the printed text size in
+## every figure regardless of panel count. fig_cex = 1 undoes mfrow's
+## auto-shrink in multi-panel layouts. fig_cex_main / fig_cex_lab /
+## fig_cex_axis are the baseline title / axis-label / tick-label sizes (each
+## 80% of the one before), and fig_cex_legend the legend text size; tweak
+## them per figure at the call site (e.g. cex_lab = 0.9 * fig_cex_lab) when
+## text doesn't fit a small panel.
+fig_res       <- 600
+fig_pointsize <- 7
+fig_cex       <- 1
+fig_cex_lab   <- 1.0 
+fig_cex_main  <- 1.2 * fig_cex_lab
+fig_cex_axis  <- 0.8 * fig_cex_lab
+fig_cex_legend <- fig_cex_lab
+fig_png <- function(path, width_in, height_in, pointsize = fig_pointsize) {
+  png(path, width = width_in, height = height_in, units = "in",
+      res = fig_res, pointsize = pointsize)
+}
+
+
 ## ----- Visualize reconstructions
 
 ## Compute reconstruction losses
@@ -152,6 +175,10 @@ upper_mat_3x5 <- matrix(
 
 log_scale <- FALSE   # toggle: TRUE => plot on log(Q(p) + 1) scale
 
+path_plot <- file.path('artifacts', dir_art, 'plots', 'representation',
+                       sprintf('Qi-recon_grid_3x5%s.png',
+                               if (log_scale) '_log' else ''))
+fig_png(path_plot, 6.5, 4)   # TODO: final printed size
 plot_qi_recon_grid(
   Qi_orig_list  = Qi_ctx$payload,
   Qi_recon_list = Qi_ctx_$payload,
@@ -159,10 +186,12 @@ plot_qi_recon_grid(
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
   log_x_plus_1  = log_scale,
-  path          = file.path('artifacts', dir_art, 'plots', 'representation',
-                            sprintf('Qi-recon_grid_3x5%s.png',
-                                    if (log_scale) '_log' else ''))
+  cex_main      = fig_cex_main,
+  cex_lab       = fig_cex_lab,
+  cex           = fig_cex,
+  cex_axis      = fig_cex_axis
 )
+dev.off()
 
 
 
@@ -172,7 +201,7 @@ plot_qi_recon_grid(
 mark_outliers <- FALSE
 include_legend <- FALSE
 k_from <- 1
-k_to <- 5
+k_to <- 3
 idx_outliers <- pipeline$training$meta$idx_outliers
 N_outlier <- length(idx_outliers)
 idx_train <- if (N_outlier > 0) -idx_outliers else seq_len(N)
@@ -184,7 +213,7 @@ path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_z-rot.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+fig_png(path_plot, 4.5, 4.5)   # TODO: final printed size
 Z_plot <- rbind(
   do.call(rbind, z_rot_ctx$payload)[idx_train,k_from:k_to],
   do.call(rbind, z_rot_ctx$payload)[idx_outliers,k_from:k_to]
@@ -194,7 +223,7 @@ colors <- c(
   rep(col_outlier, N_outlier)
 )
 shapes <- c(
-  rep(19, length.out = nrow(Z_plot))
+  rep(16, length.out = nrow(Z_plot))
 )
 sizes <- c(
   rep(0.5, length.out = nrow(Z_plot))
@@ -202,7 +231,7 @@ sizes <- c(
 if (include_legend) {
   color_shape_size_labels <- data.frame(
     color = c(col_train, col_outlier),
-    shape = c(19, 19),
+    shape = c(16, 16),
     size = c(0.5, 0.5),
     label = c('non-outlier', 'outlier')
   )
@@ -215,7 +244,12 @@ plot_embeddings(
   shapes = shapes,
   sizes = sizes,
   color_shape_size_labels = color_shape_size_labels,
-  stats = FALSE
+  stats = FALSE,
+  cex_main = fig_cex_main,
+  cex_lab = fig_cex_lab,
+  cex = fig_cex,
+  cex_axis = fig_cex_axis,
+  legend_cex = fig_cex_legend
 )
 dev.off()
 
@@ -224,7 +258,7 @@ path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_z.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+fig_png(path_plot, 4.5, 4.5)   # TODO: final printed size
 Z_plot <- rbind(
   do.call(rbind, z_ctx$payload)[idx_train,k_from:k_to],
   do.call(rbind, z_ctx$payload)[idx_outliers,k_from:k_to]
@@ -234,7 +268,7 @@ colors <- c(
   rep(col_outlier, N_outlier)
 )
 shapes <- c(
-  rep(19, length.out = nrow(Z_plot))
+  rep(16, length.out = nrow(Z_plot))
 )
 sizes <- c(
   rep(0.5, length.out = nrow(Z_plot))
@@ -242,7 +276,7 @@ sizes <- c(
 if (include_legend) {
   color_shape_size_labels = data.frame(
     color = c(col_train, col_outlier),
-    shape = c(19, 19),
+    shape = c(16, 16),
     size = c(0.5, 0.5),
     label = c('non-outlier', 'outlier')
   )
@@ -255,7 +289,12 @@ plot_embeddings(
   shapes = shapes,
   sizes = sizes,
   color_shape_size_labels = color_shape_size_labels,
-  stats = FALSE
+  stats = FALSE,
+  cex_main = fig_cex_main,
+  cex_lab = fig_cex_lab,
+  cex = fig_cex,
+  cex_axis = fig_cex_axis,
+  legend_cex = fig_cex_legend
 )
 dev.off()
 
@@ -264,7 +303,7 @@ path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_c.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+fig_png(path_plot, 4.5, 4.5)   # TODO: final printed size
 C_plot <- rbind(
   c_ctx_to_matrix(pipeline, c_ctx)[idx_train,k_from:k_to],
   c_ctx_to_matrix(pipeline, c_ctx)[idx_outliers,k_from:k_to]
@@ -274,7 +313,7 @@ colors <- c(
   rep(col_outlier, N_outlier)
 )
 shapes <- c(
-  rep(19, length.out = nrow(C_plot))
+  rep(16, length.out = nrow(C_plot))
 )
 sizes <- c(
   rep(0.5, length.out = nrow(C_plot))
@@ -282,7 +321,7 @@ sizes <- c(
 if (include_legend) {
   color_shape_size_labels = data.frame(
     color = c(col_train, col_outlier),
-    shape = c(19, 19),
+    shape = c(16, 16),
     size = c(0.5, 0.5),
     label = c('non-outlier', 'outlier')
   )
@@ -295,7 +334,12 @@ plot_embeddings(
   shapes = shapes,
   sizes = sizes,
   color_shape_size_labels = color_shape_size_labels,
-  stats = FALSE
+  stats = FALSE,
+  cex_main = fig_cex_main,
+  cex_lab = fig_cex_lab,
+  cex = fig_cex,
+  cex_axis = fig_cex_axis,
+  legend_cex = fig_cex_legend
 )
 dev.off()
 
@@ -305,7 +349,7 @@ path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_q.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
 fun_list <- c(
   Q_ctx$payload[idx_train],
   Q_ctx$payload[idx_outliers]
@@ -335,7 +379,12 @@ plot_funs(
   colors = colors,
   widths = widths,
   types = types,
-  color_width_type_labels = color_width_type_labels
+  color_width_type_labels = color_width_type_labels,
+  cex.lab = fig_cex_lab,
+  cex_main = fig_cex_main,
+  cex = fig_cex,
+  cex_axis = fig_cex_axis,
+  legend_cex = fig_cex_legend
 )
 dev.off()
 
@@ -358,7 +407,7 @@ if (!is.null(N_samp)) {
     'artifacts', dir_art, 'plots', 'representation',
     str_glue('data_q-subsamp.png')
   )
-  png(path_plot, width = 960, height = 960, pointsize = 18)
+  fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
   fun_list <- c(
     Q_samp,
     list(Q_mean)
@@ -389,7 +438,12 @@ if (!is.null(N_samp)) {
     colors = colors,
     widths = widths,
     types = types,
-    color_width_type_labels = color_width_type_labels
+    color_width_type_labels = color_width_type_labels,
+    cex.lab = fig_cex_lab,
+    cex_main = fig_cex_main,
+    cex = fig_cex,
+    cex_axis = fig_cex_axis,
+    legend_cex = fig_cex_legend
   )
   dev.off()
 }
@@ -400,7 +454,7 @@ path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_qi.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
 fun_list <- c(
   Qi_ctx$payload[idx_train],
   Qi_ctx$payload[idx_outliers]
@@ -433,13 +487,20 @@ plot_funs(
   colors = colors,
   widths = widths,
   types = types,
-  color_width_type_labels = color_width_type_labels
+  color_width_type_labels = color_width_type_labels,
+  cex.lab = fig_cex_lab,
+  cex_main = fig_cex_main,
+  cex = fig_cex,
+  cex_axis = fig_cex_axis,
+  legend_cex = fig_cex_legend
 )
 dev.off()
 
 
 ## Plot Qi vs. Q (one subject)
 i <- 1
+p_idx_start <- 1
+p_idx_stop <- 10
 path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
   str_glue('data_qi-v-q_i-{i}.png')
@@ -447,25 +508,38 @@ path_plot <- file.path(
 pi_grid <- pi_grid_fun(Ji_vec[i])
 Qi <- Qi_ctx$payload[[i]]
 Q <- Q_ctx$payload[[i]]
-png(path_plot, width = 960, height = 960, pointsize = 18)
+
+## Restrict to p_grid[p_idx_start:p_idx_stop], and Qi to the same p-range
+p_idx <- p_idx_start:p_idx_stop
+p_sub <- p_grid[p_idx]
+Q_sub <- Q[p_idx]
+pi_keep <- pi_grid >= min(p_sub) & pi_grid <= max(p_sub)
+pi_sub <- pi_grid[pi_keep]
+Qi_sub <- Qi[pi_keep]
+
+fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
+fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+        cex_axis = fig_cex_axis)
 plot(
-  pi_grid, Qi,
+  pi_sub, Qi_sub,
   type = 'l',
-  lwd = 4,
-  xlim = c(0, 1),
+  lwd = 2,
+  xlim = range(p_sub),
+  ylim = range(c(0, Qi_sub, Q_sub)),
   xlab = "p",
   ylab = "Q(p)",
   main = str_glue("Subject {i}")
 )
 lines(
-  p_grid, Q,
-  lwd = 4,
+  p_sub, Q_sub,
+  lwd = 2,
   col = rgb(0.9, 0, 0)
 )
 points(
-  x = p_grid,
-  y = rep(0, length(p_grid)),
+  x = p_sub,
+  y = rep(0, length(p_sub)),
   pch = 16,
+  cex = 0.5,
   col = rgb(0, 0.9, 0)
 )
 dev.off()
@@ -498,7 +572,7 @@ path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
   str_glue('synth_qi.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
 Qi_val    <- Qi_ctx$payload[idx_val]
 n_real    <- length(Qi_val)
 n_synth   <- length(Qi_draws)
@@ -526,7 +600,12 @@ plot_funs(
   colors    = colors,
   widths    = widths,
   types     = types,
-  color_width_type_labels = color_width_type_labels
+  color_width_type_labels = color_width_type_labels,
+  cex.lab = fig_cex_lab,
+  cex_main = fig_cex_main,
+  cex = fig_cex,
+  cex_axis = fig_cex_axis,
+  legend_cex = fig_cex_legend
 )
 dev.off()
 
@@ -535,16 +614,26 @@ dev.off()
 
 ## ========== Frechet Means ========== ##
 
-## Q-mean
-mean_q <- colMeans(do.call(rbind, Qi_ctx$payload))
+## Common grid
+Ji <- 7350
+pi_grid <- pi_grid_fun(Ji)
+
+## Q-mean (linearly interpolate each Qi onto the common grid, then average)
+mean_q <- numeric(Ji)
+for (Qi in Qi_ctx$payload) {
+  mean_q <- mean_q + approx(
+    x = pi_grid_fun(length(Qi)), y = Qi,
+    xout = pi_grid,
+    rule = 2
+  )$y
+}
+mean_q <- mean_q / length(Qi_ctx$payload)
 
 ## Z-mean
-Ji <- length(Qi_ctx$payload[[1]])
 mean_z <- colMeans(do.call(rbind, z_rot_ctx$payload))
 mean_z <- decode_z_to_Qi(pipeline, list(mean_z), Ji = Ji)[[1]]
 
 ## F-mean (L2 in CDF space)
-pi_grid <- pi_grid_fun(Ji)
 y_range <- range(unlist(Qi_ctx$payload))
 y_grid  <- seq(y_range[1], y_range[2], length.out = 10000)
 F_bar   <- numeric(length(y_grid))
@@ -563,7 +652,7 @@ path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
   str_glue('frechet_nhanes.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
 col_q <- 'red'
 col_f <- 'green'
 col_z <- 'blue'
@@ -573,7 +662,10 @@ fun_list <- c(
   list(mean_f),
   list(mean_z)
 )
-grid_list <- rep(list(pi_grid), length(fun_list))
+grid_list <- c(
+  lapply(lengths(Qi_ctx$payload), pi_grid_fun),
+  rep(list(pi_grid), 3)
+)
 colors <- c(
   rep(col_train, length(fun_list) - 3),
   col_q,
@@ -597,7 +689,12 @@ plot_funs(
   colors = colors,
   widths = widths,
   types = types,
-  color_width_type_labels = color_width_type_labels
+  color_width_type_labels = color_width_type_labels,
+  cex.lab = fig_cex_lab,
+  cex_main = fig_cex_main,
+  cex = fig_cex,
+  cex_axis = fig_cex_axis,
+  legend_cex = fig_cex_legend
 )
 dev.off()
 
@@ -644,14 +741,14 @@ get_plot_name_for_cov <- function(cov, other_cov = FALSE) {
   if (other_cov) {
     name_map <- list(
       'old' = '< 65',
-      'male' = 'Female',
-      'low_income' = 'Above Poverty Line'
+      'male' = 'F',
+      'low_income' = '> PL'
     )
   } else {
     name_map <- list(
       'old' = '>= 65',
-      'male' = 'Male',
-      'low_income' = 'Below Poverty Line'
+      'male' = 'M',
+      'low_income' = '<= PL'
     )
   }
   name_map[[cov]]
@@ -661,7 +758,7 @@ get_plot_name_for_cov <- function(cov, other_cov = FALSE) {
 for (bin_pred in c('old', 'male', 'low_income')) {
 
   k_from <- 1
-  k_to <- 2
+  k_to <- 3
 
   ## Plot: QF
   set.seed(12345)
@@ -669,7 +766,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     dir_eda,
     str_glue('eda_Qi_{bin_pred}.png')
   )
-  png(path_plot, width = 960, height = 960, pointsize = 18)
+  fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
   col_0 <- rgb(0, 0, 0, alpha = 0.25)
   col_1 <- rgb(1, 0, 0, alpha = 0.25)
   mask <- !is.na(df_cov[bin_pred])
@@ -699,7 +796,12 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     colors = colors[idx],
     widths = widths[idx],
     types = types[idx],
-    color_width_type_labels = color_width_type_labels
+    color_width_type_labels = color_width_type_labels,
+    cex.lab = fig_cex_lab,
+    cex_main = fig_cex_main,
+    cex = fig_cex,
+    cex_axis = fig_cex_axis,
+    legend_cex = fig_cex_legend
   )
   dev.off()
 
@@ -709,7 +811,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     dir_eda,
     str_glue('eda_z-rot_{bin_pred}.png')
   )
-  png(path_plot, width = 960, height = 960, pointsize = 18)
+  fig_png(path_plot, 6.5, 6.5)   # TODO: final printed size
   col_0 <- rgb(0, 0, 0, alpha = 0.25)
   col_1 <- rgb(1, 0, 0, alpha = 0.25)
   mask <- !is.na(df_cov[bin_pred])
@@ -719,14 +821,14 @@ for (bin_pred in c('old', 'male', 'low_income')) {
   colors = rep(col_0, length.out = nrow(Z_plot))
   colors[df_cov_to_plot[bin_pred] == 1] <- col_1
   shapes <- c(
-    rep(19, length.out = nrow(Z_plot))
+    rep(16, length.out = nrow(Z_plot))
   )
   sizes <- c(
     rep(0.5, length.out = nrow(Z_plot))
   )
   color_shape_size_labels = data.frame(
     color = c(col_0, col_1),
-    shape = c(19, 19),
+    shape = c(16, 16),
     size = c(0.5, 0.5),
     label = c(
       get_plot_name_for_cov(bin_pred, TRUE), 
@@ -739,7 +841,12 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     shapes = shapes,
     sizes = sizes,
     color_shape_size_labels = color_shape_size_labels,
-    stats = FALSE
+    stats = FALSE,
+    cex_main = fig_cex_main,
+    cex_lab = fig_cex_lab,
+    cex = fig_cex,
+    cex_axis = fig_cex_axis,
+    legend_cex = fig_cex_legend
   )
   dev.off()
 
@@ -800,26 +907,52 @@ for (k_star in 1:K) {
   pal <- colorRampPalette(c("blue", "gray", "red"))(101)
   line_cols <- pal[round(k_star_quantiles * 100) + 1]
   y_lim <- range(unlist(Qi_plot))
-  png(path_plot, width = 720, height = 720, pointsize = 14)
-  plot(
-    NULL,
-    xlim = c(0, 1),
-    ylim = y_lim,
+  fig_png(path_plot, 2.15, 2.15)   # TODO: final printed size
+  fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+          cex_axis = fig_cex_axis)
+  ## Legend: quantile levels of latent coordinate k (named in the title)
+  leg_args <- list(
+    "topleft",
+    legend  = sprintf("%.1f", k_star_quantiles),
+    col     = line_cols,
+    lwd     = 2,
+    seg.len = 1.5,
+    ncol    = 3,
+    title   = "Quantile",
+    cex     = 0.8*fig_cex_legend,
+    bty     = "n"
+  )
+
+  ## Raise the top of ylim just enough that the legend clears every curve:
+  ## measure the legend on a provisional window, find the highest curve point
+  ## under it, then solve for the top that leaves the legend above that point.
+  plot.new()
+  plot.window(xlim = c(0, 1), ylim = y_lim)
+  usr <- par("usr")
+  leg <- do.call(legend, c(leg_args, plot = FALSE))
+  under_leg <- pi_grid <= leg$rect$left + leg$rect$w
+  y_max_under <- max(sapply(Qi_plot, function(q) max(q[under_leg])))
+  f_leg <- leg$rect$h / diff(usr[3:4])   # legend height as a fraction of usr
+  pad   <- 0.02                          # gap between legend and curves
+  ext   <- 0.04                          # yaxs = "r" pads usr by 4% each side
+  c_    <- ext - (1 + 2 * ext) * (f_leg + pad)
+  y_top <- (y_max_under + c_ * y_lim[1]) / (1 + c_)
+  y_lim[2] <- max(y_lim[2], y_top)
+
+  ## Draw (axes, box and titles by hand, since plot() would start a new page)
+  plot.window(xlim = c(0, 1), ylim = y_lim)
+  axis(1)
+  axis(2)
+  box()
+  title(
+    main = str_glue("k = {k_star}"),
     xlab = "p",
-    ylab = "Q(p) - Q_0.5(p)",
-    main = str_glue("Traversal of component k = {k_star}")
+    ylab = "Q(p) - Q_0.5(p)"
   )
   for (i in seq_along(Qi_plot)) {
     lines(pi_grid, Qi_plot[[i]], col = line_cols[i], lwd = 2)
   }
-  legend(
-    "topleft",
-    legend = sprintf("%.1f", k_star_quantiles),
-    col    = line_cols,
-    lwd    = 2,
-    title  = "quantile level",
-    bty    = "n"
-  )
+  do.call(legend, leg_args)
   dev.off()
 
 }
@@ -929,11 +1062,17 @@ path_plot <- file.path(
   str_glue('roy-bose_{bin_pred}.png')
 )
 xlim_rb <- if (latent == 'z_rot') c(-1.2, 1.2) else NULL
-png(path_plot, width = 600, height = 800, pointsize = 14)
+fig_png(path_plot, 2.15, 2.87)   # TODO: final printed height
+fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+        cex_axis = fig_cex_axis)
+par(mgp = c(1.9, 0.5, 0))   # keep the hat on beta_k clear of the tick labels
 binary_plot_intervals(
   res_rb,
   xlim = xlim_rb,
-  main = str_glue("Joint Bands for Latent Regression Coefficients ({gp1_name})")
+  # main = str_glue("Joint Bands for Latent Regression Coefficients ({gp1_name})"),
+  main = gp1_name,
+  mar = c(3.3, 2.8, 2.2, 0.3),
+  legend_in_margin = TRUE   # p-value legend in the right margin, clear of intervals
 )
 dev.off()
 
@@ -951,14 +1090,14 @@ mims_thresholds <- list(
     value = 19.61,
     col = 'darkblue',
     eval_type = 'survival',
-    main = "Time above MVPA threshold"
+    main = "Time in MVPA"
   ),
   list(
     label = "strenuous",
     value = 50.00,
     col = 'darkred',
     eval_type = 'survival',
-    main = "Time above strenuous threshold"
+    main = "Time in strenuous PA"
   )
 )
 
@@ -1002,18 +1141,58 @@ Qi_boot_0 <- decode_latent_to_Qi(pipeline, z_boot_0, Ji)
 Qi_boot_1 <- decode_latent_to_Qi(pipeline, z_boot_1, Ji)
 
 
+## --- Paper figure settings for the conditional plots below
+## Page layout (6.5 in text width):
+##   row 1: QF contrast | survival contrast        (half width each)
+##   row 2: quantile levels | thresholds           (half-width strips, 3 panels each)
+##   row 3: moments                                (full-width strip, 4 panels)
+## The strips are short (two estimates per panel). Groups are told apart by
+## colour (black = gp0, red = gp1; state this in the caption), so the panels
+## drop their x-axis group labels and y labels (the panel titles say what is
+## plotted), and the margins shrink to match.
+## Legends stay inside the axes: each single-panel plot moves its legend to a
+## clear corner, or extends the y-axis to make room, rather than cover a curve.
+gc_half_w   <- 3.25
+gc_half_h   <- 2.15   # TODO: final printed height
+gc_full_w   <- 6.5
+gc_strip_h  <- 1.5    # TODO: final printed height of the panel strips
+gc_lwd      <- 1.5    # estimate / legend / threshold line width (half page)
+gc_size     <- 0.6    # interval bar, whisker and point scale (strips)
+gc_xlim_2   <- c(0.6, 2.4)   # x range for the two group estimates per panel
+## Panel margins (bottom/left shrink automatically with no labels). Row 2 fits
+## the two-line threshold titles, and the quantile strip uses the same top so
+## the two strips' frames line up side by side; moments have one-line titles.
+gc_row2_mar   <- c(0, 3.2, 3.4, 0.5)
+gc_moment_mar <- c(0, 3.2, 2.2, 0.5)
+
+## Long labels and titles wrapped to fit the small panels and legends
+gc_diff_label <- str_wrap(str_glue("{gp1_name} - {gp0_name}"), width = 20)
+gc_thr_mains  <- str_wrap(sapply(mims_thresholds, `[[`, "main"), width = 12)
+gc_half_png <- function(path) {
+  fig_png(path, gc_half_w, gc_half_h)
+  fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+          cex_axis = fig_cex_axis)
+}
+gc_strip_png <- function(path, width) {
+  fig_png(path, width, gc_strip_h)
+  fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+          cex_axis = fig_cex_axis)
+}
+
+
 ## --- Plot conditional QFs with bands
 
 path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_qfs.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+gc_half_png(path_plot)
 plot_decoded_conditional_qfs(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha = alpha,
-  main  = "Decoded Conditional Means",
-  group_labels = c(gp0_name, gp1_name)
+  group_labels = c(gp0_name, gp1_name),
+  legend_cex = fig_cex_legend,
+  lwd = gc_lwd
 )
 dev.off()
 
@@ -1024,13 +1203,14 @@ path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_qfs-contrast.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+gc_half_png(path_plot)
 plot_decoded_conditional_qf_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha = alpha,
-  main  = "Decoded Conditional Mean Contrast",
-  diff_label = str_glue("{gp1_name} - {gp0_name}"),
-  legend_loc = 'bottomleft'
+  diff_label = gc_diff_label,
+  legend_loc = 'bottomleft',
+  legend_cex = fig_cex_legend,
+  lwd = gc_lwd
 )
 dev.off()
 
@@ -1045,14 +1225,15 @@ path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_cdf.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+gc_half_png(path_plot)
 plot_decoded_conditional_cdfs(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha      = alpha,
-  main       = "Decoded Conditional CDFs",
   y_grid     = y_grid,
   thresholds = mims_thresholds,
-  group_labels = c(gp0_name, gp1_name)
+  group_labels = c(gp0_name, gp1_name),
+  legend_cex = fig_cex_legend,
+  lwd        = gc_lwd
 )
 dev.off()
 
@@ -1063,15 +1244,16 @@ path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_cdf-contrast.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+gc_half_png(path_plot)
 plot_decoded_conditional_cdf_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha      = alpha,
-  main       = "Decoded Conditional CDF Contrast",
   y_grid     = y_grid,
   thresholds = mims_thresholds,
-  diff_label = str_glue("{gp1_name} - {gp0_name}"),
-  legend_loc = 'topright'
+  diff_label = gc_diff_label,
+  legend_loc = 'topright',
+  legend_cex = fig_cex_legend,
+  lwd        = gc_lwd
 )
 dev.off()
 
@@ -1082,15 +1264,16 @@ path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_survival.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+gc_half_png(path_plot)
 plot_decoded_conditional_survivals(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha      = alpha,
-  main       = "Decoded Conditional Survival Curves",
   y_grid     = y_grid,
   thresholds = mims_thresholds,
   group_labels = c(gp0_name, gp1_name),
-  band_type  = 'pointwise'
+  band_type  = 'pointwise',
+  legend_cex = fig_cex_legend,
+  lwd        = gc_lwd
 )
 dev.off()
 
@@ -1101,73 +1284,85 @@ path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_survival-contrast.png')
 )
-png(path_plot, width = 960, height = 960, pointsize = 18)
+gc_half_png(path_plot)
 plot_decoded_conditional_survival_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha      = alpha,
-  main       = "Decoded Conditional Survival Contrast",
   y_grid     = y_grid,
   thresholds = mims_thresholds,
-  diff_label = str_glue("{gp1_name} - {gp0_name}"),
+  diff_label = gc_diff_label,
   band_type  = 'pointwise',
-  legend_loc = 'bottomright'
+  legend_loc = 'bottomright',
+  legend_cex = fig_cex_legend,
+  lwd        = gc_lwd
 )
 dev.off()
 
 
-## --- Plot thresholds with bands (2 panels, one per threshold)
+## --- Plot thresholds with bands (one panel per threshold; row 2, right)
 
 path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_threshold.png')
 )
-png(path_plot, width = 960, height = 240, pointsize = 12)
+gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_thresholds(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   thresholds   = mims_thresholds,
   eval_type    = sapply(mims_thresholds, `[[`, "eval_type"),
-  panel_mains  = sapply(mims_thresholds, `[[`, "main"),
+  panel_mains  = gc_thr_mains,
+  panel_ylabs  = rep("", length(mims_thresholds)),
   y_grid       = y_grid,
   alpha        = alpha,
-  main         = "Decoded Conditional Threshold Probabilities",
-  group_labels = c(gp0_name, gp1_name)
+  group_labels = c("", ""),
+  cex          = fig_cex,
+  mar          = gc_row2_mar,
+  size         = gc_size,
+  xlim         = gc_xlim_2
 )
 dev.off()
 
 
-## --- Plot threshold constrasts with bands (2 panels, one per threshold)
+## --- Plot threshold constrasts with bands (one panel per threshold)
 
 path_plot <- file.path(
   dir_gc,
-str_glue('gc_{bin_pred}_threshold-contrast.png')
+  str_glue('gc_{bin_pred}_threshold-contrast.png')
 )
-png(path_plot, width = 960, height = 240, pointsize = 12)
+gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_threshold_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   thresholds  = mims_thresholds,
   eval_type   = sapply(mims_thresholds, `[[`, "eval_type"),
-  panel_mains = sapply(mims_thresholds, `[[`, "main"),
+  panel_mains = gc_thr_mains,
+  panel_ylabs = rep("", length(mims_thresholds)),
   y_grid      = y_grid,
   alpha       = alpha,
-  main        = "Decoded Conditional Threshold Probability Contrast",
-  diff_label  = str_glue("{gp1_name} - {gp0_name}")
+  diff_label  = "",
+  cex         = fig_cex,
+  mar         = gc_row2_mar,
+  size        = gc_size
 )
 dev.off()
 
 
-## --- Plot quantile levels with bands (one panel per quantile level)
+## --- Plot quantile levels with bands (one panel per quantile level; row 2, left)
 
 path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_quantile-level.png')
 )
-png(path_plot, width = 960, height = 240, pointsize = 12)
+gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_quantile_levels(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   quantile_levels = quantile_levels,
+  panel_ylabs     = rep("", length(quantile_levels)),
   alpha           = alpha,
-  main            = "Decoded Conditional Quantile Levels",
-  group_labels    = c(gp0_name, gp1_name)
+  group_labels    = c("", ""),
+  cex             = fig_cex,
+  mar             = gc_row2_mar,
+  size            = gc_size,
+  xlim            = gc_xlim_2
 )
 dev.off()
 
@@ -1178,29 +1373,36 @@ path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_quantile-level-contrast.png')
 )
-png(path_plot, width = 960, height = 240, pointsize = 12)
+gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_quantile_level_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   quantile_levels = quantile_levels,
+  panel_ylabs     = rep("", length(quantile_levels)),
   alpha           = alpha,
-  main            = "Decoded Conditional Quantile Level Contrast",
-  diff_label      = str_glue("{gp1_name} - {gp0_name}")
+  diff_label      = "",
+  cex             = fig_cex,
+  mar             = gc_row2_mar,
+  size            = gc_size
 )
 dev.off()
 
 
-## --- Plot moments with bands (4 panels, one per moment)
+## --- Plot moments with bands (4 panels, one per moment; row 3)
 
 path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_moment.png')
 )
-png(path_plot, width = 1280, height = 240, pointsize = 14)
+gc_strip_png(path_plot, gc_full_w)
 plot_decoded_conditional_moments(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
-  alpha = alpha,
-  main  = "Decoded Conditional Moments",
-  group_labels = c(gp0_name, gp1_name)
+  alpha        = alpha,
+  group_labels = c("", ""),
+  panel_ylabs  = rep("", 4),
+  cex          = fig_cex,
+  mar          = gc_moment_mar,
+  size         = gc_size,
+  xlim         = gc_xlim_2
 )
 dev.off()
 
@@ -1211,12 +1413,15 @@ path_plot <- file.path(
   dir_gc,
   str_glue('gc_{bin_pred}_moment-contrast.png')
 )
-png(path_plot, width = 1280, height = 240, pointsize = 14)
+gc_strip_png(path_plot, gc_full_w)
 plot_decoded_conditional_moment_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
-  alpha = alpha,
-  main  = "Decoded Conditional Moment Contrasts",
-  diff_label = str_glue("{gp1_name} - {gp0_name}")
+  alpha       = alpha,
+  diff_label  = "",
+  panel_ylabs = rep("", 4),
+  cex         = fig_cex,
+  mar         = gc_moment_mar,
+  size        = gc_size
 )
 dev.off()
 
