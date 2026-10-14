@@ -962,7 +962,7 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'low_income'
+bin_pred <- 'old'
 run_latent_diagnostics <- FALSE
 run_generativity_diagnostics <- FALSE
 
@@ -1083,21 +1083,21 @@ mims_thresholds <- list(
     value = 15.05,
     col = 'darkgreen',
     eval_type = 'cdf',
-    main = "Time in sedentary"
+    main = "Prop in sedentary"
   ),
   list(
     label = "mvpa",
     value = 19.61,
     col = 'darkblue',
     eval_type = 'survival',
-    main = "Time in MVPA"
+    main = "Prop in MVPA"
   ),
   list(
     label = "strenuous",
     value = 50.00,
     col = 'darkred',
     eval_type = 'survival',
-    main = "Time in strenuous PA"
+    main = "Prop in strenuous"
   )
 )
 
@@ -1152,6 +1152,8 @@ Qi_boot_1 <- decode_latent_to_Qi(pipeline, z_boot_1, Ji)
 ## plotted), and the margins shrink to match.
 ## Legends stay inside the axes: each single-panel plot moves its legend to a
 ## clear corner, or extends the y-axis to make room, rather than cover a curve.
+## Quantile-level / threshold lines are labelled above the frame (one row,
+## nudged sideways where labels would overlap), not in the legend.
 gc_half_w   <- 3.25
 gc_half_h   <- 2.15   # TODO: final printed height
 gc_full_w   <- 6.5
@@ -1168,6 +1170,7 @@ gc_moment_mar <- c(0, 3.2, 2.2, 0.5)
 ## Long labels and titles wrapped to fit the small panels and legends
 gc_diff_label <- str_wrap(str_glue("{gp1_name} - {gp0_name}"), width = 20)
 gc_thr_mains  <- str_wrap(sapply(mims_thresholds, `[[`, "main"), width = 12)
+gc_q_mains    <- sprintf("Q(%g)", sapply(quantile_levels, `[[`, "value"))   # quantile-panel titles
 gc_half_png <- function(path) {
   fig_png(path, gc_half_w, gc_half_h)
   fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
@@ -1190,6 +1193,8 @@ gc_half_png(path_plot)
 plot_decoded_conditional_qfs(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha = alpha,
+  quantile_lines = quantile_levels,
+  threshold_labels = "top",
   group_labels = c(gp0_name, gp1_name),
   legend_cex = fig_cex_legend,
   lwd = gc_lwd
@@ -1207,6 +1212,8 @@ gc_half_png(path_plot)
 plot_decoded_conditional_qf_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   alpha = alpha,
+  quantile_lines = quantile_levels,
+  threshold_labels = "top",
   diff_label = gc_diff_label,
   legend_loc = 'bottomleft',
   legend_cex = fig_cex_legend,
@@ -1231,6 +1238,7 @@ plot_decoded_conditional_cdfs(
   alpha      = alpha,
   y_grid     = y_grid,
   thresholds = mims_thresholds,
+  threshold_labels = "top",
   group_labels = c(gp0_name, gp1_name),
   legend_cex = fig_cex_legend,
   lwd        = gc_lwd
@@ -1250,6 +1258,7 @@ plot_decoded_conditional_cdf_diff(
   alpha      = alpha,
   y_grid     = y_grid,
   thresholds = mims_thresholds,
+  threshold_labels = "top",
   diff_label = gc_diff_label,
   legend_loc = 'topright',
   legend_cex = fig_cex_legend,
@@ -1270,6 +1279,7 @@ plot_decoded_conditional_survivals(
   alpha      = alpha,
   y_grid     = y_grid,
   thresholds = mims_thresholds,
+  threshold_labels = "top",
   group_labels = c(gp0_name, gp1_name),
   band_type  = 'pointwise',
   legend_cex = fig_cex_legend,
@@ -1290,6 +1300,7 @@ plot_decoded_conditional_survival_diff(
   alpha      = alpha,
   y_grid     = y_grid,
   thresholds = mims_thresholds,
+  threshold_labels = "top",
   diff_label = gc_diff_label,
   band_type  = 'pointwise',
   legend_loc = 'bottomright',
@@ -1356,6 +1367,7 @@ gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_quantile_levels(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   quantile_levels = quantile_levels,
+  panel_mains     = gc_q_mains,
   panel_ylabs     = rep("", length(quantile_levels)),
   alpha           = alpha,
   group_labels    = c("", ""),
@@ -1377,6 +1389,7 @@ gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_quantile_level_diff(
   Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
   quantile_levels = quantile_levels,
+  panel_mains     = gc_q_mains,
   panel_ylabs     = rep("", length(quantile_levels)),
   alpha           = alpha,
   diff_label      = "",
@@ -1596,11 +1609,35 @@ amm_boots <- amm_boot_interpret(
 ## Interpret continuous covariates
 cov_to_plot <- c('age', 'pir') # c('age', 'pir')
 fam_to_plot <- c('latent', 'qf', 'cdf', 'survival', 'moment', 'threshold', 'quantile')
+
+## Paper figures: same sizes and styling as the group comparison (gc_*
+## settings above). Overlaid QF / CDF / survival plots (and their contrasts)
+## are half width; the absolute quantile-level / threshold curves are
+## half-width strips and the moments a full-width strip; the latent effects
+## are a full-width strip. Overlays use the covariate values below (the centre
+## value is the contrast reference: age 40, PIR 1), coloured blue -> red, with
+## a one-column legend titled by the covariate; quantile-level / threshold
+## lines are labelled above the frame. Faceted and contrast-over-covariate
+## versions are kept at their working sizes.
+amm_x_values   <- list(age = c(10, 25, 40, 55, 70),
+                       pir = c(0.25, 0.5, 1, 3, 5))
+amm_cov_labels <- c(age = "Age", pir = "PIR")
+amm_legend_ncol <- 1
+## Strip margins: bottom fits the x tick labels (the strips drop their x labels;
+## the covariate is named in the caption); tops as for the group-comparison
+## strips (two-line titles in row 2 and the latent strip, one-line for moments)
+amm_row2_mar   <- c(1.8, 3.2, 3.4, 0.5)
+amm_moment_mar <- c(1.8, 3.2, 2.2, 0.5)
+amm_latent_mar <- c(1.8, 3.2, 3.4, 0.5)
+
 for (cov in cov_to_plot) {
 
   ## Create covariate directory
   dir_amm_cov <- file.path(dir_amm_interp, cov)
   if (!dir.exists(dir_amm_cov)) dir.create(dir_amm_cov)
+
+  x_vals    <- amm_x_values[[cov]]
+  cov_label <- amm_cov_labels[[cov]]
 
   ## Reference QF / CDF (decoded at male = 0, age = 40, pir = 1)
   cv_ref_decode <- list(male = 0, age = 40, pir = 2)
@@ -1608,61 +1645,76 @@ for (cov in cov_to_plot) {
     amm_compute_conditional_mean(amm, cv_ref_decode), Ji_interp)
   pi_grid_ref <- pi_grid_fun(Ji_interp)
 
-  ## Latent effect plots
+  ## Latent effect plots (one panel per latent dimension; full-width strip)
   if ('latent' %in% fam_to_plot) {
+    K_amm <- ncol(amm$beta_hat)
     path_plot <- file.path(dir_amm_cov, str_glue("amm_{cov}_latent-effect.png"))
-    png(path_plot, width = 1280, height = 640, pointsize = 14)
+    gc_strip_png(path_plot, gc_full_w)
     amm_plot_latent_effects(amm, cov, band = TRUE,
                             boot_reps = amm_boots,
-                            covariates_df = covariates_amm)
+                            covariates_df = covariates_amm,
+                            ncol = K_amm,
+                            panel_mains = sprintf("k = %d\nedf = %.2f", seq_len(K_amm),
+                                                  amm[[paste0("edf_", cov)]]),
+                            xlab = "", ylab = "",
+                            cex = fig_cex, mar = amm_latent_mar, mgp = NULL,
+                            lwd = gc_lwd)
     dev.off()
   }
 
   ## QF Reference
   if ('qf' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_qf_reference.png")),
-        width = 960, height = 960, pointsize = 24)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_qf_reference.png")))
     plot_funs(
       fun_list  = list(Qi_ref_decode),
       grid_list = list(pi_grid_ref),
       colors    = "gray60",
-      widths    = 4,
+      widths    = gc_lwd,
       types     = 1,
       ylab      = "Q(p)",
-      main = "Reference QF"
+      main      = "",
+      cex.lab   = fig_cex_lab,
+      cex_main  = fig_cex_main,
+      cex       = fig_cex,
+      cex_axis  = fig_cex_axis
     )
     dev.off()
   }
 
   ## CDF Reference
   if ('cdf' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_cdf_reference.png")),
-        width = 960, height = 960, pointsize = 24)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_cdf_reference.png")))
+    par(mar = .trimmed_mar(par("mar"), "", "y", "F(y)"))
     y_grid_ref <- .amm_default_y_grid(list(Qi_ref_decode))
     F_ref_decode <- qi_to_cdf(Qi_ref_decode, y_grid_ref)
     plot(NULL, xlim = range(y_grid_ref), ylim = c(0, 1),
-        xlab = "y", ylab = "F(y)", main = "Reference CDF")
-    lines(y_grid_ref, F_ref_decode, col = "gray60", lwd = 4)
+        xlab = "y", ylab = "F(y)")
+    lines(y_grid_ref, F_ref_decode, col = "gray60", lwd = gc_lwd)
     dev.off()
   }
 
   ## Survival Reference
   if ('survival' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_survival_reference.png")),
-        width = 960, height = 960, pointsize = 24)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_survival_reference.png")))
+    par(mar = .trimmed_mar(par("mar"), "", "y", "1 - F(y)"))
+    y_grid_ref <- .amm_default_y_grid(list(Qi_ref_decode))
     S_ref_decode <- .amm_qi_to_survival(Qi_ref_decode, y_grid_ref)
     plot(NULL, xlim = range(y_grid_ref), ylim = c(0, 1),
-        xlab = "y", ylab = "1 - F(y)", main = "Reference Survival Function")
-    lines(y_grid_ref, S_ref_decode, col = "gray60", lwd = 4)
+        xlab = "y", ylab = "1 - F(y)")
+    lines(y_grid_ref, S_ref_decode, col = "gray60", lwd = gc_lwd)
     dev.off()
   }
 
   ## QF family
   if ('qf' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_qf.png")),
-        width = 960, height = 720, pointsize = 14)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_qf.png")))
     amm_plot_conditional_qf(amm, cov, pipeline, Ji = Ji_interp,
-                            quantile_lines = quantile_levels)
+                            x_values = x_vals,
+                            quantile_lines = quantile_levels,
+                            main = "", legend_title = cov_label,
+                            legend_ncol = amm_legend_ncol,
+                            legend_cex = fig_cex_legend, lwd = gc_lwd,
+                            line_labels = "top")
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_qf-faceted.png")),
         width = 1280, height = 320, pointsize = 14)
@@ -1670,10 +1722,14 @@ for (cov in cov_to_plot) {
                                     boot_reps = amm_boots,
                                     quantile_lines = quantile_levels)
     dev.off()
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_qf-contrast.png")),
-        width = 960, height = 720, pointsize = 14)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_qf-contrast.png")))
     amm_plot_contrast_qf(amm, cov, pipeline, Ji = Ji_interp,
-                        quantile_lines = quantile_levels)
+                         x_values = x_vals,
+                         quantile_lines = quantile_levels,
+                         main = "", legend_title = cov_label,
+                         legend_ncol = amm_legend_ncol,
+                         legend_cex = fig_cex_legend, lwd = gc_lwd,
+                         line_labels = "top")
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_qf-contrast-faceted.png")),
         width = 1280, height = 320, pointsize = 14)
@@ -1685,10 +1741,14 @@ for (cov in cov_to_plot) {
 
   ## CDF family
   if ('cdf' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_cdf.png")),
-        width = 960, height = 720, pointsize = 14)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_cdf.png")))
     amm_plot_conditional_cdf(amm, cov, pipeline, Ji = Ji_interp,
-                            threshold_lines = mims_thresholds)
+                             x_values = x_vals,
+                             threshold_lines = mims_thresholds,
+                             main = "", legend_title = cov_label,
+                             legend_ncol = amm_legend_ncol,
+                             legend_cex = fig_cex_legend, lwd = gc_lwd,
+                             line_labels = "top")
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_cdf-faceted.png")),
         width = 1280, height = 320, pointsize = 14)
@@ -1696,10 +1756,14 @@ for (cov in cov_to_plot) {
                                     threshold_lines = mims_thresholds,
                                     boot_reps = amm_boots)
     dev.off()
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_cdf-contrast.png")),
-        width = 960, height = 720, pointsize = 14)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_cdf-contrast.png")))
     amm_plot_contrast_cdf(amm, cov, pipeline, Ji = Ji_interp,
-                          threshold_lines = mims_thresholds)
+                          x_values = x_vals,
+                          threshold_lines = mims_thresholds,
+                          main = "", legend_title = cov_label,
+                          legend_ncol = amm_legend_ncol,
+                          legend_cex = fig_cex_legend, lwd = gc_lwd,
+                          line_labels = "top")
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_cdf-contrast-faceted.png")),
         width = 1280, height = 320, pointsize = 14)
@@ -1711,10 +1775,14 @@ for (cov in cov_to_plot) {
 
   ## Survival function family
   if ('survival' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_survival.png")),
-        width = 960, height = 720, pointsize = 14)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_survival.png")))
     amm_plot_conditional_survival(amm, cov, pipeline, Ji = Ji_interp,
-                                  threshold_lines = mims_thresholds)
+                                  x_values = x_vals,
+                                  threshold_lines = mims_thresholds,
+                                  main = "", legend_title = cov_label,
+                                  legend_ncol = amm_legend_ncol,
+                                  legend_cex = fig_cex_legend, lwd = gc_lwd,
+                                  line_labels = "top")
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_survival-faceted.png")),
         width = 1280, height = 320, pointsize = 14)
@@ -1722,10 +1790,14 @@ for (cov in cov_to_plot) {
                                           threshold_lines = mims_thresholds,
                                           boot_reps = amm_boots)
     dev.off()
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_survival-contrast.png")),
-        width = 960, height = 720, pointsize = 14)
+    gc_half_png(file.path(dir_amm_cov, str_glue("amm_{cov}_survival-contrast.png")))
     amm_plot_contrast_survival(amm, cov, pipeline, Ji = Ji_interp,
-                              threshold_lines = mims_thresholds)
+                               x_values = x_vals,
+                               threshold_lines = mims_thresholds,
+                               main = "", legend_title = cov_label,
+                               legend_ncol = amm_legend_ncol,
+                               legend_cex = fig_cex_legend, lwd = gc_lwd,
+                               line_labels = "top")
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_survival-contrast-faceted.png")),
         width = 1280, height = 320, pointsize = 14)
@@ -1735,12 +1807,15 @@ for (cov in cov_to_plot) {
     dev.off()
   }
 
-  ## Moments family (joint bands over the covariate)
+  ## Moments family (joint bands over the covariate; full-width strip)
   if ('moment' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_moments.png")),
-        width = 1280, height = 240, pointsize = 14)
+    gc_strip_png(file.path(dir_amm_cov, str_glue("amm_{cov}_moments.png")), gc_full_w)
     amm_plot_conditional_moments_faceted(amm, cov, pipeline, Ji = Ji_interp,
-                                         boot_reps = amm_boots)
+                                         boot_reps = amm_boots,
+                                         panel_ylabs = rep("", 4),
+                                         xlab = "",
+                                         cex = fig_cex, mar = amm_moment_mar,
+                                         lwd = gc_lwd)
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_moments-contrast.png")),
         width = 1280, height = 240, pointsize = 14)
@@ -1749,15 +1824,20 @@ for (cov in cov_to_plot) {
     dev.off()
   }
 
-  ## Threshold-crossing (one panel per MIMS threshold; absolute + contrast)
+  ## Threshold-crossing (one panel per MIMS threshold; absolute half-width
+  ## strip + working-size contrast)
   if ('threshold' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_threshold.png")),
-        width = 1280, height = 320, pointsize = 14)
+    gc_strip_png(file.path(dir_amm_cov, str_glue("amm_{cov}_threshold.png")), gc_half_w)
     amm_plot_threshold_crossing_panels(
       amm, cov, mims_thresholds, pipeline,
-      main      = str_glue("AMM Decoded Threshold Probabilities by {cov}"),
-      Ji        = Ji_interp,
-      boot_reps = amm_boots
+      panel_mains = gc_thr_mains,
+      panel_ylabs = rep("", length(mims_thresholds)),
+      xlab        = "",
+      cex         = fig_cex,
+      mar         = amm_row2_mar,
+      lwd         = gc_lwd,
+      Ji          = Ji_interp,
+      boot_reps   = amm_boots
     )
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_threshold-contrast.png")),
@@ -1772,21 +1852,27 @@ for (cov in cov_to_plot) {
     dev.off()
   }
 
-  ## Quantile-crossing (one panel per quantile level; absolute + contrast)
+  ## Quantile-crossing (one panel per quantile level; absolute half-width
+  ## strip + working-size contrast)
   if ('quantile' %in% fam_to_plot) {
-    png(file.path(dir_amm_cov, str_glue("amm_{cov}_quantile.png")),
-        width = 1280, height = 320, pointsize = 14)
+    gc_strip_png(file.path(dir_amm_cov, str_glue("amm_{cov}_quantile.png")), gc_half_w)
     amm_plot_quantile_crossing_panels(
       amm, cov, quantile_levels, pipeline,
-      main      = str_glue("AMM Decoded Quantile Levels by {cov}"),
-      Ji        = Ji_interp,
-      boot_reps = amm_boots
+      panel_mains = gc_q_mains,
+      panel_ylabs = rep("", length(quantile_levels)),
+      xlab        = "",
+      cex         = fig_cex,
+      mar         = amm_row2_mar,
+      lwd         = gc_lwd,
+      Ji          = Ji_interp,
+      boot_reps   = amm_boots
     )
     dev.off()
     png(file.path(dir_amm_cov, str_glue("amm_{cov}_quantile-contrast.png")),
         width = 1280, height = 320, pointsize = 14)
     amm_plot_quantile_crossing_panels(
       amm, cov, quantile_levels, pipeline,
+      panel_mains = gc_q_mains,
       contrast  = TRUE,
       main      = str_glue("AMM Decoded Quantile Level Contrasts by {cov}"),
       Ji        = Ji_interp,
@@ -1827,151 +1913,179 @@ Qi_boot_male_0 <- t(apply(z_boot_male_0, 1,
                           function(z) .decode_z_vec(pipeline, z, Ji_interp)))
 Qi_boot_male_1 <- t(apply(z_boot_male_1, 1,
                           function(z) .decode_z_vec(pipeline, z, Ji_interp)))
-main_suffix <- str_glue("male @ age={amm_male_age_ref}, pir={amm_male_pir_ref}")
+## Paper figures: same sizes, layout and styling as the group comparison
+## (gc_* settings above). Reference values for the caption: age =
+## amm_male_age_ref, pir = amm_male_pir_ref; black = gp0 (female), red = gp1.
+amm_male_diff_label <- str_wrap(str_glue("{gp1_name} - {gp0_name}"), width = 20)
 
-## QF and QF contrast
-png(file.path(dir_amm_cov, "amm_male_qf.png"),
-    width = 960, height = 960, pointsize = 18)
+## QF and QF contrast (half width)
+gc_half_png(file.path(dir_amm_cov, "amm_male_qf.png"))
 plot_decoded_conditional_qfs(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
-  alpha = amm_male_alpha,
-  main  = str_glue("AMM Decoded Conditional Means ({main_suffix})"),
-  group_labels = c(gp0_name, gp1_name)
+  alpha        = amm_male_alpha,
+  quantile_lines        = quantile_levels,
+  threshold_labels = "top",
+  group_labels = c(gp0_name, gp1_name),
+  legend_cex   = fig_cex_legend,
+  lwd          = gc_lwd
 )
 dev.off()
-png(file.path(dir_amm_cov, "amm_male_qf-contrast.png"),
-    width = 960, height = 960, pointsize = 18)
+gc_half_png(file.path(dir_amm_cov, "amm_male_qf-contrast.png"))
 plot_decoded_conditional_qf_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
-  alpha = amm_male_alpha,
-  main  = str_glue("AMM Decoded Conditional Mean Contrast ({main_suffix})"),
-  diff_label = str_glue("{gp1_name} - {gp0_name}"),
-  legend_loc = 'bottomleft'
+  alpha      = amm_male_alpha,
+  quantile_lines      = quantile_levels,
+  threshold_labels = "top",
+  diff_label = amm_male_diff_label,
+  legend_loc = 'bottomleft',
+  legend_cex = fig_cex_legend,
+  lwd        = gc_lwd
 )
 dev.off()
 
-## CDF and CDF contrast
+## CDF and CDF contrast (half width)
 y_grid_male <- default_y_grid_two_group(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1
 )
-png(file.path(dir_amm_cov, "amm_male_cdf.png"),
-    width = 960, height = 960, pointsize = 18)
+gc_half_png(file.path(dir_amm_cov, "amm_male_cdf.png"))
 plot_decoded_conditional_cdfs(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
-  alpha      = amm_male_alpha,
-  main       = str_glue("AMM Decoded Conditional CDFs ({main_suffix})"),
-  y_grid     = y_grid_male,
-  thresholds = mims_thresholds,
-  group_labels = c(gp0_name, gp1_name)
+  alpha        = amm_male_alpha,
+  y_grid       = y_grid_male,
+  thresholds   = mims_thresholds,
+  threshold_labels = "top",
+  group_labels = c(gp0_name, gp1_name),
+  legend_cex   = fig_cex_legend,
+  lwd          = gc_lwd
 )
 dev.off()
-png(file.path(dir_amm_cov, "amm_male_cdf-contrast.png"),
-    width = 960, height = 960, pointsize = 18)
+gc_half_png(file.path(dir_amm_cov, "amm_male_cdf-contrast.png"))
 plot_decoded_conditional_cdf_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
   alpha      = amm_male_alpha,
-  main       = str_glue("AMM Decoded Conditional CDF Contrast ({main_suffix})"),
   y_grid     = y_grid_male,
   thresholds = mims_thresholds,
-  diff_label = str_glue("{gp1_name} - {gp0_name}"),
-  legend_loc = 'topright'
+  threshold_labels = "top",
+  diff_label = amm_male_diff_label,
+  legend_loc = 'topright',
+  legend_cex = fig_cex_legend,
+  lwd        = gc_lwd
 )
 dev.off()
 
-## Survival function and survival function contrast
-png(file.path(dir_amm_cov, "amm_male_survival.png"),
-    width = 960, height = 960, pointsize = 18)
+## Survival function and survival function contrast (half width)
+gc_half_png(file.path(dir_amm_cov, "amm_male_survival.png"))
 plot_decoded_conditional_survivals(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
-  alpha      = amm_male_alpha,
-  main       = str_glue("AMM Decoded Conditional Survival Curves ({main_suffix})"),
-  y_grid     = y_grid_male,
-  thresholds = mims_thresholds,
+  alpha        = amm_male_alpha,
+  y_grid       = y_grid_male,
+  thresholds   = mims_thresholds,
+  threshold_labels = "top",
   group_labels = c(gp0_name, gp1_name),
-  band_type  = 'pointwise'
+  band_type    = 'pointwise',
+  legend_cex   = fig_cex_legend,
+  lwd          = gc_lwd
 )
 dev.off()
-png(file.path(dir_amm_cov, "amm_male_survival-contrast.png"),
-    width = 960, height = 960, pointsize = 18)
+gc_half_png(file.path(dir_amm_cov, "amm_male_survival-contrast.png"))
 plot_decoded_conditional_survival_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
   alpha      = amm_male_alpha,
-  main       = str_glue("AMM Decoded Conditional Survival Contrast ({main_suffix})"),
   y_grid     = y_grid_male,
   thresholds = mims_thresholds,
-  diff_label = str_glue("{gp1_name} - {gp0_name}"),
+  threshold_labels = "top",
+  diff_label = amm_male_diff_label,
   band_type  = 'pointwise',
-  legend_loc = 'bottomright'
+  legend_loc = 'bottomright',
+  legend_cex = fig_cex_legend,
+  lwd        = gc_lwd
 )
 dev.off()
 
-## Moments and moment contrast
-png(file.path(dir_amm_cov, "amm_male_moment.png"),
-    width = 1280, height = 240, pointsize = 14)
+## Moments and moment contrast (full-width strips)
+gc_strip_png(file.path(dir_amm_cov, "amm_male_moment.png"), gc_full_w)
 plot_decoded_conditional_moments(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
-  alpha = amm_male_alpha,
-  main  = str_glue("AMM Decoded Conditional Moments ({main_suffix})"),
-  group_labels = c(gp0_name, gp1_name)
+  alpha        = amm_male_alpha,
+  group_labels = c("", ""),
+  panel_ylabs  = rep("", 4),
+  cex          = fig_cex,
+  mar          = gc_moment_mar,
+  size         = gc_size,
+  xlim         = gc_xlim_2
 )
 dev.off()
-png(file.path(dir_amm_cov, "amm_male_moment-contrast.png"),
-    width = 1280, height = 240, pointsize = 14)
+gc_strip_png(file.path(dir_amm_cov, "amm_male_moment-contrast.png"), gc_full_w)
 plot_decoded_conditional_moment_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
-  alpha = amm_male_alpha,
-  main  = str_glue("AMM Decoded Conditional Moment Contrasts ({main_suffix})"),
-  diff_label = str_glue("{gp1_name} - {gp0_name}")
+  alpha       = amm_male_alpha,
+  diff_label  = "",
+  panel_ylabs = rep("", 4),
+  cex         = fig_cex,
+  mar         = gc_moment_mar,
+  size        = gc_size
 )
 dev.off()
 
-## Threshold probabilities and threshold contrast (one panel per threshold)
-png(file.path(dir_amm_cov, "amm_male_threshold.png"),
-    width = 960, height = 240, pointsize = 12)
+## Threshold probabilities and threshold contrast (half-width strips)
+gc_strip_png(file.path(dir_amm_cov, "amm_male_threshold.png"), gc_half_w)
 plot_decoded_conditional_thresholds(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
-  thresholds  = mims_thresholds,
-  eval_type   = sapply(mims_thresholds, `[[`, "eval_type"),
-  panel_mains = sapply(mims_thresholds, `[[`, "main"),
-  y_grid      = y_grid_male,
-  alpha       = amm_male_alpha,
-  main        = str_glue("AMM Decoded Conditional Threshold Probabilities ({main_suffix})"),
-  group_labels = c(gp0_name, gp1_name)
+  thresholds   = mims_thresholds,
+  eval_type    = sapply(mims_thresholds, `[[`, "eval_type"),
+  panel_mains  = gc_thr_mains,
+  panel_ylabs  = rep("", length(mims_thresholds)),
+  y_grid       = y_grid_male,
+  alpha        = amm_male_alpha,
+  group_labels = c("", ""),
+  cex          = fig_cex,
+  mar          = gc_row2_mar,
+  size         = gc_size,
+  xlim         = gc_xlim_2
 )
 dev.off()
-png(file.path(dir_amm_cov, "amm_male_threshold-contrast.png"),
-    width = 960, height = 240, pointsize = 12)
+gc_strip_png(file.path(dir_amm_cov, "amm_male_threshold-contrast.png"), gc_half_w)
 plot_decoded_conditional_threshold_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
   thresholds  = mims_thresholds,
   eval_type   = sapply(mims_thresholds, `[[`, "eval_type"),
-  panel_mains = sapply(mims_thresholds, `[[`, "main"),
+  panel_mains = gc_thr_mains,
+  panel_ylabs = rep("", length(mims_thresholds)),
   y_grid      = y_grid_male,
   alpha       = amm_male_alpha,
-  main        = str_glue("AMM Decoded Conditional Threshold Probability Contrast ({main_suffix})"),
-  diff_label = str_glue("{gp1_name} - {gp0_name}")
+  diff_label  = "",
+  cex         = fig_cex,
+  mar         = gc_row2_mar,
+  size        = gc_size
 )
 dev.off()
 
-## Quantile levels and quantile-level contrast (one panel per quantile level)
-png(file.path(dir_amm_cov, "amm_male_quantile-level.png"),
-    width = 960, height = 240, pointsize = 12)
+## Quantile levels and quantile-level contrast (half-width strips)
+gc_strip_png(file.path(dir_amm_cov, "amm_male_quantile-level.png"), gc_half_w)
 plot_decoded_conditional_quantile_levels(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
   quantile_levels = quantile_levels,
+  panel_mains     = gc_q_mains,
+  panel_ylabs     = rep("", length(quantile_levels)),
   alpha           = amm_male_alpha,
-  main            = str_glue("AMM Decoded Conditional Quantile Levels ({main_suffix})"),
-  group_labels    = c(gp0_name, gp1_name)
+  group_labels    = c("", ""),
+  cex             = fig_cex,
+  mar             = gc_row2_mar,
+  size            = gc_size,
+  xlim            = gc_xlim_2
 )
 dev.off()
-png(file.path(dir_amm_cov, "amm_male_quantile-level-contrast.png"),
-    width = 960, height = 240, pointsize = 12)
+gc_strip_png(file.path(dir_amm_cov, "amm_male_quantile-level-contrast.png"), gc_half_w)
 plot_decoded_conditional_quantile_level_diff(
   Qi_hat_male_0, Qi_hat_male_1, Qi_boot_male_0, Qi_boot_male_1,
   quantile_levels = quantile_levels,
+  panel_mains     = gc_q_mains,
+  panel_ylabs     = rep("", length(quantile_levels)),
   alpha           = amm_male_alpha,
-  main            = str_glue("AMM Decoded Conditional Quantile Level Contrast ({main_suffix})"),
-  diff_label      = str_glue("{gp1_name} - {gp0_name}")
+  diff_label      = "",
+  cex             = fig_cex,
+  mar             = gc_row2_mar,
+  size            = gc_size
 )
 dev.off()
 

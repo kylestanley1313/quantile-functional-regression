@@ -544,7 +544,7 @@ amm_plot_re_cov <- function(U_hat, K_, title_expr, path) {
   legend(where,
          legend = sapply(threshold_lines, `[[`, "label"),
          col    = sapply(threshold_lines, `[[`, "col"),
-         lwd    = 1.5, lty = 4, bty = "n")
+         lwd    = 1.5, lty = 2, bty = "n")
 }
 
 ## ----- Latent-space conditional mean -----
@@ -720,7 +720,12 @@ amm_plot_latent_effects <- function(fit_result, covariate_name,
                                      band = FALSE, alpha = 0.05,
                                      boot_reps = NULL,
                                      covariates_df = NULL,
-                                     ncol = NULL) {
+                                     ncol = NULL,
+                                     panel_mains = NULL,
+                                     xlab = covariate_name, ylab = "f(x)",
+                                     cex = NULL, mar = c(3, 3, 2, 1),
+                                     mgp = c(1.8, 0.6, 0),
+                                     lwd = 2, main = "") {
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   if (is.null(W_obj))
     stop(str_glue("No smooth for '{covariate_name}' in fit_result."))
@@ -747,8 +752,16 @@ amm_plot_latent_effects <- function(fit_result, covariate_name,
 
   nc <- ncol %||% ceiling(sqrt(K_))
   nr <- ceiling(K_ / nc)
-  old_par <- par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1), mgp = c(1.8, 0.6, 0))
+  ## Display: mgp = NULL keeps the current axis spacing (e.g. set by fig_par);
+  ## cex (if non-NULL) overrides the mfrow text shrink; margins are trimmed for
+  ## omitted titles / axis labels; main is an outer title (none when blank)
+  old_par <- par(mfrow = c(nr, nc), oma = c(0, 0, if (.is_blank(main)) 0 else 2, 0))
+  if (!is.null(mgp)) old_par <- c(old_par, par(mgp = mgp))
+  if (!is.null(cex)) old_par <- c(old_par, par(cex = cex))
   on.exit(par(old_par), add = TRUE)
+  if (is.null(panel_mains)) {
+    panel_mains <- sprintf("k = %d (edf = %.2f)", seq_len(K_), edf_k)
+  }
 
   rug_x <- if (!is.null(covariates_df))
               covariates_df[[covariate_name]][fit_result$keep] else NULL
@@ -756,66 +769,322 @@ amm_plot_latent_effects <- function(fit_result, covariate_name,
   for (k in seq_len(K_)) {
     y_vals <- c(f_mat[, k], beta_lin[k] * x_grid, band_lo[, k], band_hi[, k])
     y_lim  <- range(y_vals, finite = TRUE)
+    par(mar = .trimmed_mar(mar, panel_mains[k], xlab, ylab))
     plot(NULL, xlim = range(x_grid), ylim = y_lim,
-         xlab = covariate_name, ylab = "f(x)",
-         main = sprintf("k = %d (edf = %.2f)", k, edf_k[k]))
+         xlab = xlab, ylab = ylab, main = panel_mains[k])
     if (!is.null(band_lo)) draw_band(x_grid, band_lo[, k], band_hi[, k])
     abline(h = 0, col = "gray85", lty = 1)
-    lines(x_grid, beta_lin[k] * x_grid, col = "gray40", lwd = 1.5, lty = 2)
-    lines(x_grid, f_mat[, k], col = "black", lwd = 2)
+    lines(x_grid, beta_lin[k] * x_grid, col = "gray40", lwd = 0.75 * lwd, lty = 2)
+    lines(x_grid, f_mat[, k], col = "black", lwd = lwd)
     if (!is.null(rug_x)) rug(rug_x, col = rgb(0, 0, 0, 0.2))
   }
+  .panel_row_title(main, cex)
   invisible(NULL)
 }
 
 ## ----- Decoded QF family -----
+
+## Draw overlaid curves (one per covariate value, coloured by `colors`) on a
+## shared x grid, with optional vertical reference lines (quantile levels or
+## thresholds; list(label=, value=, col=) entries, also listed in the legend)
+## and an optional zero line. The legend is placed inside the axes clear of
+## every curve and line (see .legend_layout in src/model/utils.R), and the
+## margins drop the space for an omitted title. legend_title (e.g. "Age")
+## lists just the covariate values under that title; NULL labels each entry
+## "covariate = x".
+.amm_draw_overlay <- function(x, curves, colors, x_values, covariate_name,
+                              xlab, ylab, main, ylim,
+                              vlines = NULL, zero_line = FALSE,
+                              legend_loc = "topleft", legend_title = NULL,
+                              legend_ncol = 1, legend_cex = 1,
+                              lwd = 2, lwd_vline = 1.5,
+                              vline_labels = c("legend", "top")) {
+  vline_labels <- match.arg(vline_labels)
+  v_vals <- if (!is.null(vlines)) sapply(vlines, `[[`, "value") else NULL
+  v_cols <- if (!is.null(vlines)) sapply(vlines, `[[`, "col")   else NULL
+  v_labs <- if (!is.null(vlines)) sapply(vlines, `[[`, "label") else NULL
+  val_labels <- if (is.null(legend_title)) {
+    sprintf("%s = %g", covariate_name, x_values)
+  } else {
+    sprintf("%g", x_values)
+  }
+  ## Reference lines are listed in the legend, or labelled above the frame
+  v_in_leg <- vline_labels == "legend"
+  leg_v     <- if (v_in_leg) v_labs else NULL
+  leg_v_col <- if (v_in_leg) v_cols else NULL
+  leg_args <- list(
+    legend = c(val_labels, leg_v),
+    col    = c(colors, leg_v_col),
+    lwd    = c(rep(lwd, length(colors)), rep(lwd_vline, length(leg_v))),
+    lty    = c(rep(1, length(colors)), rep(2, length(leg_v))),
+    title  = legend_title,
+    ncol   = legend_ncol,
+    cex    = legend_cex,
+    bty    = "n"
+  )
+
+  xlim <- range(x)
+  v_y  <- ylim + c(-1, 1) * 0.04 * diff(ylim)   # full height before any extension
+  objs <- c(
+    lapply(curves, function(y) list(x = x, lo = y, hi = y)),
+    if (zero_line) list(list(x = x, lo = 0 * x, hi = 0 * x)),
+    .threshold_objs(v_vals, v_y[1], v_y[2])
+  )
+
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, xlab, ylab))
+  on.exit(par(old_mar), add = TRUE)
+  ## Labels above the frame: widen the top margin for them, and add any legend
+  ## headroom at the bottom so the lines still reach their labels
+  top_lab <- !v_in_leg && length(v_vals) > 0
+  if (top_lab) {
+    tl <- .threshold_label_layout(v_vals, v_labs, xlim)
+    on.exit(par(tl$old_par), add = TRUE, after = FALSE)   # undo before old_mar
+  }
+  lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc,
+                        extend = if (top_lab) "bottom" else c("top", "bottom"))
+  .draw_frame(xlim, lay$ylim, main = main, xlab = xlab, ylab = ylab,
+              ylim_data = ylim,
+              main_line = if (top_lab) tl$main_line else NULL)
+  if (zero_line) abline(h = 0, col = "red", lty = 3)
+  if (length(v_vals)) {
+    .draw_thresholds(v_vals, v_cols, v_y[1], v_y[2], lwd = lwd_vline)
+  }
+  for (i in seq_along(curves)) lines(x, curves[[i]], col = colors[i], lwd = lwd)
+  do.call(legend, c(list(lay$pos), leg_args))
+  if (top_lab) .draw_threshold_labels(v_vals, v_labs, v_cols, tl)
+  invisible(NULL)
+}
+
+## Shared arguments of the overlaid QF / CDF / survival plots below:
+##   main        plot title ("" omits it and trims the top margin)
+##   legend_loc  preferred legend corner (moved / given headroom if needed)
+##   legend_title, legend_ncol, legend_cex  see .amm_draw_overlay
+##   lwd         curve width (NULL: the original width)
 
 ## Overlaid conditional QFs at a range of x_values for covariate_name.
 amm_plot_conditional_qf <- function(fit_result, covariate_name, pipeline,
                                      x_values = NULL,
                                      age_ref = 40, pir_ref = 1, male_ref = 0,
                                      Ji = NULL,
-                                     quantile_lines = NULL) {
+                                     quantile_lines = NULL,
+                                     main = sprintf("Conditional QFs by %s",
+                                                    covariate_name),
+                                     legend_loc = "topleft",
+                                     legend_title = NULL, legend_ncol = 1,
+                                     legend_cex = 1, lwd = NULL,
+                                     line_labels = c("legend", "top")) {
+  line_labels <- match.arg(line_labels)
   if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
   if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
                                 list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
   pi_grid <- pi_grid_fun(Ji)
-
-  q_vals   <- if (!is.null(quantile_lines)) sapply(quantile_lines, `[[`, "value") else NULL
-  q_cols   <- if (!is.null(quantile_lines)) sapply(quantile_lines, `[[`, "col")   else NULL
-  q_labels <- if (!is.null(quantile_lines)) sapply(quantile_lines, `[[`, "label") else NULL
 
   Qi_list <- lapply(x_values, function(x) {
     cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
     cv[[covariate_name]] <- x
     .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
   })
-  colors  <- .amm_x_palette(x_values)
-  cwt_lbl <- data.frame(
-    color = c(colors,
-              if (!is.null(quantile_lines)) q_cols else NULL),
-    width = c(rep(4, length(x_values)),
-              if (!is.null(quantile_lines)) rep(1.5, length(quantile_lines)) else NULL),
-    type  = c(rep(1, length(x_values)),
-              if (!is.null(quantile_lines)) rep(4, length(quantile_lines)) else NULL),
-    label = c(sprintf("%s = %g", covariate_name, x_values),
-              if (!is.null(quantile_lines)) q_labels else NULL)
-  )
-  plot_funs(
-    fun_list  = Qi_list,
-    grid_list = rep(list(pi_grid), length(Qi_list)),
-    colors    = colors,
-    widths    = rep(4, length(x_values)),
-    types     = rep(1, length(x_values)),
-    ylab      = "Q(p)",
-    color_width_type_labels = cwt_lbl,
-    main = sprintf("Conditional QFs by %s", covariate_name)
-  )
-  if (!is.null(quantile_lines)) {
-    abline(v = q_vals, col = q_cols, lty = 4, lwd = 1.5)
-  }
-  invisible(NULL)
+  .amm_draw_overlay(pi_grid, Qi_list, .amm_x_palette(x_values), x_values,
+                    covariate_name, xlab = "p", ylab = "Q(p)", main = main,
+                    ylim = range(unlist(Qi_list), finite = TRUE),
+                    vlines = quantile_lines, legend_loc = legend_loc,
+                    legend_title = legend_title, legend_ncol = legend_ncol,
+                    legend_cex = legend_cex, lwd = lwd %||% 4,
+                    vline_labels = line_labels)
 }
+
+## Overlaid contrast QFs Qi(x) - Qi(ref) for a range of x_values.
+amm_plot_contrast_qf <- function(fit_result, covariate_name, pipeline,
+                                  x_values = NULL,
+                                  age_ref = 40, pir_ref = 1, male_ref = 0,
+                                  Ji = NULL,
+                                  quantile_lines = NULL,
+                                  main = NULL,
+                                  legend_loc = "topleft",
+                                  legend_title = NULL, legend_ncol = 1,
+                                  legend_cex = 1, lwd = NULL,
+                                  line_labels = c("legend", "top")) {
+  line_labels <- match.arg(line_labels)
+  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
+  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
+                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
+  pi_grid <- pi_grid_fun(Ji)
+  ref_val <- switch(covariate_name, age = age_ref, pir = pir_ref)
+  if (is.null(main)) main <- sprintf("QF contrasts vs %s = %g",
+                                     covariate_name, ref_val)
+
+  Qi_ref <- {
+    cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
+    cv[[covariate_name]] <- ref_val
+    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
+  }
+  contrasts <- lapply(x_values, function(x) {
+    cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
+    cv[[covariate_name]] <- x
+    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji) - Qi_ref
+  })
+  .amm_draw_overlay(pi_grid, contrasts, .amm_x_palette(x_values, ref = ref_val),
+                    x_values, covariate_name, xlab = "p",
+                    ylab = "Q(p) contrast", main = main,
+                    ylim = range(unlist(contrasts), 0, finite = TRUE),
+                    vlines = quantile_lines, zero_line = TRUE,
+                    legend_loc = legend_loc, legend_title = legend_title,
+                    legend_ncol = legend_ncol, legend_cex = legend_cex,
+                    lwd = lwd %||% 2,
+                    vline_labels = line_labels)
+}
+
+## Overlaid conditional CDFs.
+amm_plot_conditional_cdf <- function(fit_result, covariate_name, pipeline,
+                                      x_values = NULL, y_grid = NULL,
+                                      age_ref = 40, pir_ref = 1, male_ref = 0,
+                                      Ji = NULL,
+                                      threshold_lines = NULL,
+                                      main = sprintf("Conditional CDFs by %s",
+                                                     covariate_name),
+                                      legend_loc = "topleft",
+                                      legend_title = NULL, legend_ncol = 1,
+                                      legend_cex = 1, lwd = NULL,
+                                      line_labels = c("legend", "top")) {
+  line_labels <- match.arg(line_labels)
+  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
+  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
+                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
+
+  Qi_list <- lapply(x_values, function(x) {
+    cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
+    cv[[covariate_name]] <- x
+    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
+  })
+  if (is.null(y_grid)) y_grid <- .amm_default_y_grid(Qi_list)
+  F_list <- lapply(Qi_list, qi_to_cdf, y_grid = y_grid)
+  .amm_draw_overlay(y_grid, F_list, .amm_x_palette(x_values), x_values,
+                    covariate_name, xlab = "y", ylab = "F(y)", main = main,
+                    ylim = c(0, 1), vlines = threshold_lines,
+                    legend_loc = legend_loc, legend_title = legend_title,
+                    legend_ncol = legend_ncol, legend_cex = legend_cex,
+                    lwd = lwd %||% 2,
+                    vline_labels = line_labels)
+}
+
+## Overlaid contrast CDFs F(y|x) - F(y|ref).
+amm_plot_contrast_cdf <- function(fit_result, covariate_name, pipeline,
+                                   x_values = NULL, y_grid = NULL,
+                                   age_ref = 40, pir_ref = 1, male_ref = 0,
+                                   Ji = NULL,
+                                   threshold_lines = NULL,
+                                   main = NULL,
+                                   legend_loc = "topright",
+                                   legend_title = NULL, legend_ncol = 1,
+                                   legend_cex = 1, lwd = NULL,
+                                   line_labels = c("legend", "top")) {
+  line_labels <- match.arg(line_labels)
+  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
+  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
+                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
+  ref_val <- switch(covariate_name, age = age_ref, pir = pir_ref)
+  if (is.null(main)) main <- sprintf("CDF contrasts vs %s = %g",
+                                     covariate_name, ref_val)
+
+  cv_ref <- list(male = male_ref, age = age_ref, pir = pir_ref)
+  cv_ref[[covariate_name]] <- ref_val
+  Qi_ref <- .decode_z_vec(pipeline,
+                          amm_compute_conditional_mean(fit_result, cv_ref), Ji)
+
+  Qi_list <- lapply(x_values, function(x) {
+    cv <- cv_ref; cv[[covariate_name]] <- x
+    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
+  })
+  if (is.null(y_grid)) y_grid <- .amm_default_y_grid(c(list(Qi_ref), Qi_list))
+  F_ref  <- qi_to_cdf(Qi_ref, y_grid)
+  F_diff <- lapply(Qi_list, function(Qi) qi_to_cdf(Qi, y_grid) - F_ref)
+  .amm_draw_overlay(y_grid, F_diff, .amm_x_palette(x_values, ref = ref_val),
+                    x_values, covariate_name, xlab = "y",
+                    ylab = "F(y) contrast", main = main,
+                    ylim = range(unlist(F_diff), 0, finite = TRUE),
+                    vlines = threshold_lines, zero_line = TRUE,
+                    legend_loc = legend_loc, legend_title = legend_title,
+                    legend_ncol = legend_ncol, legend_cex = legend_cex,
+                    lwd = lwd %||% 2,
+                    vline_labels = line_labels)
+}
+
+## Overlaid conditional survival functions.
+amm_plot_conditional_survival <- function(fit_result, covariate_name, pipeline,
+                                           x_values = NULL, y_grid = NULL,
+                                           age_ref = 40, pir_ref = 1, male_ref = 0,
+                                           Ji = NULL,
+                                           threshold_lines = NULL,
+                                           main = sprintf(
+                                             "Conditional survival functions by %s",
+                                             covariate_name),
+                                           legend_loc = "topright",
+                                           legend_title = NULL, legend_ncol = 1,
+                                           legend_cex = 1, lwd = NULL,
+                                           line_labels = c("legend", "top")) {
+  line_labels <- match.arg(line_labels)
+  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
+  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
+                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
+
+  Qi_list <- lapply(x_values, function(x) {
+    cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
+    cv[[covariate_name]] <- x
+    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
+  })
+  if (is.null(y_grid)) y_grid <- .amm_default_y_grid(Qi_list)
+  S_list <- lapply(Qi_list, .amm_qi_to_survival, y_grid = y_grid)
+  .amm_draw_overlay(y_grid, S_list, .amm_x_palette(x_values), x_values,
+                    covariate_name, xlab = "y", ylab = "1 - F(y)", main = main,
+                    ylim = c(0, 1), vlines = threshold_lines,
+                    legend_loc = legend_loc, legend_title = legend_title,
+                    legend_ncol = legend_ncol, legend_cex = legend_cex,
+                    lwd = lwd %||% 2,
+                    vline_labels = line_labels)
+}
+
+## Overlaid contrast survival functions S(y|x) - S(y|ref).
+amm_plot_contrast_survival <- function(fit_result, covariate_name, pipeline,
+                                        x_values = NULL, y_grid = NULL,
+                                        age_ref = 40, pir_ref = 1, male_ref = 0,
+                                        Ji = NULL,
+                                        threshold_lines = NULL,
+                                        main = NULL,
+                                        legend_loc = "topright",
+                                        legend_title = NULL, legend_ncol = 1,
+                                        legend_cex = 1, lwd = NULL,
+                                        line_labels = c("legend", "top")) {
+  line_labels <- match.arg(line_labels)
+  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
+  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
+                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
+  ref_val <- switch(covariate_name, age = age_ref, pir = pir_ref)
+  if (is.null(main)) main <- sprintf("Survival function contrasts vs %s = %g",
+                                     covariate_name, ref_val)
+
+  cv_ref <- list(male = male_ref, age = age_ref, pir = pir_ref)
+  cv_ref[[covariate_name]] <- ref_val
+  Qi_ref <- .decode_z_vec(pipeline,
+                          amm_compute_conditional_mean(fit_result, cv_ref), Ji)
+
+  Qi_list <- lapply(x_values, function(x) {
+    cv <- cv_ref; cv[[covariate_name]] <- x
+    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
+  })
+  if (is.null(y_grid)) y_grid <- .amm_default_y_grid(c(list(Qi_ref), Qi_list))
+  S_ref  <- .amm_qi_to_survival(Qi_ref, y_grid)
+  S_diff <- lapply(Qi_list, function(Qi) .amm_qi_to_survival(Qi, y_grid) - S_ref)
+  .amm_draw_overlay(y_grid, S_diff, .amm_x_palette(x_values, ref = ref_val),
+                    x_values, covariate_name, xlab = "y",
+                    ylab = "1 - F(y) contrast", main = main,
+                    ylim = range(unlist(S_diff), 0, finite = TRUE),
+                    vlines = threshold_lines, zero_line = TRUE,
+                    legend_loc = legend_loc, legend_title = legend_title,
+                    legend_ncol = legend_ncol, legend_cex = legend_cex,
+                    lwd = lwd %||% 2,
+                    vline_labels = line_labels)
+}
+
 
 ## Faceted conditional QFs with bootstrap bands (one panel per x_value).
 amm_plot_conditional_qf_faceted <- function(fit_result, covariate_name, pipeline,
@@ -847,62 +1116,13 @@ amm_plot_conditional_qf_faceted <- function(fit_result, covariate_name, pipeline
          main = sprintf("%s = %g", covariate_name, x_values[i]))
     draw_band(pi_grid, bands[[i]][, "lo"], bands[[i]][, "hi"])
     if (!is.null(quantile_lines)) {
-      abline(v = q_vals, col = q_cols, lty = 4, lwd = 1.5)
+      abline(v = q_vals, col = q_cols, lty = 2, lwd = 1.5)
     }
     lines(pi_grid, bands[[i]][, "mean_hat"], col = "black", lwd = 4)
   }
   invisible(NULL)
 }
 
-## Overlaid contrast QFs Qi(x) - Qi(ref) for a range of x_values.
-amm_plot_contrast_qf <- function(fit_result, covariate_name, pipeline,
-                                  x_values = NULL,
-                                  age_ref = 40, pir_ref = 1, male_ref = 0,
-                                  Ji = NULL,
-                                  quantile_lines = NULL) {
-  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
-  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
-                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
-  pi_grid <- pi_grid_fun(Ji)
-  ref_val <- switch(covariate_name, age = age_ref, pir = pir_ref)
-
-  q_vals   <- if (!is.null(quantile_lines)) sapply(quantile_lines, `[[`, "value") else NULL
-  q_cols   <- if (!is.null(quantile_lines)) sapply(quantile_lines, `[[`, "col")   else NULL
-  q_labels <- if (!is.null(quantile_lines)) sapply(quantile_lines, `[[`, "label") else NULL
-
-  Qi_ref <- {
-    cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
-    cv[[covariate_name]] <- ref_val
-    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
-  }
-  contrasts <- lapply(x_values, function(x) {
-    cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
-    cv[[covariate_name]] <- x
-    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji) - Qi_ref
-  })
-  colors <- .amm_x_palette(x_values, ref = ref_val)
-
-  y_lim <- range(unlist(contrasts), 0)
-  plot(NULL, xlim = c(0, 1), ylim = y_lim, xlab = "p", ylab = "Q(p) contrast",
-       main = sprintf("QF contrasts vs %s = %g", covariate_name, ref_val))
-  if (!is.null(quantile_lines)) {
-    abline(v = q_vals, col = q_cols, lty = 4, lwd = 1.5)
-  }
-  for (i in seq_along(x_values)) {
-    lines(pi_grid, contrasts[[i]], col = colors[i], lwd = 2)
-  }
-  legend("topleft",
-         legend = c(sprintf("%s = %g", covariate_name, x_values),
-                    if (!is.null(quantile_lines)) q_labels else NULL),
-         col    = c(colors,
-                    if (!is.null(quantile_lines)) q_cols else NULL),
-         lwd    = c(rep(2, length(colors)),
-                    if (!is.null(quantile_lines)) rep(1.5, length(quantile_lines)) else NULL),
-         lty    = c(rep(1, length(colors)),
-                    if (!is.null(quantile_lines)) rep(4, length(quantile_lines)) else NULL),
-         bty    = "n")
-  invisible(NULL)
-}
 
 ## Faceted contrast QFs with bootstrap bands (one panel per x_value).
 amm_plot_contrast_qf_faceted <- function(fit_result, covariate_name, pipeline,
@@ -935,9 +1155,9 @@ amm_plot_contrast_qf_faceted <- function(fit_result, covariate_name, pipeline,
          ylab = "Q(p) contrast",
          main = sprintf("%s = %g", covariate_name, x_values[i]))
     draw_band(pi_grid, bands[[i]][, "lo"], bands[[i]][, "hi"])
-    abline(h = 0, col = "red", lty = 2)
+    abline(h = 0, col = "red", lty = 3)
     if (!is.null(quantile_lines)) {
-      abline(v = q_vals, col = q_cols, lty = 4, lwd = 1.5)
+      abline(v = q_vals, col = q_cols, lty = 2, lwd = 1.5)
     }
     lines(pi_grid, bands[[i]][, "mean_hat"], col = "black", lwd = 4)
   }
@@ -946,49 +1166,6 @@ amm_plot_contrast_qf_faceted <- function(fit_result, covariate_name, pipeline,
 
 ## ----- Decoded CDF family -----
 
-## Overlaid conditional CDFs.
-amm_plot_conditional_cdf <- function(fit_result, covariate_name, pipeline,
-                                      x_values = NULL, y_grid = NULL,
-                                      age_ref = 40, pir_ref = 1, male_ref = 0,
-                                      Ji = NULL,
-                                      threshold_lines = NULL) {
-  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
-  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
-                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
-
-  thr_vals   <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "value") else NULL
-  thr_cols   <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "col")   else NULL
-  thr_labels <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "label") else NULL
-
-  Qi_list <- lapply(x_values, function(x) {
-    cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
-    cv[[covariate_name]] <- x
-    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
-  })
-  if (is.null(y_grid)) y_grid <- .amm_default_y_grid(Qi_list)
-  F_list <- lapply(Qi_list, qi_to_cdf, y_grid = y_grid)
-  colors <- .amm_x_palette(x_values)
-
-  plot(NULL, xlim = range(y_grid), ylim = c(0, 1),
-       xlab = "y", ylab = "F(y)",
-       main = sprintf("Conditional CDFs by %s", covariate_name))
-  if (!is.null(threshold_lines)) {
-    abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 1.5)
-  }
-  for (i in seq_along(x_values)) {
-    lines(y_grid, F_list[[i]], col = colors[i], lwd = 2)
-  }
-  legend("topleft",
-         legend = c(sprintf("%s = %g", covariate_name, x_values),
-                    if (!is.null(threshold_lines)) thr_labels else NULL),
-         col    = c(colors, thr_cols),
-         lwd    = c(rep(2, length(colors)),
-                    if (!is.null(threshold_lines)) rep(1.5, length(threshold_lines)) else NULL),
-         lty    = c(rep(1, length(colors)),
-                    if (!is.null(threshold_lines)) rep(4, length(threshold_lines)) else NULL),
-         bty    = "n")
-  invisible(NULL)
-}
 
 ## Faceted conditional CDFs with bootstrap bands.
 amm_plot_conditional_cdf_faceted <- function(fit_result, covariate_name, pipeline,
@@ -1038,7 +1215,7 @@ amm_plot_conditional_cdf_faceted <- function(fit_result, covariate_name, pipelin
          main = sprintf("%s = %g", covariate_name, x_values[i]))
     draw_band(y_grid, F_bands[[i]]$lo, F_bands[[i]]$hi)
     if (!is.null(threshold_lines)) {
-      abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 1.5)
+      abline(v = thr_vals, col = thr_cols, lty = 2, lwd = 1.5)
     }
     lines(y_grid, F_means[[i]],    col = "black", lwd = 4)
     if (i == 1) .amm_legend_thresholds(threshold_lines, "topleft")
@@ -1046,55 +1223,6 @@ amm_plot_conditional_cdf_faceted <- function(fit_result, covariate_name, pipelin
   invisible(NULL)
 }
 
-## Overlaid contrast CDFs F(y|x) - F(y|ref).
-amm_plot_contrast_cdf <- function(fit_result, covariate_name, pipeline,
-                                   x_values = NULL, y_grid = NULL,
-                                   age_ref = 40, pir_ref = 1, male_ref = 0,
-                                   Ji = NULL,
-                                   threshold_lines = NULL) {
-  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
-  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
-                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
-  ref_val  <- switch(covariate_name, age = age_ref, pir = pir_ref)
-  thr_vals <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "value") else NULL
-  thr_cols <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "col")   else NULL
-
-  cv_ref <- list(male = male_ref, age = age_ref, pir = pir_ref)
-  cv_ref[[covariate_name]] <- ref_val
-  Qi_ref <- .decode_z_vec(pipeline,
-                          amm_compute_conditional_mean(fit_result, cv_ref), Ji)
-
-  Qi_list <- lapply(x_values, function(x) {
-    cv <- cv_ref; cv[[covariate_name]] <- x
-    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
-  })
-  if (is.null(y_grid)) y_grid <- .amm_default_y_grid(c(list(Qi_ref), Qi_list))
-  F_ref  <- qi_to_cdf(Qi_ref, y_grid)
-  F_diff <- lapply(Qi_list, function(Qi) qi_to_cdf(Qi, y_grid) - F_ref)
-  colors <- .amm_x_palette(x_values, ref = ref_val)
-
-  y_lim <- range(unlist(F_diff), 0)
-  plot(NULL, xlim = range(y_grid), ylim = y_lim,
-       xlab = "y", ylab = "F(y) contrast",
-       main = sprintf("CDF contrasts vs %s = %g", covariate_name, ref_val))
-  abline(h = 0, col = "red", lty = 2)
-  if (!is.null(threshold_lines)) {
-    abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 1.5)
-  }
-  for (i in seq_along(x_values)) {
-    lines(y_grid, F_diff[[i]], col = colors[i], lwd = 2)
-  }
-  legend("topright",
-         legend = c(sprintf("%s = %g", covariate_name, x_values),
-                    if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "label") else NULL),
-         col    = c(colors, thr_cols),
-         lwd    = c(rep(2, length(colors)),
-                    if (!is.null(threshold_lines)) rep(1.5, length(threshold_lines)) else NULL),
-         lty    = c(rep(1, length(colors)),
-                    if (!is.null(threshold_lines)) rep(4, length(threshold_lines)) else NULL),
-         bty    = "n")
-  invisible(NULL)
-}
 
 ## Faceted contrast CDFs with bootstrap bands.
 amm_plot_contrast_cdf_faceted <- function(fit_result, covariate_name, pipeline,
@@ -1146,9 +1274,9 @@ amm_plot_contrast_cdf_faceted <- function(fit_result, covariate_name, pipeline,
          xlab = "y", ylab = "F(y) contrast",
          main = sprintf("%s = %g", covariate_name, x_values[i]))
     draw_band(y_grid, band_list[[i]]$lo, band_list[[i]]$hi)
-    abline(h = 0, col = "red", lty = 2)
+    abline(h = 0, col = "red", lty = 3)
     if (!is.null(threshold_lines)) {
-      abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 1.5)
+      abline(v = thr_vals, col = thr_cols, lty = 2, lwd = 1.5)
     }
     lines(y_grid, F_diff_means[[i]], col = "black", lwd = 4)
     if (i == 1) .amm_legend_thresholds(threshold_lines, "topright")
@@ -1162,49 +1290,6 @@ amm_plot_contrast_cdf_faceted <- function(fit_result, covariate_name, pipeline,
 ## function Qi, evaluated on y_grid.
 .amm_qi_to_survival <- function(Qi, y_grid) 1 - qi_to_cdf(Qi, y_grid)
 
-## Overlaid conditional survival functions.
-amm_plot_conditional_survival <- function(fit_result, covariate_name, pipeline,
-                                           x_values = NULL, y_grid = NULL,
-                                           age_ref = 40, pir_ref = 1, male_ref = 0,
-                                           Ji = NULL,
-                                           threshold_lines = NULL) {
-  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
-  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
-                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
-
-  thr_vals   <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "value") else NULL
-  thr_cols   <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "col")   else NULL
-  thr_labels <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "label") else NULL
-
-  Qi_list <- lapply(x_values, function(x) {
-    cv <- list(male = male_ref, age = age_ref, pir = pir_ref)
-    cv[[covariate_name]] <- x
-    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
-  })
-  if (is.null(y_grid)) y_grid <- .amm_default_y_grid(Qi_list)
-  S_list <- lapply(Qi_list, .amm_qi_to_survival, y_grid = y_grid)
-  colors <- .amm_x_palette(x_values)
-
-  plot(NULL, xlim = range(y_grid), ylim = c(0, 1),
-       xlab = "y", ylab = "1 - F(y)",
-       main = sprintf("Conditional survival functions by %s", covariate_name))
-  if (!is.null(threshold_lines)) {
-    abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 1.5)
-  }
-  for (i in seq_along(x_values)) {
-    lines(y_grid, S_list[[i]], col = colors[i], lwd = 2)
-  }
-  legend("topright",
-         legend = c(sprintf("%s = %g", covariate_name, x_values),
-                    if (!is.null(threshold_lines)) thr_labels else NULL),
-         col    = c(colors, thr_cols),
-         lwd    = c(rep(2, length(colors)),
-                    if (!is.null(threshold_lines)) rep(1.5, length(threshold_lines)) else NULL),
-         lty    = c(rep(1, length(colors)),
-                    if (!is.null(threshold_lines)) rep(4, length(threshold_lines)) else NULL),
-         bty    = "n")
-  invisible(NULL)
-}
 
 ## Faceted conditional survival functions with bootstrap bands.
 amm_plot_conditional_survival_faceted <- function(fit_result, covariate_name, pipeline,
@@ -1254,7 +1339,7 @@ amm_plot_conditional_survival_faceted <- function(fit_result, covariate_name, pi
          main = sprintf("%s = %g", covariate_name, x_values[i]))
     draw_band(y_grid, S_bands[[i]]$lo, S_bands[[i]]$hi)
     if (!is.null(threshold_lines)) {
-      abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 1.5)
+      abline(v = thr_vals, col = thr_cols, lty = 2, lwd = 1.5)
     }
     lines(y_grid, S_means[[i]],    col = "black", lwd = 4)
     if (i == 1) .amm_legend_thresholds(threshold_lines, "topright")
@@ -1262,55 +1347,6 @@ amm_plot_conditional_survival_faceted <- function(fit_result, covariate_name, pi
   invisible(NULL)
 }
 
-## Overlaid contrast survival functions S(y|x) - S(y|ref).
-amm_plot_contrast_survival <- function(fit_result, covariate_name, pipeline,
-                                        x_values = NULL, y_grid = NULL,
-                                        age_ref = 40, pir_ref = 1, male_ref = 0,
-                                        Ji = NULL,
-                                        threshold_lines = NULL) {
-  if (is.null(x_values)) x_values <- .amm_default_x_values(covariate_name)
-  if (is.null(Ji))       Ji <- length(decode_z_rot_to_Qi(pipeline,
-                                list(rep(0, ncol(fit_result$beta_hat))), 1)[[1]])
-  ref_val  <- switch(covariate_name, age = age_ref, pir = pir_ref)
-  thr_vals <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "value") else NULL
-  thr_cols <- if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "col")   else NULL
-
-  cv_ref <- list(male = male_ref, age = age_ref, pir = pir_ref)
-  cv_ref[[covariate_name]] <- ref_val
-  Qi_ref <- .decode_z_vec(pipeline,
-                          amm_compute_conditional_mean(fit_result, cv_ref), Ji)
-
-  Qi_list <- lapply(x_values, function(x) {
-    cv <- cv_ref; cv[[covariate_name]] <- x
-    .decode_z_vec(pipeline, amm_compute_conditional_mean(fit_result, cv), Ji)
-  })
-  if (is.null(y_grid)) y_grid <- .amm_default_y_grid(c(list(Qi_ref), Qi_list))
-  S_ref  <- .amm_qi_to_survival(Qi_ref, y_grid)
-  S_diff <- lapply(Qi_list, function(Qi) .amm_qi_to_survival(Qi, y_grid) - S_ref)
-  colors <- .amm_x_palette(x_values, ref = ref_val)
-
-  y_lim <- range(unlist(S_diff), 0)
-  plot(NULL, xlim = range(y_grid), ylim = y_lim,
-       xlab = "y", ylab = "1 - F(y) contrast",
-       main = sprintf("Survival function contrasts vs %s = %g", covariate_name, ref_val))
-  abline(h = 0, col = "red", lty = 2)
-  if (!is.null(threshold_lines)) {
-    abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 1.5)
-  }
-  for (i in seq_along(x_values)) {
-    lines(y_grid, S_diff[[i]], col = colors[i], lwd = 2)
-  }
-  legend("topright",
-         legend = c(sprintf("%s = %g", covariate_name, x_values),
-                    if (!is.null(threshold_lines)) sapply(threshold_lines, `[[`, "label") else NULL),
-         col    = c(colors, thr_cols),
-         lwd    = c(rep(2, length(colors)),
-                    if (!is.null(threshold_lines)) rep(1.5, length(threshold_lines)) else NULL),
-         lty    = c(rep(1, length(colors)),
-                    if (!is.null(threshold_lines)) rep(4, length(threshold_lines)) else NULL),
-         bty    = "n")
-  invisible(NULL)
-}
 
 ## Faceted contrast survival functions with bootstrap bands.
 amm_plot_contrast_survival_faceted <- function(fit_result, covariate_name, pipeline,
@@ -1362,9 +1398,9 @@ amm_plot_contrast_survival_faceted <- function(fit_result, covariate_name, pipel
          xlab = "y", ylab = "1 - F(y) contrast",
          main = sprintf("%s = %g", covariate_name, x_values[i]))
     draw_band(y_grid, band_list[[i]]$lo, band_list[[i]]$hi)
-    abline(h = 0, col = "red", lty = 2)
+    abline(h = 0, col = "red", lty = 3)
     if (!is.null(threshold_lines)) {
-      abline(v = thr_vals, col = thr_cols, lty = 4, lwd = 1.5)
+      abline(v = thr_vals, col = thr_cols, lty = 2, lwd = 1.5)
     }
     lines(y_grid, S_diff_means[[i]], col = "black", lwd = 4)
     if (i == 1) .amm_legend_thresholds(threshold_lines, "topright")
@@ -1424,24 +1460,33 @@ amm_plot_contrast_survival_faceted <- function(fit_result, covariate_name, pipel
 }
 
 .amm_plot_moment_panels <- function(x_grid, M_point, M_bands = NULL,
-                                     moments, covariate_name, contrast = FALSE) {
+                                     moments, covariate_name, contrast = FALSE,
+                                     panel_ylabs = NULL,
+                                     xlab = covariate_name,
+                                     cex = NULL, mar = c(4, 4.5, 3, 1),
+                                     lwd = 3, main = "") {
   moment_labels <- c(mean = "Mean", variance = "Variance",
                      skewness = "Skewness", kurtosis = "Kurtosis")
-  old_par <- par(mfrow = c(1, length(moments)), mar = c(4, 4.5, 3, 1))
+  if (is.null(panel_ylabs)) {
+    panel_ylabs <- paste0(moment_labels[moments], if (contrast) " contrast" else "")
+  }
+  old_par <- .panel_row_par(length(moments), mar, cex, main)
   on.exit(par(old_par), add = TRUE)
-  for (m in moments) {
+  for (i in seq_along(moments)) {
+    m <- moments[i]
     j <- match(m, colnames(M_point))
     y_vals <- M_point[, j]
     if (!is.null(M_bands)) y_vals <- c(y_vals, M_bands$lo[, j], M_bands$hi[, j])
     y_lim <- range(y_vals, if (contrast) 0 else NULL, finite = TRUE)
+    ## Trim the margins of an omitted panel title / axis label
+    par(mar = .trimmed_mar(mar, moment_labels[m], xlab, panel_ylabs[i]))
     plot(NULL, xlim = range(x_grid), ylim = y_lim,
-         xlab = covariate_name,
-         ylab = paste0(moment_labels[m], if (contrast) " contrast" else ""),
-         main = moment_labels[m])
+         xlab = xlab, ylab = panel_ylabs[i], main = moment_labels[m])
     if (!is.null(M_bands)) draw_band(x_grid, M_bands$lo[, j], M_bands$hi[, j])
-    if (contrast) abline(h = 0, col = "red", lty = 2)
-    lines(x_grid, M_point[, j], col = "black", lwd = 3)
+    if (contrast) abline(h = 0, col = "red", lty = 3)
+    lines(x_grid, M_point[, j], col = "black", lwd = lwd)
   }
+  .panel_row_title(main, cex)
 }
 
 amm_plot_conditional_moments <- function(fit_result, covariate_name, pipeline,
@@ -1449,7 +1494,8 @@ amm_plot_conditional_moments <- function(fit_result, covariate_name, pipeline,
                                           age_ref = 40, pir_ref = 1, male_ref = 0,
                                           Ji = NULL,
                                           moments = c("mean", "variance",
-                                                      "skewness", "kurtosis")) {
+                                                      "skewness", "kurtosis"),
+                                          ...) {
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   rng   <- attr(W_obj, "range")
   if (is.null(x_grid)) x_grid <- seq(rng[1], rng[2], length.out = n_grid)
@@ -1458,7 +1504,7 @@ amm_plot_conditional_moments <- function(fit_result, covariate_name, pipeline,
   M <- .amm_compute_moment_curve(fit_result, covariate_name, x_grid,
                                  age_ref, pir_ref, male_ref, Ji, pipeline)
   .amm_plot_moment_panels(x_grid, M, NULL, moments, covariate_name,
-                          contrast = FALSE)
+                          contrast = FALSE, ...)
   invisible(NULL)
 }
 
@@ -1469,7 +1515,8 @@ amm_plot_conditional_moments_faceted <- function(fit_result, covariate_name, pip
                                                   moments = c("mean", "variance",
                                                               "skewness", "kurtosis"),
                                                   alpha = 0.05,
-                                                  boot_reps = NULL) {
+                                                  boot_reps = NULL,
+                                                  ...) {
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   rng   <- attr(W_obj, "range")
   if (is.null(x_grid)) x_grid <- seq(rng[1], rng[2], length.out = n_grid)
@@ -1481,7 +1528,7 @@ amm_plot_conditional_moments_faceted <- function(fit_result, covariate_name, pip
   Mb <- .amm_compute_moment_bands(fit_result, boot_reps, covariate_name, x_grid,
                                   age_ref, pir_ref, male_ref, Ji, alpha, pipeline,
                                   center = M, contrast = FALSE)
-  .amm_plot_moment_panels(x_grid, M, Mb, moments, covariate_name, contrast = FALSE)
+  .amm_plot_moment_panels(x_grid, M, Mb, moments, covariate_name, contrast = FALSE, ...)
   invisible(NULL)
 }
 
@@ -1490,7 +1537,8 @@ amm_plot_contrast_moments <- function(fit_result, covariate_name, pipeline,
                                        age_ref = 40, pir_ref = 1, male_ref = 0,
                                        Ji = NULL,
                                        moments = c("mean", "variance",
-                                                   "skewness", "kurtosis")) {
+                                                   "skewness", "kurtosis"),
+                                       ...) {
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   rng   <- attr(W_obj, "range")
   if (is.null(x_grid)) x_grid <- seq(rng[1], rng[2], length.out = n_grid)
@@ -1503,7 +1551,7 @@ amm_plot_contrast_moments <- function(fit_result, covariate_name, pipeline,
                                      age_ref, pir_ref, male_ref, Ji, pipeline)
   M_diff <- sweep(M_x, 2, M_ref, "-")
   .amm_plot_moment_panels(x_grid, M_diff, NULL, moments, covariate_name,
-                          contrast = TRUE)
+                          contrast = TRUE, ...)
   invisible(NULL)
 }
 
@@ -1514,7 +1562,8 @@ amm_plot_contrast_moments_faceted <- function(fit_result, covariate_name, pipeli
                                                moments = c("mean", "variance",
                                                            "skewness", "kurtosis"),
                                                alpha = 0.05,
-                                               boot_reps = NULL) {
+                                               boot_reps = NULL,
+                                               ...) {
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   rng   <- attr(W_obj, "range")
   if (is.null(x_grid)) x_grid <- seq(rng[1], rng[2], length.out = n_grid)
@@ -1530,7 +1579,7 @@ amm_plot_contrast_moments_faceted <- function(fit_result, covariate_name, pipeli
   Mb     <- .amm_compute_moment_bands(fit_result, boot_reps, covariate_name, x_grid,
                                       age_ref, pir_ref, male_ref, Ji, alpha, pipeline,
                                       center = M_diff, contrast = TRUE)
-  .amm_plot_moment_panels(x_grid, M_diff, Mb, moments, covariate_name, contrast = TRUE)
+  .amm_plot_moment_panels(x_grid, M_diff, Mb, moments, covariate_name, contrast = TRUE, ...)
   invisible(NULL)
 }
 
@@ -1556,7 +1605,8 @@ amm_plot_threshold_crossing <- function(fit_result, covariate_name, threshold_y,
                                          boot_reps = NULL,
                                          pop_avg = NULL,
                                          eval_type = c("cdf", "survival"),
-                                         main = NULL, ylab = NULL) {
+                                         main = NULL, ylab = NULL,
+                                         xlab = covariate_name, lwd = 3) {
   eval_type <- match.arg(eval_type)
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   rng   <- attr(W_obj, "range")
@@ -1596,10 +1646,10 @@ amm_plot_threshold_crossing <- function(fit_result, covariate_name, threshold_y,
                                      threshold_y, covariate_name)
   y_vals <- c(F_curve, F_band$lo, F_band$hi, pop_avg)
   plot(NULL, xlim = range(x_grid), ylim = range(y_vals, finite = TRUE),
-       xlab = covariate_name, ylab = ylab, main = main)
+       xlab = xlab, ylab = ylab, main = main)
   if (!is.null(F_band)) draw_band(x_grid, F_band$lo, F_band$hi)
   if (!is.null(pop_avg)) abline(h = pop_avg, col = "gray40", lty = 2)
-  lines(x_grid, F_curve, col = "black", lwd = 3)
+  lines(x_grid, F_curve, col = "black", lwd = lwd)
   invisible(NULL)
 }
 
@@ -1614,7 +1664,8 @@ amm_plot_contrast_threshold_crossing <- function(fit_result, covariate_name,
                                                   Ji = NULL, alpha = 0.05,
                                                   boot_reps = NULL,
                                                   eval_type = c("cdf", "survival"),
-                                                  main = NULL, ylab = NULL) {
+                                                  main = NULL, ylab = NULL,
+                                                  xlab = covariate_name, lwd = 3) {
   eval_type <- match.arg(eval_type)
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   rng   <- attr(W_obj, "range")
@@ -1661,10 +1712,10 @@ amm_plot_contrast_threshold_crossing <- function(fit_result, covariate_name,
                                      threshold_y, covariate_name)
   y_vals <- c(F_curve, F_band$lo, F_band$hi, 0)
   plot(NULL, xlim = range(x_grid), ylim = range(y_vals, finite = TRUE),
-       xlab = covariate_name, ylab = ylab, main = main)
+       xlab = xlab, ylab = ylab, main = main)
   if (!is.null(F_band)) draw_band(x_grid, F_band$lo, F_band$hi)
-  abline(h = 0, col = "red", lty = 2)
-  lines(x_grid, F_curve, col = "black", lwd = 3)
+  abline(h = 0, col = "red", lty = 3)
+  lines(x_grid, F_curve, col = "black", lwd = lwd)
   invisible(NULL)
 }
 
@@ -1679,7 +1730,8 @@ amm_plot_quantile_crossing <- function(fit_result, covariate_name, p_star,
                                         Ji = NULL, alpha = 0.05,
                                         boot_reps = NULL,
                                         pop_avg = NULL,
-                                        main = NULL, ylab = NULL) {
+                                        main = NULL, ylab = NULL,
+                                        xlab = covariate_name, lwd = 3) {
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   rng   <- attr(W_obj, "range")
   if (is.null(x_grid)) x_grid <- seq(rng[1], rng[2], length.out = n_grid)
@@ -1715,10 +1767,10 @@ amm_plot_quantile_crossing <- function(fit_result, covariate_name, p_star,
   if (is.null(main)) main <- sprintf("Quantile at p = %g by %s", p_star, covariate_name)
   y_vals <- c(Q_curve, Q_band$lo, Q_band$hi, pop_avg)
   plot(NULL, xlim = range(x_grid), ylim = range(y_vals, finite = TRUE),
-       xlab = covariate_name, ylab = ylab, main = main)
+       xlab = xlab, ylab = ylab, main = main)
   if (!is.null(Q_band)) draw_band(x_grid, Q_band$lo, Q_band$hi)
   if (!is.null(pop_avg)) abline(h = pop_avg, col = "gray40", lty = 2)
-  lines(x_grid, Q_curve, col = "black", lwd = 3)
+  lines(x_grid, Q_curve, col = "black", lwd = lwd)
   invisible(NULL)
 }
 
@@ -1731,7 +1783,8 @@ amm_plot_contrast_quantile_crossing <- function(fit_result, covariate_name,
                                                  male_ref = 0,
                                                  Ji = NULL, alpha = 0.05,
                                                  boot_reps = NULL,
-                                                 main = NULL, ylab = NULL) {
+                                                 main = NULL, ylab = NULL,
+                                                 xlab = covariate_name, lwd = 3) {
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   rng   <- attr(W_obj, "range")
   if (is.null(x_grid)) x_grid <- seq(rng[1], rng[2], length.out = n_grid)
@@ -1773,10 +1826,10 @@ amm_plot_contrast_quantile_crossing <- function(fit_result, covariate_name,
                                      p_star, covariate_name)
   y_vals <- c(Q_curve, Q_band$lo, Q_band$hi, 0)
   plot(NULL, xlim = range(x_grid), ylim = range(y_vals, finite = TRUE),
-       xlab = covariate_name, ylab = ylab, main = main)
+       xlab = xlab, ylab = ylab, main = main)
   if (!is.null(Q_band)) draw_band(x_grid, Q_band$lo, Q_band$hi)
-  abline(h = 0, col = "red", lty = 2)
-  lines(x_grid, Q_curve, col = "black", lwd = 3)
+  abline(h = 0, col = "red", lty = 3)
+  lines(x_grid, Q_curve, col = "black", lwd = lwd)
   invisible(NULL)
 }
 
@@ -1790,19 +1843,36 @@ amm_plot_contrast_quantile_crossing <- function(fit_result, covariate_name,
 amm_plot_threshold_crossing_panels <- function(fit_result, covariate_name,
                                                 thresholds, pipeline,
                                                 contrast = FALSE, main = "",
+                                                panel_mains = NULL,
+                                                panel_ylabs = NULL,
+                                                xlab = covariate_name,
+                                                cex = NULL,
+                                                mar = c(4, 4.5, 3, 1),
+                                                lwd = 3,
                                                 ...) {
   plot_one <- if (contrast) amm_plot_contrast_threshold_crossing
               else amm_plot_threshold_crossing
-  old_par <- par(mfrow = c(1, length(thresholds)), mar = c(4, 4.5, 3, 1),
-                 oma = c(0, 0, 2, 0))
+  n_thr <- length(thresholds)
+  if (is.null(panel_mains)) {
+    panel_mains <- vapply(thresholds, function(thr) thr$main %||% thr$label,
+                          character(1))
+  }
+  old_par <- .panel_row_par(n_thr, mar, cex, main)
   on.exit(par(old_par), add = TRUE)
-  for (thr in thresholds) {
+  for (k in seq_len(n_thr)) {
+    thr  <- thresholds[[k]]
+    ylab <- if (is.null(panel_ylabs)) NULL else panel_ylabs[k]
+    ## Trim the margins of an omitted panel title / axis label
+    par(mar = .trimmed_mar(mar, panel_mains[k], xlab, ylab %||% "y"))
     plot_one(fit_result, covariate_name, thr$value, pipeline,
              eval_type = thr$eval_type %||% "cdf",
-             main      = thr$main %||% thr$label,
+             main      = panel_mains[k],
+             ylab      = ylab,
+             xlab      = xlab,
+             lwd       = lwd,
              ...)
   }
-  mtext(main, outer = TRUE, cex = 1.1, font = 2)
+  .panel_row_title(main, cex)
   invisible(NULL)
 }
 
@@ -1813,16 +1883,28 @@ amm_plot_threshold_crossing_panels <- function(fit_result, covariate_name,
 amm_plot_quantile_crossing_panels <- function(fit_result, covariate_name,
                                                quantile_levels, pipeline,
                                                contrast = FALSE, main = "",
+                                               panel_mains = NULL,
+                                               panel_ylabs = NULL,
+                                               xlab = covariate_name,
+                                               cex = NULL,
+                                               mar = c(4, 4.5, 3, 1),
+                                               lwd = 3,
                                                ...) {
   plot_one <- if (contrast) amm_plot_contrast_quantile_crossing
               else amm_plot_quantile_crossing
-  old_par <- par(mfrow = c(1, length(quantile_levels)), mar = c(4, 4.5, 3, 1),
-                 oma = c(0, 0, 2, 0))
-  on.exit(par(old_par), add = TRUE)
-  for (ql in quantile_levels) {
-    plot_one(fit_result, covariate_name, ql$value, pipeline,
-             main = ql$label, ...)
+  n_p <- length(quantile_levels)
+  if (is.null(panel_mains)) {
+    panel_mains <- vapply(quantile_levels, `[[`, character(1), "label")
   }
-  mtext(main, outer = TRUE, cex = 1.1, font = 2)
+  old_par <- .panel_row_par(n_p, mar, cex, main)
+  on.exit(par(old_par), add = TRUE)
+  for (k in seq_len(n_p)) {
+    ylab <- if (is.null(panel_ylabs)) NULL else panel_ylabs[k]
+    ## Trim the margins of an omitted panel title / axis label
+    par(mar = .trimmed_mar(mar, panel_mains[k], xlab, ylab %||% "y"))
+    plot_one(fit_result, covariate_name, quantile_levels[[k]]$value, pipeline,
+             main = panel_mains[k], ylab = ylab, xlab = xlab, lwd = lwd, ...)
+  }
+  .panel_row_title(main, cex)
   invisible(NULL)
 }
