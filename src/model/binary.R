@@ -126,7 +126,15 @@ binary_legend_top_geom <- function() {
 ## and xlab / ylab remain the literal x / y axis titles. In the horizontal
 ## layout, legend_in_margin instead puts the legend as a horizontal ramp at
 ## the top middle of the plot box, extending the estimate axis upward so the
-## legend sits in a band clear of all intervals.
+## legend sits in a band clear of all intervals. las_labels sets the
+## orientation of the per-row labels in the horizontal layout (default 2,
+## rotated; 1 = horizontal text), and label_line their distance from the axis
+## in lines (default 1, R's usual; larger for multi-line labels).
+## groups (optional, one id per row, rows of a group contiguous) clusters the
+## rows: rows within a group are group_step apart (1 = the ungrouped row
+## spacing) and an extra group_gap is left between consecutive groups. pch
+## gives the point symbol of each estimate (recycled; 21-25 are drawn with a
+## white fill, e.g. 23 = open diamond).
 binary_plot_intervals <- function(rb_df, xlim = NULL, main = "",
                                   labels = seq_len(nrow(rb_df)),
                                   xlab = expression(hat(beta)[k]),
@@ -135,8 +143,15 @@ binary_plot_intervals <- function(rb_df, xlim = NULL, main = "",
                                   mar = c(4.5, 4, 3, 2),
                                   legend_in_margin = FALSE,
                                   show_legend = TRUE,
-                                  horizontal = FALSE) {
+                                  horizontal = FALSE,
+                                  las_labels = 2,
+                                  label_line = 1,
+                                  groups = NULL,
+                                  group_gap = 0.6,
+                                  group_step = 0.8,
+                                  pch = 19) {
   K       <- nrow(rb_df)
+  pch     <- rep(pch, length.out = K)
   bright_red  <- "#FF0000"
   medium_red  <- "#C54E57"
   dark_red    <- "#847777"
@@ -175,7 +190,14 @@ binary_plot_intervals <- function(rb_df, xlim = NULL, main = "",
   ## Coefficient positions: top to bottom (vertical) or left to right
   ## (horizontal). Drawing below is written in (value, position) coordinates
   ## and mapped to (x, y) or (y, x) by orientation.
-  pos <- if (horizontal) seq_len(K) else K:1
+  pos <- seq_len(K)
+  if (!is.null(groups)) {
+    stopifnot(length(groups) == K)
+    new_group <- groups[-1] != groups[-K]
+    pos <- cumsum(c(1, ifelse(new_group, 1 + group_gap, group_step)))
+  }
+  pos_lim <- c(0.5, max(pos) + 0.5)
+  if (!horizontal) pos <- max(pos) + 1 - pos
   seg_vp <- function(v0, p0, v1, p1, ...) {
     if (horizontal) segments(p0, v0, p1, v1, ...) else segments(v0, p0, v1, p1, ...)
   }
@@ -200,12 +222,13 @@ binary_plot_intervals <- function(rb_df, xlim = NULL, main = "",
   }
 
   if (horizontal) {
-    plot(NULL, xlim = c(0.5, K + 0.5), ylim = xlim,
+    plot(NULL, xlim = pos_lim, ylim = xlim,
          xlab = xlab, ylab = ylab, xaxt = "n", main = main)
-    axis(1, at = pos, labels = labels, las = 2)
+    axis(1, at = pos, labels = labels, las = las_labels,
+         mgp = c(3, label_line, 0))
     abline(h = 0, col = "gray80", lwd = 1)
   } else {
-    plot(NULL, xlim = xlim, ylim = c(0.5, K + 0.5),
+    plot(NULL, xlim = xlim, ylim = pos_lim,
          xlab = xlab, ylab = ylab, yaxt = "n", main = main)
     axis(2, at = pos, labels = labels, las = 1)
     abline(v = 0, col = "gray80", lwd = 1)
@@ -220,9 +243,9 @@ binary_plot_intervals <- function(rb_df, xlim = NULL, main = "",
     seg_vp(rb_df$upper[i], pi_ - cap_h, rb_df$upper[i], pi_ + cap_h,
            col = "black", lwd = 1.5)
     if (horizontal) {
-      points(pi_, rb_df$estimate[i], pch = 19, cex = 1.0)
+      points(pi_, rb_df$estimate[i], pch = pch[i], bg = "white", cex = 1.0)
     } else {
-      points(rb_df$estimate[i], pi_, pch = 19, cex = 1.0)
+      points(rb_df$estimate[i], pi_, pch = pch[i], bg = "white", cex = 1.0)
     }
   }
 
@@ -232,7 +255,7 @@ binary_plot_intervals <- function(rb_df, xlim = NULL, main = "",
   ## p-value boxes along the low end of the value axis (left or bottom edge)
   vr <- if (horizontal) yr else xr
   v_min <- if (horizontal) usr[3] else usr[1]
-  box_w <- 0.022 * vr
+  box_w <- (if (horizontal) 0.044 else 0.022) * vr
   box_h <- 0.35
   box_v0 <- v_min + 0.006 * vr
   box_v1 <- box_v0 + box_w

@@ -59,6 +59,7 @@ pipeline <- construct_pipeline(
 ## Fitting
 pipeline <- fit(pipeline, y_list)
 path_pipe <- file.path(dir_art, 'pipe.pth')
+pipeline <- set_c_signs(pipeline, flip = c(3))
 saveRDS(pipeline, path_pipe)
 
 ## New context
@@ -180,8 +181,8 @@ path_plot <- file.path(
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 C_plot <- rbind(
-  do.call(rbind, c_ctx$payload$c_list)[idx_train,k_from:k_to],
-  do.call(rbind, c_ctx$payload$c_list)[idx_outliers,k_from:k_to]
+  c_ctx_to_matrix(pipeline, c_ctx)[idx_train,k_from:k_to],
+  c_ctx_to_matrix(pipeline, c_ctx)[idx_outliers,k_from:k_to]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -222,7 +223,7 @@ path_Z <- file.path(dir_art, str_glue('Z.rds'))
 path_E <- file.path(dir_art, str_glue('E.rds'))
 path_p_grid <- file.path(dir_art, str_glue('p_grid.rds'))
 Q <- do.call(rbind, Q_ctx$payload)
-C <- do.call(rbind, c_ctx$payload$c_list)
+C <- c_ctx_to_matrix(pipeline, c_ctx)
 Z <- do.call(rbind, z_ctx$payload)
 E <- pipeline$stages[[3]]$state$child_qg_pca$state$E
 p_grid <- pipeline$training$cache$p_grid
@@ -437,6 +438,7 @@ df_a$a_tail95_mean <- unlist(lapply(y_list, function(y) mean(y[y >= quantile(y, 
 df_a$a_tail90_mean <- unlist(lapply(y_list, function(y) mean(y[y >= quantile(y, c(0.90))])))
 df_a$a_tail85_mean <- unlist(lapply(y_list, function(y) mean(y[y >= quantile(y, c(0.85))])))
 df_a$a_above60mims <- unlist(lapply(y_list, function(y) mean(y >= 60)))
+df_a$a_tail_diff <- unlist(lapply(y_list, function(y) quantile(y, c(0.995)) - quantile(y, c(0.96))))
 
 ## Nonwear
 df_nonwear$t_nonwear <- log((df_nonwear$nonwear + 1e-3) / (1 - df_nonwear$nonwear + 1e-3))
@@ -836,6 +838,10 @@ models <- list(
   #   preds = c(preds_common, "a_96"),
   #   f_str_abbr = 'x,a_96'
   # ),
+  scale_14 = list(
+    preds = c(preds_common, "a_tail_diff"),
+    f_str_abbr = 'x,a_tail_diff'
+  ),
   
   ## Scalar PA + Impact
   scale_imp_0 = list(
@@ -906,6 +912,10 @@ models <- list(
   #   preds = c(preds_common, "a_96", "imp", "a_96:imp"),
   #   f_str_abbr = 'x,a_96,imp'
   # ),
+  scale_imp_14 = list(
+    preds = c(preds_common, "a_tail_diff", "imp", "a_tail_diff:imp"),
+    f_str_abbr = 'x,a_tail_diff,imp'
+  ),
   
 
   ## Distributional PA
@@ -1112,7 +1122,7 @@ num_cols <- c('oos_err_mean', 'oos_err_low', 'oos_err_high', 'adj_r_sq',
               'delta_mean', 'delta_se', 'delta_low', 'delta_high', 'pa_keep_share')
 results[num_cols] <- lapply(results[num_cols], round, digits = 3)
 results$mean_terms_cv <- round(results$mean_terms_cv, 2)
-print_full <- TRUE
+print_full <- FALSE
 print_reduced <- TRUE
 print_cols <- c('preds', 'oos_err_mean', 'delta_mean', 'delta_low', 'delta_high')
 if (print_full) {
@@ -1679,10 +1689,7 @@ decode_qpc <- function(shifts) {
 decode_c <- function(shifts) {
   c_shifts_list <- asplit(shifts, MARGIN = 1)
   c_shifts_ctx <- new_context(
-    payload = list(
-      c_list = c_shifts_list,
-      Q_star_list = replicate(length(c_shifts_list), pipeline$training$cache$Q_star, simplify = FALSE)
-    ),
+    payload = .c_payload(pipeline, c_shifts_list),
     cache = pipeline$training$cache,
     meta = list()
   )
@@ -1792,7 +1799,7 @@ segments(p_thresh, y_thresh, p_thresh, 0, col = 'gray50', lty = 'dotted', lwd = 
 text(0.02, y_thresh, 'MVPA cutpoint (19.6 MIMS)', adj = c(0, -0.5),
      cex = 0.8, col = 'gray30')
 ## MVPA rate: the interval [Q_inv(19.6), 1] marked along the x-axis
-segments(p_thresh, 0, 1, 0, lwd = 6, col = 'gray20', lend = 'butt', xpd = NA)
+segments(p_thresh, 0, 1, 0, lwd = 6, col = 'gray50', lend = 'butt', xpd = NA)
 text((p_thresh + 1) / 2, 0, 'MVPA rate', adj = c(0.5, -0.8), cex = 0.8, col = 'gray20')
 legend(
   'topleft',
@@ -1840,8 +1847,12 @@ plot_emb_heatmap <- function(emb, path, n_cols = 201,
   dev.off()
 }
 
-plot_emb_heatmap(Qpc, file.path(dir_poster, 'heatmap_qpc.png'))
-plot_emb_heatmap(C, file.path(dir_poster, 'heatmap_c.png'))
+## Rendered at 2/3 of the default size (same pointsize) to keep the
+## QFs -> heatmaps composite short
+plot_emb_heatmap(Qpc, file.path(dir_poster, 'heatmap_qpc.png'),
+                 width = 133, height = 267)
+plot_emb_heatmap(C, file.path(dir_poster, 'heatmap_c.png'),
+                 width = 133, height = 267)
 
 
 ## ----- QFs -> heatmaps composite
@@ -1868,7 +1879,7 @@ img_h <- function(img) dim(img)[1]
 ## Pixel sizes at 72 dpi, scaled to the source images' poster_scale density
 pad <- 10 * poster_scale        ## outer border
 gap_x <- 100 * poster_scale     ## horizontal gap between heatmaps
-arrow_h <- 200 * poster_scale   ## vertical space for arrows
+arrow_h <- 110 * poster_scale   ## vertical space for arrows
 row_w <- img_w(img_c) + gap_x + img_w(img_q)
 hm_h <- max(img_h(img_c), img_h(img_q))
 W <- max(row_w, img_w(img_qf)) + 2 * pad
@@ -1916,10 +1927,10 @@ dev.off()
 ## table_spec to change rows. Requires \usepackage{booktabs}.
 table_spec <- data.frame(
   model = c('ref_common_preds_imp', 'scale_imp_0', 'scale_imp_1',
-            'scale_imp_8', 'dist_C_imp', 'dist_Qpc_imp'),
-  label = c('None (Baseline)', 'Mean (\\texttt{a\\_mean})', 'MVPA (\\texttt{a\\_mvpa})', '99th pct. (\\texttt{a\\_99})', 'WAME (\\texttt{c})', 'Q-PCA (\\texttt{q})'),
-  type = c('--', 'Scalar', 'Scalar', 'Scalar',
-           'Distributional', 'Distributional')
+            'dist_C_imp', 'dist_Qpc_imp', 'scale_imp_8'),
+  label = c('None (Baseline)', 'Mean (\\texttt{a\\_mean})', 'MVPA (\\texttt{a\\_mvpa})', 'WAME (\\texttt{c})', 'Q-PCA (\\texttt{q})', '99th pct. (\\texttt{a\\_99})'),
+  type = c('--', 'Scalar (conventional)', 'Scalar (conventional)',
+           'Distributional', 'Distributional', 'Scalar (targeted)')
 )
 stopifnot(all(table_spec$model %in% names(models)), fit_reduced)
 
@@ -1943,43 +1954,24 @@ num <- function(x) sub('^-', '$-$', sprintf('%.3f', x))
 fmt_col <- function(d, lo, hi, mae) {
   txt <- num(d)
   best <- is_pa_row & d == min(d[is_pa_row])
-  txt[best] <- paste0('\\textbf{', txt[best], '}')
+  # txt[best] <- paste0('\\textbf{', txt[best], '}')
   txt <- paste0(txt, ' (', num(lo), ', ', num(hi), ')')
   txt[!is_pa_row] <- paste0('Baseline (MAE = ', sprintf('%.3f', mae[!is_pa_row]), ')')
   txt
 }
-full_txt <- fmt_col(table_vals$full_d, table_vals$full_lo, table_vals$full_hi,
-                    table_vals$full_mae)
 pruned_txt <- fmt_col(table_vals$pruned_d, table_vals$pruned_lo,
                       table_vals$pruned_hi, table_vals$pruned_mae)
 
 body <- paste0(
-  paste(table_spec$label, table_spec$type, full_txt, pruned_txt, sep = ' & '),
+  paste(table_spec$label, table_spec$type, pruned_txt, sep = ' & '),
   ' \\\\'
 )
 
-## Suggested caption (written as LaTeX comments above the tabular)
-cv_desc <- if (V_cv == nrow(df)) 'leave-one-out' else paste0(V_cv, '-fold')
-table_caption <- strwrap(paste0(
-  'Out-of-sample prediction of total-body BMD Z-score. The baseline model ',
-  'includes age group, sex, BMI Z-score and high-impact activity; each other ',
-  'row adds the listed physical-activity (PA) summary and its interaction ',
-  'with high-impact activity. $\\Delta$MAE is the paired difference in ',
-  cv_desc, ' cross-validated mean absolute error from the baseline, averaged ',
-  'over children (negative = lower error than the baseline), with 95\\% CI. ',
-  'Full: all terms retained. Pruned: backward selection ($p < 0.05$) ',
-  'repeated within each cross-validation fit, applied to the baseline as ',
-  'well. Bold: largest reduction in each column.'
-), width = 76)
-
 table_tex <- c(
-  '% Suggested caption:',
-  paste('%', table_caption),
   '\\begin{tabular}{llcc}',
   '\\toprule',
   paste0('PA summary & Type & ',
-         '$\\Delta$ Full MAE vs.\\ baseline (95\\% CI) & ',
-         '$\\Delta$ Pruned MAE vs.\\ baseline (95\\% CI) \\\\'),
+         '$\\Delta$ MAE vs.\\ baseline (95\\% CI) \\\\'),
   '\\midrule',
   body,
   '\\bottomrule',
@@ -1994,7 +1986,7 @@ cat(table_tex, sep = '\n')
 ## Orientation: FALSE = horizontal intervals stacked vertically in each plot,
 ## plots stitched side by side; TRUE = vertical intervals laid out left to
 ## right in each plot, plots stitched top to bottom
-coef_horizontal <- TRUE
+coef_horizontal <- FALSE
 
 ## Plotting-area height (px) in the stacked layout. The in-box p-value legend
 ## sits in a band reserved above the highest interval, so it cannot overlap
@@ -2002,35 +1994,99 @@ coef_horizontal <- TRUE
 ## for the band)
 plot_height_coef <- 130
 
+## slope_rows_pa: group-specific slopes for each component col_prefix_k of a
+## model, in per-SD units. For every k, three rows: the slope in the low-impact
+## group (main effect), in the high-impact group (main effect + imp
+## interaction; SE from the model covariance) and their difference, high - low
+## (the imp interaction; omitted if the model has no interaction for k). Each
+## slope is multiplied by the SD of its component in the fitted data, so it is
+## the effect of a 1-SD change in that component (p-values are unchanged by
+## the rescaling). Covariates and imp are omitted. Returns list(df = estimate/
+## lower/upper/p_adj rows with 95% t CIs, labels = plotmath labels, groups =
+## component index of each row, pch = point symbol of each row: filled circle
+## for slopes, open diamond for differences).
+slope_rows_pa <- function(model, col_prefix) {
+  b <- coef(model)
+  V <- vcov(model)
+  dfr <- df.residual(model)
+  mfr <- model.frame(model)
+  tq <- qt(0.975, dfr)
+  sym <- as.name(col_prefix)
+  main_nm <- function(k) paste0(col_prefix, '_', k)
+  inter_nm <- function(k) {
+    cand <- c(paste0(main_nm(k), ':imp'), paste0('imp:', main_nm(k)))
+    cand[cand %in% names(b)][1]
+  }
+  ks <- sort(as.integer(sub(paste0('^', col_prefix, '_'), '',
+                            grep(paste0('^', col_prefix, '_[0-9]+$'), names(b),
+                                 value = TRUE))))
+  ## One row for the linear combination w (named weights over coefficients),
+  ## scaled by the SD of component k
+  combo_row <- function(w, k) {
+    sdk <- sd(mfr[[main_nm(k)]])
+    est <- sum(w * b[names(w)]) * sdk
+    se <- sqrt(drop(t(w) %*% V[names(w), names(w), drop = FALSE] %*% w)) * sdk
+    data.frame(estimate = est, lower = est - tq * se, upper = est + tq * se,
+               p_adj = 2 * pt(-abs(est / se), dfr))
+  }
+  rows <- list()
+  labs <- list()
+  groups <- integer(0)
+  pch <- integer(0)
+  for (k in ks) {
+    ## Low impact: main effect only
+    rows[[length(rows) + 1]] <- combo_row(setNames(1, main_nm(k)), k)
+    labs[[length(labs) + 1]] <- bquote(.(sym)[.(k)] ~ '(low)')
+    ## High impact: main effect + interaction (main effect alone if the
+    ## model has no interaction for k)
+    w_high <- if (is.na(inter_nm(k))) {
+      setNames(1, main_nm(k))
+    } else {
+      setNames(c(1, 1), c(main_nm(k), inter_nm(k)))
+    }
+    rows[[length(rows) + 1]] <- combo_row(w_high, k)
+    labs[[length(labs) + 1]] <- bquote(.(sym)[.(k)] ~ '(high)')
+    groups <- c(groups, k, k)
+    pch <- c(pch, 19, 19)
+    ## Difference, high - low: the interaction alone
+    if (!is.na(inter_nm(k))) {
+      rows[[length(rows) + 1]] <- combo_row(setNames(1, inter_nm(k)), k)
+      labs[[length(labs) + 1]] <- bquote(.(sym)[.(k)] ~ '(high - low)')
+      groups <- c(groups, k)
+      pch <- c(pch, 23)
+    }
+  }
+  list(df = do.call(rbind, rows), labels = as.expression(labs),
+       groups = groups, pch = pch)
+}
+
 ## plot_coef_intervals: (unadjusted) 95% t confidence intervals and p-values
-## for all non-intercept coefficients of an lm fit, drawn in the style of the
-## Roy-Bose interval plots (binary_plot_intervals). plot_width (and, when
+## for the group-specific component slopes of an lm fit in per-SD units and
+## their high - low differences (slope_rows_pa; rows clustered by component,
+## differences drawn as open diamonds), drawn
+## in the style of the Roy-Bose interval plots (binary_plot_intervals).
+## plot_width (and, when
 ## horizontal, plot_height) give the size (px) of the plotting area itself;
 ## the PNG size adds whatever the margins need (coefficient labels, p-value
 ## legend), so plots with different labels/legends share the same plotting
 ## area. When not horizontal, the PNG height is fixed at height.
-plot_coef_intervals <- function(model, path, main, show_legend = TRUE,
+plot_coef_intervals <- function(model, path, main, col_prefix,
+                                show_legend = TRUE,
                                 horizontal = FALSE,
                                 plot_width = if (horizontal) 450 else 150,
                                 plot_height = 200,
                                 height = 600, pointsize = 14) {
-  ci <- confint(model, level = 0.95)
-  p_vals <- summary(model)$coefficients[, 'Pr(>|t|)']
-  keep <- rownames(ci) != '(Intercept)'
-  ci_df <- data.frame(
-    estimate = coef(model)[keep],
-    lower = ci[keep, 1],
-    upper = ci[keep, 2],
-    p_adj = p_vals[rownames(ci)[keep]]
-  )
+  rows <- slope_rows_pa(model, col_prefix)
+  ci_df <- rows$df
   ## Measure margins (in lines) on a scratch PNG device with the same font
-  ## metrics: the label margin (left, or bottom when horizontal) just wide
-  ## enough for the longest coefficient label, and room on the right for the
-  ## p-value legend (if shown; when horizontal it sits inside the plot box)
+  ## metrics: the label margin (left, or bottom when horizontal, where labels
+  ## are written vertically) just wide enough for the longest label, and room
+  ## on the right for the p-value legend (if shown; when horizontal it sits
+  ## inside the plot box)
   tmp <- tempfile(fileext = '.png')
   png(tmp, width = 100, height = height, pointsize = pointsize)
   csi <- par('csi')
-  mar_lab <- max(strwidth(rownames(ci_df), units = 'inches')) / csi + 1.5
+  mar_lab <- max(strwidth(rows$labels, units = 'inches')) / csi + 1.5
   mar_right <- if (show_legend && !horizontal) max(1, binary_legend_margin_in() / csi) else 1
   dev.off()
   unlink(tmp)
@@ -2047,14 +2103,16 @@ plot_coef_intervals <- function(model, path, main, show_legend = TRUE,
   binary_plot_intervals(
     ci_df,
     main = main,
-    labels = rownames(ci_df),
-    xlab = if (horizontal) '' else 'Estimate (95% CI)',
-    ylab = if (horizontal) 'Estimate (95% CI)' else '',
+    labels = rows$labels,
+    xlab = if (horizontal) '' else 'Slope per SD (95% CI)',
+    ylab = if (horizontal) 'Slope per SD (95% CI)' else '',
     p_lab = 'p',
     mar = mar,
     legend_in_margin = TRUE,
     show_legend = show_legend,
-    horizontal = horizontal
+    horizontal = horizontal,
+    groups = rows$groups,
+    pch = rows$pch
   )
   dev.off()
 }
@@ -2065,6 +2123,7 @@ plot_coef_intervals(
   models[['dist_Qpc_imp']]$model_full,
   path = file.path(dir_poster, 'coefs_qpca.png'),
   main = 'Q-PCA Model',
+  col_prefix = 'q',
   show_legend = TRUE,
   horizontal = coef_horizontal,
   plot_height = plot_height_coef
@@ -2073,6 +2132,7 @@ plot_coef_intervals(
   models[['dist_C_imp']]$model_full,
   path = file.path(dir_poster, 'coefs_wame.png'),
   main = 'WAME Model',
+  col_prefix = 'c',
   show_legend = TRUE,
   horizontal = coef_horizontal,
   plot_height = plot_height_coef
@@ -2115,7 +2175,8 @@ dev.off()
 ## plot_effect_contrasts: 2 x 2 effect contrast panels (rows: the two
 ## components in k_stars; columns: low / high impact) plus a right-margin
 ## panel with the shared color ramp beside a boxplot of observed BMD, on a
-## common BMD axis. comp_label prefixes the panel titles (e.g. 'C' -> 'C1').
+## common BMD axis. comp_label is the component symbol in the panel titles,
+## subscripted by the component index (e.g. 'c' -> c with subscript 1).
 plot_effect_contrasts <- function(model, embeddings, decode_fn, col_prefix,
                                   k_stars, comp_label, path,
                                   plim = c(0, 1), n_cols = 101, gamma = 1.5) {
@@ -2127,7 +2188,7 @@ plot_effect_contrasts <- function(model, embeddings, decode_fn, col_prefix,
       imp_lab <- if (imp == 0) 'low impact' else 'high impact'
       panels[[length(panels) + 1]] <- list(
         k_star = k_star, imp = imp,
-        main = str_glue('{comp_label}{k_star}, {imp_lab}')
+        main = bquote(bold(.(comp_label)[.(k_star)] * .(paste0(', ', imp_lab))))
       )
     }
   }
@@ -2203,14 +2264,14 @@ plot_effect_contrasts <- function(model, embeddings, decode_fn, col_prefix,
 k_stars_c <- c(1, 3)
 plot_effect_contrasts(
   model = model_c, embeddings = C, decode_fn = decode_c, col_prefix = 'c',
-  k_stars = k_stars_c, comp_label = 'C',
+  k_stars = k_stars_c, comp_label = 'c',
   path = file.path(dir_poster, str_glue('effect_contrasts_c{k_stars_c[1]}_c{k_stars_c[2]}.png'))
 )
 
 k_stars_q <- c(1, 3)
 plot_effect_contrasts(
   model = model_qpc, embeddings = Qpc, decode_fn = decode_qpc, col_prefix = 'q',
-  k_stars = k_stars_q, comp_label = 'Q',
+  k_stars = k_stars_q, comp_label = 'q',
   path = file.path(dir_poster, str_glue('effect_contrasts_q{k_stars_q[1]}_q{k_stars_q[2]}.png'))
 )
 
@@ -2361,10 +2422,7 @@ resp_new <- predict(model, df_new)
 ## Map c-shifts to Q-space
 c_shifts_list <- asplit(df_new[,paste0('c_', 1:K)], MARGIN = 1)
 c_shifts_ctx <- new_context(
-  payload = list(
-    c_list = c_shifts_list,
-    Q_star_list = replicate(length(c_shifts_list), pipeline$training$cache$Q_star, simplify = FALSE)
-  ),
+  payload = .c_payload(pipeline, c_shifts_list),
   cache = pipeline$training$cache,
   meta = list()
 )

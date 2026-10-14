@@ -307,6 +307,51 @@ decode_z_rot_to_Qi <- function(pipeline, z_rot_list, Ji) {
 }
 
 
+## ---------- c-embedding sign convention ---------- ##
+
+## Orientation of the c-embeddings as seen by everything outside the pipeline
+## (models, plots, clustering). The sign of each wame basis function is
+## arbitrary, so this only fixes a convention.
+##
+## Unlike set_rotation_signs(), this does NOT touch any stage's state. c sits
+## mid-pipeline: the flow was trained on c in its fitted orientation, so
+## negating basis columns would feed it mirrored inputs and change z and z_rot.
+## The flips are instead applied at the boundary, in exactly two places --
+## c_ctx_to_matrix() on the way out and .c_payload() on the way in -- so the
+## stages, the flow, and every z / z_rot result are untouched.
+##
+## Consequently, never read c_ctx$payload$c_list directly for analysis: use
+## c_ctx_to_matrix() (or encode_y_to_c()), and decode with decode_c_to_Qi*().
+## Mixing a flipped c with an unflipped decode gives wrong QFs with no error.
+set_c_signs <- function(pipeline, flip = integer(0)) {
+  flip <- as.integer(flip)
+  if (anyNA(flip) || any(flip < 1) || anyDuplicated(flip)) {
+    stop("`flip` must be distinct positive component indices.")
+  }
+  pipeline$c_flip <- flip
+  pipeline
+}
+
+## Length-K vector of +1/-1; all +1 when no convention has been set.
+.c_signs <- function(pipeline, K) {
+  flip <- pipeline$c_flip
+  if (length(flip) > 0 && max(flip) > K) {
+    stop(str_glue("c sign flip refers to component {max(flip)}, but K = {K}."))
+  }
+  s <- rep(1, K)
+  s[flip] <- -1
+  s
+}
+
+## N x K matrix of c-embeddings, in the pipeline's sign convention, from a
+## context at the wame stage output. Note the payload is
+## list(c_list, Q_star_list), hence the $c_list.
+c_ctx_to_matrix <- function(pipeline, c_ctx) {
+  C <- do.call(rbind, c_ctx$payload$c_list)
+  sweep(C, 2, .c_signs(pipeline, ncol(C)), `*`)
+}
+
+
 ## The wame stage emits list(c_list, Q_star_list), not a bare list of vectors,
 ## so decoding from C requires rebuilding both slots. Q_star is carried in the
 ## cache (fixed by the pipeline's y_star), never inside the c-vectors.
@@ -320,8 +365,13 @@ decode_z_rot_to_Qi <- function(pipeline, z_rot_list, Ji) {
   if (is.null(Q_star)) {
     stop("latent = 'c' requires a fixed Q_star (non-NULL y_star) in the cache.")
   }
+  ## Incoming c is in the pipeline's sign convention; undo it before the
+  ## stages see it (see set_c_signs).
   list(
-    c_list = lapply(c_list, as.numeric),
+    c_list = lapply(
+      c_list,
+      function(v) as.numeric(v) * .c_signs(pipeline, length(v))
+    ),
     Q_star_list = rep(list(Q_star), length(c_list))
   )
 }
@@ -367,7 +417,7 @@ encode_y_to_z <- function(pipeline, y_list) {
 }
 
 ## Encode y_list to the wame coefficient space (c) and stack into an N x K
-## matrix. Note the payload is list(c_list, Q_star_list), hence the $c_list.
+## matrix, in the pipeline's sign convention (see set_c_signs).
 encode_y_to_c <- function(pipeline, y_list) {
   y_ctx <- new_context(
     payload = y_list,
@@ -375,7 +425,7 @@ encode_y_to_c <- function(pipeline, y_list) {
     meta = list()
   )
   c_ctx <- encode(pipeline, y_ctx, from = 0, to = 3)
-  do.call(rbind, c_ctx$payload$c_list)
+  c_ctx_to_matrix(pipeline, c_ctx)
 }
 
 
@@ -1303,7 +1353,9 @@ plot_embeddings <- function(
     sizes = NULL,
     color_shape_size_labels = NULL,
     stats = TRUE,
-    path = NULL
+    path = NULL,
+    legend_cex = 1,
+    legend_ncol = 1
 ) {
   if (!is.null(path)) {
     png(path, width = 800, height = 600)
@@ -1410,6 +1462,8 @@ plot_embeddings <- function(
           col    = color_shape_size_labels$color,
           pch    = color_shape_size_labels$shape,
           pt.cex = color_shape_size_labels$size,
+          cex    = legend_cex,
+          ncol   = legend_ncol,
           bty    = "n"
         )
       }
