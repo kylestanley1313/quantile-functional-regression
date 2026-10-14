@@ -92,6 +92,7 @@ if (file.exists(path)) {
 }
 pipeline$latent <- latent
 pipeline <- set_rotation_signs(pipeline, flip = c(1, 3))
+pipeline <- set_c_signs(pipeline, flip = c(1))
 
 ## New context
 y_ctx <- new_context(
@@ -113,12 +114,12 @@ Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
 y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
 ## N x K matrix of the selected latent, consumed by the Group Comparison and
-## AMM sections below. Note the c payload is list(c_list, Q_star_list), so the
-## c branch needs $c_list -- rbind-ing the payload directly is wrong.
+## AMM sections below. The c branch goes through c_ctx_to_matrix() so that it
+## carries the pipeline's c sign convention, matching decode_latent_to_Qi().
 Z_latent <- switch(
   latent,
   z_rot = do.call(rbind, z_rot_ctx$payload),
-  c     = do.call(rbind, c_ctx$payload$c_list),
+  c     = c_ctx_to_matrix(pipeline, c_ctx),
   stop(str_glue("Unknown latent: '{latent}'"))
 )
 
@@ -265,8 +266,8 @@ path_plot <- file.path(
 )
 png(path_plot, width = 960, height = 960, pointsize = 18)
 C_plot <- rbind(
-  do.call(rbind, c_ctx$payload$c_list)[idx_train,k_from:k_to],
-  do.call(rbind, c_ctx$payload$c_list)[idx_outliers,k_from:k_to]
+  c_ctx_to_matrix(pipeline, c_ctx)[idx_train,k_from:k_to],
+  c_ctx_to_matrix(pipeline, c_ctx)[idx_outliers,k_from:k_to]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -828,7 +829,7 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'male'
+bin_pred <- 'low_income'
 run_latent_diagnostics <- FALSE
 run_generativity_diagnostics <- FALSE
 
@@ -1806,34 +1807,11 @@ hca_qf_barycenter <- function(Q_aug, idx) {
   rowMeans(Q_aug[, idx, drop = FALSE])
 }
 
-## Relabel clusters 1..k by ascending median of `v`, so that cluster 1 has the
-## lowest median. cutree() numbers clusters by first appearance in the data,
-## which carries no meaning. Ties keep their cutree order; a cluster with no
-## observed `v` sorts last.
-hca_relabel_by_median <- function(cl, v) {
-  meds <- tapply(v, cl, median, na.rm = TRUE)
-  match(cl, as.integer(names(meds))[order(meds)])
-}
-
-## Per-column signs (+1/-1) that orient an embedding so that increasing any one
-## dimension, holding the others fixed, raises the p-th quantile. The decoder
-## is nonlinear, so the direction is evaluated locally: each dimension is
-## perturbed +/- 1 SD about the component-wise median embedding and decoded.
-## `decode_fun` maps one embedding vector to a Qi.
-hca_quantile_signs <- function(Z, decode_fun, supp_Y, p = 0.99) {
-  z_med <- apply(Z, 2, median)
-  z_sd  <- apply(Z, 2, sd)
-  vapply(
-    seq_len(ncol(Z)),
-    function(k) {
-      step <- replace(numeric(ncol(Z)), k, z_sd[k])
-      q <- hca_qf_aug(
-        list(decode_fun(z_med + step), decode_fun(z_med - step)), p, supp_Y
-      )
-      if (q[1] < q[2]) -1 else 1
-    },
-    numeric(1)
-  )
+## Relabel clusters 1..k manually: cutree() cluster i becomes cluster
+## `new_ids[i]`, so `new_ids` must be a permutation of the cutree() ids.
+hca_relabel_manual <- function(cl, new_ids) {
+  stopifnot(setequal(new_ids, cl), !anyDuplicated(new_ids))
+  new_ids[cl]
 }
 
 ## Overlaid per-cluster densities of a covariate.
@@ -1857,32 +1835,172 @@ hca_plot_density <- function(v, cl, cols, xlab, main, path) {
 }
 
 ## Cluster-wise horizontal boxplots stacked vertically, with the pooled median
-## marked. Groups are passed in reverse because boxplot() draws its first group
-## at the bottom, and cluster 1 reads better at the top.
-hca_plot_boxes <- function(v, cl, cols, xlab, main, path,
-                           width = 960, height = 720, pointsize = 18) {
+## marked, drawn into the current device. Groups are passed in reverse because
+## boxplot() draws its first group at the bottom, and cluster 1 reads better at
+## the top.
+##
+## Args:
+##   show_names      label the cluster axis; turn off for all but the first of
+##                   several panels sharing that axis
+##   faint_outliers  draw outliers as small translucent dots, so that the
+##                   boxes stay readable when N is large
+##   show_n          print each cluster's non-missing count in the right margin
+##   hide_outliers   draw no outliers at all, which also limits the value
+##                   axis to the span of the whiskers so that a few extreme
+##                   points do not compress the boxes. Overrides
+##                   faint_outliers.
+##   mean_ci         overlay each cluster's mean (white diamond) and its 95%
+##                   t-interval (black bar). The reference line then marks the
+##                   pooled mean rather than the pooled median, so that it is
+##                   the quantity the intervals are compared against.
+##   labels          group names for the cluster axis, indexed by group id;
+##                   defaults to the ids themselves
+hca_draw_boxes <- function(v, cl, cols, xlab, main, ylab = 'cluster',
+                           show_names = TRUE, faint_outliers = FALSE,
+                           show_n = FALSE, hide_outliers = FALSE,
+                           mean_ci = FALSE, labels = seq_along(cols)) {
   idx    <- rev(seq_along(cols))
   groups <- lapply(idx, function(g) v[cl == g & !is.na(v)])
+  out_par <- if (faint_outliers) {
+    list(outpch = 16, outcex = 0.4, outcol = adjustcolor('black', alpha.f = 0.25))
+  }
+  do.call(boxplot, c(
+    list(
+      groups,
+      horizontal = TRUE,
+      names      = if (show_names) labels[idx] else rep('', length(idx)),
+      col        = cols[idx],
+      las        = 1,
+      xlab       = xlab,
+      ylab       = ylab,
+      main       = main,
+      outline    = !hide_outliers
+    ),
+    out_par
+  ))
+  if (mean_ci) {
+    abline(v = mean(v, na.rm = TRUE), lty = 3, lwd = 2)
+    m    <- vapply(groups, mean, numeric(1))
+    ## NA for a cluster of fewer than two, which then draws no bar
+    half <- vapply(
+      groups,
+      function(x) qt(0.975, max(length(x) - 1, 1)) * sd(x) / sqrt(length(x)),
+      numeric(1)
+    )
+    at <- seq_along(groups)
+    ## White casing keeps the bar visible on top of the box and median line
+    segments(m - half, at, m + half, at, lwd = 5, col = 'white', lend = 'butt')
+    segments(m - half, at, m + half, at, lwd = 2.5, lend = 'butt')
+    points(m, at, pch = 23, bg = 'white', cex = 0.9)
+  } else {
+    abline(v = median(v, na.rm = TRUE), lty = 3, lwd = 2)
+  }
+  if (show_n) hca_margin_n(lengths(groups))
+}
+
+## Counts in the right margin of a cluster-axis panel, one per row.
+hca_margin_n <- function(n) {
+  mtext(n, side = 4, at = seq_along(n), las = 1, line = 0.3,
+        cex = 0.7 * par('cex'), col = 'grey40')
+}
+
+## hca_draw_boxes() as a standalone png. `width` and `height` are in pixels at
+## 72 dpi; the file written is res / 72 times larger in each direction.
+hca_plot_boxes <- function(v, cl, cols, xlab, main, path,
+                           width = 960, height = 720, pointsize = 18,
+                           res = 72, mar = c(5, 5, 4, 2), ...) {
   ## An individual empty cluster is fine (boxplot just leaves a gap), but an
   ## all-missing covariate has no finite xlim and would error.
-  if (all(lengths(groups) == 0)) {
+  if (all(is.na(v))) {
     warning(str_glue("hca_plot_boxes: '{xlab}' is entirely missing; skipping."))
     return(invisible(NULL))
   }
-  png(path, width = width, height = height, pointsize = pointsize)
+  png(path, width = width * res / 72, height = height * res / 72,
+      pointsize = pointsize, res = res)
   on.exit(dev.off(), add = TRUE)
-  par(mar = c(5, 5, 4, 2))
-  boxplot(
-    groups,
-    horizontal = TRUE,
-    names      = idx,
-    col        = cols[idx],
-    las        = 1,
-    xlab       = xlab,
-    ylab       = 'cluster',
-    main       = main
-  )
-  abline(v = median(v, na.rm = TRUE), lty = 3, lwd = 2)
+  par(mar = mar)
+  hca_draw_boxes(v, cl, cols, xlab = xlab, main = main, ...)
+}
+
+## One figure summarizing every covariate by cluster: a row of panels sharing
+## the cluster axis (cluster 1 at the top). A binary covariate gets a bar per
+## cluster for its proportion; a continuous one gets cluster-wise boxplots
+## without outliers, overlaid with each cluster's mean and 95% CI. The dotted line is the pooled proportion / mean, and the grey numbers
+## in each panel's right margin are the non-missing counts behind each row,
+## since missingness differs by covariate and by cluster.
+##
+## `cl` may hold any grouping coded 1..length(cols), not just clusters: pass
+## the group names as `labels` and the axis title as `group_lab`, and the left
+## margin widens to fit the names.
+hca_plot_cov_summary <- function(covs, cl, cols, path,
+                                 width = 1200, height = 520, pointsize = 16,
+                                 res = 288, labels = NULL,
+                                 group_lab = 'cluster') {
+  covs <- as.data.frame(covs)
+  k    <- length(cols)
+  idx  <- rev(seq_len(k))
+  png(path, width = width * res / 72, height = height * res / 72,
+      pointsize = pointsize, res = res)
+  on.exit(dev.off(), add = TRUE)
+  ## Cluster labels live in the outer margin so that all panels are equally
+  ## wide. mfrow shrinks cex for a row this long, so set it back explicitly.
+  par(mfrow = c(1, ncol(covs)), mar = c(4, 0.8, 2.5, 2.6),
+      mgp = c(2.4, 0.7, 0), cex = 0.8)
+  if (is.null(labels)) {
+    labels   <- seq_len(k)
+    oma_left <- 3.5
+  } else {
+    ## Widest name, in margin lines, plus room for the tick and axis title
+    oma_left <- max(strwidth(labels, units = 'inches')) /
+      (par('mai')[1] / par('mar')[1]) + 2.5
+  }
+  par(oma = c(0, oma_left, 0, 0))
+  for (j in seq_len(ncol(covs))) {
+    v  <- covs[[j]]
+    nm <- names(covs)[j]
+    if (all(is.na(v))) {
+      warning(str_glue("hca_plot_cov_summary: '{nm}' is entirely missing."))
+      plot.new()
+      title(main = nm)
+      next
+    }
+    if (all(v[!is.na(v)] %in% c(0, 1))) {
+      prop <- vapply(idx, function(g) mean(v[cl == g], na.rm = TRUE), numeric(1))
+      ## Same row positions and bar width as boxplot(), so rows line up
+      plot(NULL, xlim = c(0, 1), ylim = c(0.5, k + 0.5), yaxt = 'n',
+           xlab = 'proportion', ylab = '', main = nm)
+      rect(0, seq_len(k) - 0.4, prop, seq_len(k) + 0.4, col = cols[idx])
+      axis(2, at = seq_len(k), labels = if (j == 1) labels[idx] else FALSE,
+           las = 1)
+      abline(v = mean(v, na.rm = TRUE), lty = 3, lwd = 2)
+      hca_margin_n(vapply(idx, function(g) sum(cl == g & !is.na(v)), numeric(1)))
+    } else {
+      hca_draw_boxes(v, cl, cols, xlab = '', main = nm, ylab = '',
+                     show_names = j == 1, show_n = TRUE,
+                     hide_outliers = TRUE, mean_ci = TRUE, labels = labels)
+    }
+  }
+  mtext(group_lab, side = 2, outer = TRUE, line = oma_left - 1.3, cex = 0.8)
+}
+
+## Move labels at heights `y` apart until neighbours are at least `gap` apart,
+## keeping each run of colliding labels centred on its original positions.
+hca_spread_labels <- function(y, gap) {
+  o   <- order(y)
+  ys  <- y[o]
+  grp <- seq_along(ys)
+  repeat {
+    pos <- ys
+    for (g in unique(grp)) {
+      i <- which(grp == g)
+      pos[i] <- mean(ys[i]) + (seq_along(i) - (length(i) + 1) / 2) * gap
+    }
+    clash <- which(diff(pos) < gap - 1e-9 & diff(grp) != 0)
+    if (length(clash) == 0) break
+    grp[grp == grp[clash[1] + 1]] <- grp[clash[1]]
+  }
+  y[o] <- pos
+  y
 }
 
 ## --- Clustered-heatmap colour scales
@@ -2134,6 +2252,34 @@ hca_plot_heatmap <- function(hc, Z, covs, path,
 
 hca_J_aug <- 500      # augmented p-grid size for the Qi representation
 
+## Shared by the four figures that make up the activity panel in LaTeX
+## (cluster-qfs-contrast.png over the three box-q*.png), so text sizes match.
+hca_pointsize <- 14
+hca_res       <- 288
+
+## Cluster Relabels, by representation and then k. Entry i is the new label
+## for cutree() cluster i, so 1:k keeps the default labeling. A representation
+## or k with no entry also keeps the default.
+cluster_relabels <- list(
+  'c' = list(
+    '11' = c(2, 3, 1, 8, 9, 7, 10, 4, 6, 5, 11)
+  )
+)
+
+## Phenotypes defined manually post-hoc
+phenotypes_to_clusters <- list(
+  'c' = list(
+    '11' = list(
+      'very active' = c(1, 2),
+      'moderately active' = c(3, 4, 5),
+      'weekend warrior' = c(6),
+      'frequent mover' = c(7),
+      'inactive' = c(8, 9, 10),
+      'very inactive' = c(11)
+    )
+  )
+)
+
 ## Subject-level activity quantiles, boxplotted per cluster alongside the
 ## covariates. These are a property of the data, not of the clustering, so
 ## they are evaluated once rather than per representation or per k.
@@ -2185,24 +2331,16 @@ for (hca_latent in c('c')) {
     Z_hca <- switch(
       hca_latent,
       z_rot = do.call(rbind, z_rot_ctx$payload),
-      c     = do.call(rbind, c_ctx$payload$c_list)
+      c     = c_ctx_to_matrix(pipeline, c_ctx)
     )
     d_hca    <- dist(Z_hca)
     grid_hca <- pi_grid_hca
     pipe_hca <- pipeline
     pipe_hca$latent <- hca_latent
-    hca_decode <- function(z) decode_latent_to_Qi(pipe_hca, list(z), Ji_hca)[[1]]
-    hca_rep_mean <- function(idx) hca_decode(colMeans(Z_hca[idx, , drop = FALSE]))
-    ## Orient the c-embeddings so that every dimension increases Q(0.99).
-    ## Display only: distances are sign-invariant, so the tree and clusters are
-    ## unaffected, and Z_hca itself stays unflipped because hca_rep_mean
-    ## decodes from it.
-    sgn_hca <- if (hca_latent == 'c') {
-      hca_quantile_signs(Z_hca, hca_decode, pipeline$training$cache$supp_Y)
-    } else {
-      rep(1, ncol(Z_hca))
+    hca_rep_mean <- function(idx) {
+      z_bar <- colMeans(Z_hca[idx, , drop = FALSE])
+      decode_latent_to_Qi(pipe_hca, list(z_bar), Ji_hca)[[1]]
     }
-    cat(str_glue("{hca_latent} display signs: {toString(sgn_hca)}"), '\n')
   }
   N_hca <- nrow(Z_hca)
   K_hca <- ncol(Z_hca)
@@ -2232,7 +2370,7 @@ for (hca_latent in c('c')) {
     ## ~500 Z columns vs a handful of covariates, so fix the split by width
     cov_frac_hca <- 0.3
   } else {
-    Z_heat_hca   <- sweep(Z_hca, 2, sgn_hca, `*`)
+    Z_heat_hca   <- Z_hca
     z_labs_hca   <- NULL
     cov_frac_hca <- NULL   # equal-width columns, as before
   }
@@ -2244,9 +2382,11 @@ for (hca_latent in c('c')) {
     dir_hca_k <- file.path(dir_hca, str_glue('k-{hca_k}'))
     if (!dir.exists(dir_hca_k)) dir.create(dir_hca_k, recursive = TRUE)
 
-    ## Number clusters by median age (youngest = 1) so that ids, and hence
-    ## colors, are interpretable and comparable across representations.
-    cl_hca   <- hca_relabel_by_median(cutree(hc_hca, k = hca_k), df_cov$age)
+    ## Number clusters manually via cluster_relabels, so that ids, and hence
+    ## colors, are interpretable.
+    relabel_hca <- cluster_relabels[[hca_latent]][[as.character(hca_k)]]
+    if (is.null(relabel_hca)) relabel_hca <- seq_len(hca_k)
+    cl_hca   <- hca_relabel_manual(cutree(hc_hca, k = hca_k), relabel_hca)
     cols_hca <- hcl.colors(hca_k, palette = 'Dark 3')
 
     ## rect.hclust() fills `border` left-to-right along hc$order, not by cluster id,
@@ -2292,7 +2432,7 @@ for (hca_latent in c('c')) {
       png(file.path(dir_hca_k, 'embeddings.png'),
           width = 960, height = 960, pointsize = 18)
       plot_embeddings(
-        Z_heat_hca[,k_from:k_to],
+        Z_hca[,k_from:k_to],
         colors = adjustcolor(cols_hca[cl_hca], alpha.f = 0.3),
         shapes = rep(19, N_hca),
         sizes  = rep(0.5, N_hca),
@@ -2302,7 +2442,11 @@ for (hca_latent in c('c')) {
           size  = 1,
           label = str_glue('cluster {seq_len(hca_k)}')
         ),
-        stats = FALSE
+        stats = FALSE,
+        ## Small, and in two columns for a large k, so the legend stays in
+        ## the corner of the first Q-Q panel clear of its points
+        legend_cex  = 0.65,
+        legend_ncol = if (hca_k > 12) 2 else 1
       )
       dev.off()
     }
@@ -2340,24 +2484,38 @@ for (hca_latent in c('c')) {
     ## distribution.
     Qi_root <- hca_rep_mean(seq_len(N_hca))
 
+    ## Sized as the top row of a LaTeX panel: 2:1 at full width, above the
+    ## three box-q*.png figures (2:3 each, a third of the width). All four
+    ## share pointsize and res so their text matches once placed.
+    Qi_contrast <- lapply(Qi_cluster, function(q) q - Qi_root)
+
     png(file.path(dir_hca_k, 'cluster-qfs-contrast.png'),
-        width = 960, height = 960, pointsize = 18)
+        width = 960 * hca_res / 72, height = 480 * hca_res / 72,
+        pointsize = hca_pointsize, res = hca_res)
+    par(mar = c(4, 4, 2.5, 3), mgp = c(2.4, 0.7, 0))
     plot_funs(
-      fun_list  = lapply(Qi_cluster, function(q) q - Qi_root),
+      fun_list  = Qi_contrast,
       grid_list = rep(list(grid_hca), hca_k),
       colors    = cols_hca,
-      widths    = rep(3, hca_k),
+      widths    = rep(2, hca_k),
       types     = rep(1, hca_k),
-      color_width_type_labels = data.frame(
-        color = cols_hca,
-        width = 3,
-        type  = 1,
-        label = str_glue('cluster {seq_len(hca_k)}')
-      ),
-      ylab = 'Q(p) - Q_root(p)',
-      main = str_glue("Cluster QF contrasts vs. root ({hca_latent}, k = {hca_k})")
+      ylab = 'Q(p) Contrast',
+      main = str_glue("Cluster QF Contrasts")
     )
     abline(h = 0, lty = 2, col = 'gray50')
+    ## The quantile levels boxplotted in box-q*.png
+    abline(v = hca_q_levels, lty = 3, col = 'gray30')
+    mtext(hca_q_levels, side = 3, at = hca_q_levels, line = 0.1, cex = 0.7,
+          col = 'gray30')
+    ## Cluster numbers in the right margin in place of a legend, at the height
+    ## where each curve ends, spread apart where curves end close together.
+    usr   <- par('usr')
+    y_end <- vapply(Qi_contrast, function(q) q[length(q)], numeric(1))
+    y_lab <- hca_spread_labels(y_end, gap = 1.15 * strheight('0', cex = 0.8))
+    x_lab <- usr[2] + 0.02 * diff(usr[1:2])
+    segments(max(grid_hca), y_end, x_lab, y_lab, col = cols_hca, xpd = NA)
+    text(x_lab, y_lab, seq_len(hca_k), col = cols_hca, pos = 4, offset = 0.2,
+         cex = 0.8, font = 2, xpd = NA)
     dev.off()
 
 
@@ -2393,14 +2551,46 @@ for (hca_latent in c('c')) {
       )
     }
 
-    ## Activity quantiles, same styling as the covariate boxes
+    ## All covariates in one figure
+    hca_plot_cov_summary(
+      df_cov[, c('male', 'age', 'pir', 'bmd_adj', 'hdl_adj')],
+      cl_hca, cols_hca,
+      path = file.path(dir_hca_k, 'cov-summary.png')
+    )
+
+    ## Same figure grouped on the manual phenotypes, where this
+    ## representation and k have any. Phenotypes keep their listed order and
+    ## are not color-coded, since the palette belongs to the clusters.
+    pheno_hca <- phenotypes_to_clusters[[hca_latent]][[as.character(hca_k)]]
+    if (!is.null(pheno_hca)) {
+      ## Every cluster must belong to exactly one phenotype
+      stopifnot(setequal(unlist(pheno_hca), seq_len(hca_k)),
+                !anyDuplicated(unlist(pheno_hca)))
+      ph_hca <- rep(seq_along(pheno_hca), lengths(pheno_hca))[
+        match(cl_hca, unlist(pheno_hca))
+      ]
+      print(table(phenotype = factor(ph_hca, labels = names(pheno_hca))))
+      hca_plot_cov_summary(
+        df_cov[, c('male', 'age', 'pir', 'bmd_adj', 'hdl_adj')],
+        ph_hca, rep('grey80', length(pheno_hca)),
+        path      = file.path(dir_hca_k, 'cov-summary-phenotype.png'),
+        labels    = names(pheno_hca),
+        group_lab = 'phenotype'
+      )
+    }
+
+    ## Activity quantiles on the original scale. Sized as the bottom row of
+    ## the LaTeX panel under cluster-qfs-contrast.png: 2:3, a third as wide.
     for (j in seq_along(hca_q_levels)) {
       q_pct <- round(100 * hca_q_levels[j])
       hca_plot_boxes(
         Q_lvl_hca[, j], cl_hca, cols_hca,
-        xlab = str_glue("Q({hca_q_levels[j]})"),
-        main = str_glue("Q({hca_q_levels[j]}) by cluster (k = {hca_k})"),
-        path = file.path(dir_hca_k, str_glue('box-q{q_pct}.png'))
+        xlab = 'MIMS',
+        main = str_glue("Q({hca_q_levels[j]})"),
+        path = file.path(dir_hca_k, str_glue('box-q{q_pct}.png')),
+        width = 320, height = 480, pointsize = hca_pointsize, res = hca_res,
+        mar = c(4, 4, 2.5, 0.8),
+        faint_outliers = TRUE
       )
     }
 
