@@ -500,10 +500,10 @@ dev.off()
 ## Plot Qi vs. Q (one subject)
 i <- 1
 p_idx_start <- 1
-p_idx_stop <- 10
+p_idx_stop <- 100
 path_plot <- file.path(
   'artifacts', dir_art, 'plots', 'representation',
-  str_glue('data_qi-v-q_i-{i}.png')
+  str_glue('data_qi-v-q_i-{i}_p-{p_idx_start}-{p_idx_stop}.png')
 )
 pi_grid <- pi_grid_fun(Ji_vec[i])
 Qi <- Qi_ctx$payload[[i]]
@@ -517,7 +517,7 @@ pi_keep <- pi_grid >= min(p_sub) & pi_grid <= max(p_sub)
 pi_sub <- pi_grid[pi_keep]
 Qi_sub <- Qi[pi_keep]
 
-fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
+fig_png(path_plot, 3.25, 1.625)   # TODO: final printed size
 fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
         cex_axis = fig_cex_axis)
 plot(
@@ -528,7 +528,8 @@ plot(
   ylim = range(c(0, Qi_sub, Q_sub)),
   xlab = "p",
   ylab = "Q(p)",
-  main = str_glue("Subject {i}")
+  main = bquote("Subject" ~ .(i) ~
+                  "(" * p[.(p_idx_start)] ~ "to" ~ p[.(p_idx_stop)] * ")")
 )
 lines(
   p_sub, Q_sub,
