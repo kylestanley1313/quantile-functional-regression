@@ -138,9 +138,11 @@ plot_losslessness <- function(
     }
   }
 
-  ## Bump right margin if drawing a secondary y-axis
+  ## Secondary y-axis: give the right margin the same room as the left
   if (!is.null(pairwise_distances)) {
-    par(mar = c(5, 4, 4, 5) + 0.1)
+    mar <- par("mar")
+    mar[4] <- max(mar[4], mar[2])
+    par(mar = mar)
   }
 
   Ks <- as.numeric(names(valid_losses_by_K))
@@ -169,7 +171,7 @@ plot_losslessness <- function(
     v_quants[i] <- quantile(v_losses, probs = 1 - alpha)
     
     xvals_v <- jitter(rep(Ks[i], length(v_losses)), amount = jitter_width)
-    points(xvals_v, v_losses, pch = 19, col = rgb(0,0,0,0.25), cex = 0.5)
+    points(xvals_v, v_losses, pch = 16, col = rgb(0,0,0,0.25), cex = 0.5)
     
     if (!is.null(train_losses_by_K)) {
       t_losses <- train_losses_by_K[[i]]
@@ -219,7 +221,9 @@ plot_losslessness <- function(
       labels = pairwise_percentiles[in_range],
       las = 1
     )
-    mtext(ylab2, side = 4, line = 3)
+    ## Match the left axis title's position and size
+    mtext(ylab2, side = 4, line = par("mgp")[1],
+          cex = par("cex") * par("cex.lab"))
   }
 
   ## Concordance summary box. Reports the alpha-quantile of per-subject
@@ -366,46 +370,46 @@ fit_pipeline_g_pca <- function(
 
 ## ----- Globals 
 
-dir_art <- file.path('artifacts', 'analyze_chop-mims-subs_v2', 'losslessness')
+dir_art <- file.path('artifacts', 'demo_nhanes_v5', 'losslessness')
 
 
 ## ----- Create YAML configs
 
 ## Dataset specs
 datasets <- list(
-  sgrow2 = list(
-    path = file.path('data', 'processed', 'chop-mims_v1.rds'),
-    p_grid = p_grid_fun(
-      breaks = c(1/(1200 + 1), 0.95, 1200/(1200 + 1)),
-      interval_counts = c(51, 50)
-    ),
-    K_max = 20,
-    supp_Y = c(0, 0.6, seq(0.601, 500, by = 0.001)),
-    y_star = 0,
-    y_min = 0,
-    lambda = 0,
-    order_by = 'importance',
-    pairwise_samp_rate = 1.0
-  )
-  # nhanes = list(
-  #   path = file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'),
+  # sgrow2 = list(
+  #   path = file.path('data', 'processed', 'chop-mims_v1.rds'),
   #   p_grid = p_grid_fun(
-  #     breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
+  #     breaks = c(1/(1200 + 1), 0.95, 1200/(1200 + 1)),
   #     interval_counts = c(51, 50)
   #   ),
   #   K_max = 20,
-  #   supp_Y = c(0, seq(0.006, 500, by = 0.001)),
+  #   supp_Y = c(0, 0.6, seq(0.601, 500, by = 0.001)),
   #   y_star = 0,
   #   y_min = 0,
-  #   lambda = 0, # sqrt(10)^-1,
+  #   lambda = 0,
   #   order_by = 'importance',
-  #   pairwise_samp_rate = 0.1,
+  #   pairwise_samp_rate = 1.0
   # )
+  nhanes = list(
+    path = file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'),
+    p_grid = p_grid_fun(
+      breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
+      interval_counts = c(51, 50)
+    ),
+    K_max = 20,
+    supp_Y = c(0, seq(0.006, 500, by = 0.001)),
+    y_star = 0,
+    y_min = 0,
+    lambda = 0, # sqrt(10)^-1,
+    order_by = 'importance',
+    pairwise_samp_rate = 0.1,
+  )
 )
 
 
 ## Create configs
-models <- c('qg_pca', 'q_pca')
+models <- c('qg_pca')
 i <- 1
 for (dataset in names(datasets)) {
   for (model in models) {
@@ -537,7 +541,7 @@ for (i in 1:n_configs) {
 ## skipped (no file written), and plot_losslessness will fall back to
 ## drawing no annotation box for that config.
 
-K_stars <- c(4, 4)
+K_stars <- c(5)
 for (i in 1:n_configs) {
   message(str_glue("========== Concordance for CONFIG {i} of {n_configs} =========="))
 
@@ -616,7 +620,22 @@ for (i in 1:n_configs) {
 
 ## ----- Plot
 
+## Paper figure spec (copied from demo_nhanes.R): render at final printed
+## size so fig_pointsize is the printed text size
+fig_res       <- 600
+fig_pointsize <- 7
+fig_cex       <- 1
+fig_cex_lab   <- 1.0
+fig_cex_main  <- 1.2 * fig_cex_lab
+fig_cex_axis  <- 0.8 * fig_cex_lab
+fig_png <- function(path, width_in, height_in, pointsize = fig_pointsize) {
+  png(path, width = width_in, height = height_in, units = "in",
+      res = fig_res, pointsize = pointsize)
+}
+
 ## Set plotting parameters
+path <- file.path(dir_art, 'config-1_pairwise-dist-norm.rds')
+pairwise_dist_norm <- readRDS(path)
 epsilon <- quantile(pairwise_dist_norm, c(0.05))
 
 set.seed(12345)
@@ -635,13 +654,16 @@ for (i in 1:n_configs) {
   } else NULL
 
   ## Plot losslessness
+  fig_png(path_plot, 4.3, 3.25)   # TODO: final printed size
+  fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+          cex_axis = fig_cex_axis)
   plot_losslessness(
     loss_valid, NULL,
     jitter_width = 0.2,
-    epsilon = NULL,
+    epsilon = epsilon,
     alpha = 0.05,
     plot_mean = FALSE,
-    ylim = c(0, 8), #c(0, 20),
+    ylim = c(0, 20),
     ylab = "Cross-Validated Wasserstein Error",
     ylab2 = "Pairwise Wasserstein Distance Percentile",
     xlab = "K",
@@ -649,10 +671,11 @@ for (i in 1:n_configs) {
     pairwise_distances = pairwise_dist_norm,
     concordances = concordances,
     concordance_box_position = "topright",
-    main = str_glue('{config$dataset} | {config$model_type}'),
-    # main = "NHANES Reconstructions",
-    path = path_plot
+    # main = str_glue('{config$dataset} | {config$model_type}'),
+    main = "NHANES Reconstructions",
+    concordance_box_cex = fig_cex_axis
   )
+  dev.off()
 
 }
 
