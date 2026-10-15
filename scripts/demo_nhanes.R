@@ -535,12 +535,16 @@ lines(
   lwd = 2,
   col = rgb(0.9, 0, 0)
 )
+## Grid points sit on the x-axis line, with dotted guides up to Q
+y_axis <- par('usr')[3]
+segments(p_sub, y_axis, p_sub, Q_sub, col = 'gray50', lty = 'dotted')
 points(
   x = p_sub,
-  y = rep(0, length(p_sub)),
+  y = rep(y_axis, length(p_sub)),
   pch = 16,
-  cex = 0.5,
-  col = rgb(0, 0.9, 0)
+  cex = 1,
+  col = rgb(0, 0.9, 0),
+  xpd = NA
 )
 dev.off()
 
@@ -1495,27 +1499,46 @@ if (run_latent_diagnostics) {
     row.names = FALSE
   )
 
-  ## (2) Smoothing-parameter plot
-  amm_plot_lambda(amm, file.path(dir_amm_diags, 'amm_lambda.png'))
+  ## Paper figures: same text sizes as the interpretation plots (fig_*
+  ## settings); half-width (3.25 in) or full-width (6.5 in) as below
+  diag_png <- function(path, width, height) {
+    fig_png(path, width, height)   # TODO: final printed heights
+    fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+            cex_axis = fig_cex_axis)
+  }
 
-  ## (3) Residual Q-Q panels
-  amm_plot_resid_qq(amm, file.path(dir_amm_diags, 'amm_resid_qq.png'),
-                    col_train)
+  ## (2) Smoothing-parameter plot (half width)
+  diag_png(file.path(dir_amm_diags, 'amm_lambda.png'), 3.25, 2.15)
+  amm_plot_lambda(amm, main = "", lwd = 1.5, legend_cex = fig_cex_legend)
+  dev.off()
 
-  ## (4) Residual covariance heatmap (Sigma_E)
-  amm_plot_sigma_e(amm, file.path(dir_amm_diags, 'amm_sigma_e.png'))
+  ## (3) Residual Q-Q panels (full-width strip, one panel per k)
+  diag_png(file.path(dir_amm_diags, 'amm_resid_qq.png'), 6.5, 1.5)
+  amm_plot_resid_qq(amm, col_train = col_train, ncol = K_amm, cex = fig_cex,
+                    mar = c(1.8, 3.2, 2.2, 0.5), point_cex = 0.5,
+                    xlab = "", ylab = "")
+  dev.off()
 
-  ## (5) Random-effect covariance heatmaps
+  ## (4) Residual covariance heatmap (Sigma_E; half width)
+  diag_png(file.path(dir_amm_diags, 'amm_sigma_e.png'), 3.25, 3)
+  amm_plot_sigma_e(amm, cell_cex = fig_cex_axis)
+  dev.off()
+
+  ## (5) Random-effect covariance heatmaps (full width: heatmap + variances)
+  diag_png(file.path(dir_amm_diags, 'amm_sigma_u_age.png'), 6.5, 2.6)
   amm_plot_re_cov(
     amm$U_age_hat, K_amm,
     expression(hat(Sigma)[U]^"(age)"),
-    file.path(dir_amm_diags, 'amm_sigma_u_age.png')
+    cell_cex = fig_cex_axis
   )
+  dev.off()
+  diag_png(file.path(dir_amm_diags, 'amm_sigma_u_pir.png'), 6.5, 2.6)
   amm_plot_re_cov(
     amm$U_pir_hat, K_amm,
     expression(hat(Sigma)[U]^"(pir)"),
-    file.path(dir_amm_diags, 'amm_sigma_u_pir.png')
+    cell_cex = fig_cex_axis
   )
+  dev.off()
 
 }
 
@@ -1566,6 +1589,11 @@ if (run_generativity_diagnostics) {
       stop <- Sys.time()
       print(stop - start)
     }
+    ## Half-width paper figure (fig_* text sizes; no title, short y label)
+    fig_png(file.path(dir_amm_diags, str_glue('amm_gen_{bin_pred}.png')),
+            3.25, 2.15)   # TODO: final printed height
+    fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+            cex_axis = fig_cex_axis)
     plot_generativity_boxes(
       groups      = c(gp0_name, gp1_name),
       scores      = list(
@@ -1575,11 +1603,13 @@ if (run_generativity_diagnostics) {
       Ks          = NULL,
       vline_group = NULL,
       hline       = 0,
-      ylab        = "Log Normalized Conditional Generativity Scores",
-      main        = str_glue("Conditional Generativity"),
-      path        = file.path(dir_amm_diags, str_glue('amm_gen_{bin_pred}.png')),
+      # ylab        = "Log Normalized Conditional Generativity Scores",
+      ylab        = "Log norm. generativity",
+      main        = "",
+      mar         = .trimmed_mar(par("mar"), "", "", "y"),
       collapse    = TRUE
     )
+    dev.off()
   }
 
 }
