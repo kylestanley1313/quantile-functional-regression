@@ -226,9 +226,9 @@ default_y_grid_two_group <- function(Qi_hat_0, Qi_hat_1,
 ## main_line (if non-NULL) sets the title's margin line, e.g. to sit above
 ## threshold labels.
 .draw_frame <- function(xlim, ylim, main = "", xlab = "", ylab = "",
-                        ylim_data = ylim, main_line = NULL) {
+                        ylim_data = ylim, main_line = NULL, x_at = NULL) {
   plot.window(xlim = xlim, ylim = ylim)
-  axis(1)
+  if (is.null(x_at)) axis(1) else axis(1, at = x_at)   # x_at: explicit x ticks
   ## Label ticks within the data range plus the usual 4% axis padding
   y_at  <- axTicks(2)
   y_pad <- 0.04 * diff(range(ylim_data)) + 1e-8 * diff(ylim)

@@ -1606,7 +1606,9 @@ plot_generativity_boxes <- function(groups,
                                      width       = 960,
                                      height      = 720,
                                      pointsize   = 14,
-                                     collapse    = FALSE) {
+                                     collapse    = FALSE,
+                                     mar         = NULL) {
+  ## mar: plot margins (NULL: the original 4.5-line margins)
   L <- length(groups)
   stopifnot(length(scores) == L)
   if (!is.null(Ks)) stopifnot(length(Ks) == L)
@@ -1635,7 +1637,7 @@ plot_generativity_boxes <- function(groups,
   box_w     <- if (S == 1) 0.55 else min(0.18, (2 * half_span) / (S - 1) * 0.8)
 
   if (!is.null(path)) png(path, width = width, height = height, pointsize = pointsize)
-  old_par <- par(mar = c(4.5, 4.5, 3, if (is.null(Ks)) 2 else 4.5))
+  old_par <- par(mar = mar %||% c(4.5, 4.5, 3, if (is.null(Ks)) 2 else 4.5))
   on.exit(par(old_par), add = TRUE)
 
   plot(NULL,

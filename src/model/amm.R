@@ -375,100 +375,153 @@ amm_summary <- function(fit_amm) {
   )
 }
 
-## Log10 smoothing-parameter plot (lambda by k for age and pir).
-amm_plot_lambda <- function(fit_amm, path) {
-  K_amm      <- ncol(fit_amm$beta_hat)
-  lambda_log <- log10(c(fit_amm$lambda_age, fit_amm$lambda_pir))
-  png(path, width = 960, height = 540, pointsize = 14)
-  par(mfrow = c(1, 1), mar = c(4, 5, 3, 1))
-  plot(
-    NULL,
-    xlim = c(1, K_amm),
-    ylim = range(lambda_log, finite = TRUE),
-    xlab = "k", ylab = expression(log[10](lambda)),
-    main = "AMM smoothing parameters by latent dimension"
-  )
-  lines(1:K_amm, log10(fit_amm$lambda_age), col = "darkblue",   lwd = 2,
-        type = "b", pch = 19)
-  lines(1:K_amm, log10(fit_amm$lambda_pir), col = "darkorange", lwd = 2,
-        type = "b", pch = 17)
-  legend("topright",
-    legend = c("age", "pir"),
-    col    = c("darkblue", "darkorange"),
-    lwd    = 2, pch = c(19, 17), bty = "n"
-  )
-  dev.off()
+## Shared arguments of the diagnostic plots below: path = NULL draws to the
+## active device (so the caller can size it, e.g. with fig_png); a path opens
+## a png at the original working size. main = "" omits a title and trims the
+## top margin.
+
+## Log10 smoothing-parameter plot (lambda by k for age and pir). The legend
+## stays inside the axes, clear of both curves (see .legend_layout).
+amm_plot_lambda <- function(fit_amm, path = NULL,
+                            main = "AMM smoothing parameters by latent dimension",
+                            lwd = 2, legend_cex = 1,
+                            legend_loc = "topright") {
+  K_amm <- ncol(fit_amm$beta_hat)
+  l_age <- log10(fit_amm$lambda_age)
+  l_pir <- log10(fit_amm$lambda_pir)
+  if (!is.null(path)) {
+    png(path, width = 960, height = 540, pointsize = 14)
+    on.exit(dev.off(), add = TRUE)
+    par(mar = c(4, 5, 3, 1))
+  }
+  xlab <- "k"
+  ylab <- expression(log[10](lambda))
+  xlim <- c(1, K_amm)
+  ylim <- range(c(l_age, l_pir), finite = TRUE)
+  leg_args <- list(legend = c("age", "pir"), col = c("darkblue", "darkorange"),
+                   lwd = lwd, pch = c(19, 17), cex = legend_cex, bty = "n")
+  ## Curves as objects for legend placement (densified between the k's)
+  x_dense <- seq(1, K_amm, length.out = 200)
+  dense   <- function(y) approx(seq_len(K_amm), y, xout = x_dense)$y
+  objs <- list(list(x = x_dense, lo = dense(l_age), hi = dense(l_age)),
+               list(x = x_dense, lo = dense(l_pir), hi = dense(l_pir)))
+
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, xlab, ylab))
+  on.exit(par(old_mar), add = TRUE, after = FALSE)
+  lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc)
+  .draw_frame(xlim, lay$ylim, main = main, xlab = xlab, ylab = ylab,
+              ylim_data = ylim, x_at = seq_len(K_amm))
+  lines(seq_len(K_amm), l_age, col = "darkblue",   lwd = lwd, type = "b", pch = 19)
+  lines(seq_len(K_amm), l_pir, col = "darkorange", lwd = lwd, type = "b", pch = 17)
+  do.call(legend, c(list(lay$pos), leg_args))
+  invisible(NULL)
 }
 
-## Residual Q-Q panels (one panel per latent dimension k).
-amm_plot_resid_qq <- function(fit_amm, path,
-                               col_train = rgb(0, 0, 0, 0.25)) {
+## Residual Q-Q panels (one panel per latent dimension k). ncol sets the
+## panel columns (default: near-square grid); cex (if non-NULL) overrides the
+## mfrow text shrink; point_cex sizes the points (pch 16, no outline, so
+## translucent points show no halo).
+amm_plot_resid_qq <- function(fit_amm, path = NULL,
+                              col_train = rgb(0, 0, 0, 0.25),
+                              ncol = NULL, cex = NULL,
+                              mar = c(3, 3, 2, 1), point_cex = 0.25,
+                              xlab = "Theoretical Quantiles",
+                              ylab = "Sample Quantiles") {
   K_amm <- ncol(fit_amm$beta_hat)
-  nc    <- ceiling(sqrt(K_amm))
+  nc    <- ncol %||% ceiling(sqrt(K_amm))
   nr    <- ceiling(K_amm / nc)
-  png(path, width = 300 * nc, height = 300 * nr, pointsize = 12)
-  par(mfrow = c(nr, nc), mar = c(3, 3, 2, 1))
+  if (!is.null(path)) {
+    png(path, width = 300 * nc, height = 300 * nr, pointsize = 12)
+    on.exit(dev.off(), add = TRUE)
+  }
+  old_par <- par(mfrow = c(nr, nc))
+  if (!is.null(cex)) old_par <- c(old_par, par(cex = cex))
+  on.exit(par(old_par), add = TRUE, after = FALSE)
   for (k in seq_len(K_amm)) {
-    qqnorm(fit_amm$R_mat[, k], main = paste0("k = ", k),
-           pch = 19, cex = 0.25, col = col_train)
+    main_k <- paste0("k = ", k)
+    par(mar = .trimmed_mar(mar, main_k, xlab, ylab))
+    qqnorm(fit_amm$R_mat[, k], main = main_k, xlab = xlab, ylab = ylab,
+           pch = 16, cex = point_cex, col = col_train)
     qqline(fit_amm$R_mat[, k], col = "red")
   }
-  dev.off()
-  par(mfrow = c(1, 1))
+  invisible(NULL)
 }
 
-## Heatmap of the residual covariance matrix Sigma_E.
-amm_plot_sigma_e <- function(fit_amm, path) {
+## Heatmap of the residual covariance matrix Sigma_E (lower triangle
+## annotated). cell_cex sizes the cell values.
+amm_plot_sigma_e <- function(fit_amm, path = NULL,
+                             main = expression(hat(Sigma)[E]),
+                             cell_cex = 0.6) {
   K_amm   <- ncol(fit_amm$beta_hat)
   zmax    <- max(abs(fit_amm$Sigma_E))
   breaks  <- seq(-zmax, zmax, length.out = 101)
   col_pal <- colorRampPalette(c("#0000FF", "white", "#FF000000"))(100)
 
-  png(path, width = 800, height = 720, pointsize = 14)
-  par(mar = c(4, 4, 3, 5))
+  if (!is.null(path)) {
+    png(path, width = 800, height = 720, pointsize = 14)
+    on.exit(dev.off(), add = TRUE)
+    par(mar = c(4, 4, 3, 5))
+  }
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, "", ""))
+  on.exit(par(old_mar), add = TRUE, after = FALSE)
   image(
     1:K_amm, 1:K_amm,
     t(fit_amm$Sigma_E)[, K_amm:1],
     zlim = c(-zmax, zmax),
     col  = col_pal, breaks = breaks,
     axes = FALSE, xlab = "", ylab = "",
-    main = expression(hat(Sigma)[E])
+    main = main
   )
   axis(1, at = 1:K_amm, labels = 1:K_amm, las = 1, tick = FALSE)
   axis(2, at = 1:K_amm, labels = K_amm:1, las = 1, tick = FALSE)
   for (i in 1:K_amm) for (j in 1:K_amm) if (i >= j) {
-    text(j, K_amm - i + 1, sprintf("%.2f", fit_amm$Sigma_E[i, j]), cex = 0.6)
+    text(j, K_amm - i + 1, sprintf("%.2f", fit_amm$Sigma_E[i, j]), cex = cell_cex)
   }
-  dev.off()
+  invisible(NULL)
 }
 
 ## Correlation heatmap of the random-effect BLUPs U_hat (M x K matrix) to
-## diagnose the diagonal-covariance assumption on the random effects.
-amm_plot_re_cov <- function(U_hat, K_, title_expr, path) {
+## diagnose the diagonal-covariance assumption on the random effects, beside
+## a bar plot of the component variances. cell_cex sizes the cell values;
+## bar_main titles the bar plot ("" omits it).
+amm_plot_re_cov <- function(U_hat, K_, title_expr, path = NULL,
+                            cell_cex = 0.6,
+                            bar_main = "Component variances") {
   Sigma_U <- cov(U_hat)
   d       <- sqrt(diag(Sigma_U))
   Corr_U  <- Sigma_U / tcrossprod(d)
+  Corr_U  <- pmin(pmax(Corr_U, -1), 1)   # rounding can push |r| past 1 (off the colour scale)
 
   col_pal <- colorRampPalette(c("#0000FF", "white", "#FF0000"))(100)
   breaks  <- seq(-1, 1, length.out = 101)
 
-  png(path, width = 1100, height = 720, pointsize = 14)
+  if (!is.null(path)) {
+    png(path, width = 1100, height = 720, pointsize = 14)
+    on.exit(dev.off(), add = TRUE)
+  }
+  old_par <- par(c("mar", "cex"))
+  on.exit(par(old_par), add = TRUE, after = FALSE)
+  cex_now <- par("cex")
   layout(matrix(c(1, 2), nrow = 1), widths = c(2, 1))
+  par(cex = cex_now)   # layout() resets cex; keep the caller's base size
 
-  par(mar = c(4, 4, 3, 5))
+  base_mar <- if (is.null(path)) old_par$mar else c(4, 4, 3, 5)
+  par(mar = .trimmed_mar(base_mar, title_expr, "", ""))
   image(1:K_, 1:K_, t(Corr_U)[, K_:1],
         zlim = c(-1, 1), col = col_pal, breaks = breaks,
         axes = FALSE, xlab = "", ylab = "", main = title_expr)
   axis(1, at = 1:K_, labels = 1:K_,    las = 1, tick = FALSE)
   axis(2, at = 1:K_, labels = K_:1,    las = 1, tick = FALSE)
   for (i in 1:K_) for (j in 1:K_) if (i >= j)
-    text(j, K_ - i + 1, sprintf("%.2f", Corr_U[i, j]), cex = 0.6)
+    text(j, K_ - i + 1, sprintf("%.2f", Corr_U[i, j]), cex = cell_cex)
 
-  par(mar = c(4, 5, 3, 2))
+  bar_ylab <- expression(log[10]~hat(sigma)[U[k]]^2)
+  bar_base <- if (is.null(path)) old_par$mar else c(4, 5, 3, 2)
+  if (is.null(path)) bar_base[2] <- bar_base[2] + 0.6   # room for the tall label
+  par(mar = .trimmed_mar(bar_base, bar_main, "k", bar_ylab))
   barplot(log10(diag(Sigma_U)), names.arg = 1:K_, horiz = FALSE,
-          xlab = "k", ylab = expression(log[10]~hat(sigma)[U[k]]^2),
-          main = "Component variances")
-  dev.off()
+          xlab = "k", ylab = bar_ylab, main = bar_main)
+  invisible(NULL)
 }
 
 
