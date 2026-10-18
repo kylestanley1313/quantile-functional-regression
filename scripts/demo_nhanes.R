@@ -763,7 +763,7 @@ get_plot_name_for_cov <- function(cov, other_cov = FALSE) {
 for (bin_pred in c('old', 'male', 'low_income')) {
 
   k_from <- 1
-  k_to <- 3
+  k_to <- 2
 
   ## Plot: QF
   set.seed(12345)
@@ -816,7 +816,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     dir_eda,
     str_glue('eda_z-rot_{bin_pred}.png')
   )
-  fig_png(path_plot, 6.5, 6.5)   # TODO: final printed size
+  fig_png(path_plot, 4.5, 4.5)   # TODO: final printed size
   col_0 <- rgb(0, 0, 0, alpha = 0.25)
   col_1 <- rgb(1, 0, 0, alpha = 0.25)
   mask <- !is.na(df_cov[bin_pred])
@@ -967,7 +967,7 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'old'
+bin_pred <- 'male'
 run_latent_diagnostics <- FALSE
 run_generativity_diagnostics <- FALSE
 
@@ -1024,6 +1024,11 @@ if (run_generativity_diagnostics) {
     stop <- Sys.time()
     print(stop - start)
   }
+  ## Half-width paper figure (fig_* text sizes; no title, short y label)
+  fig_png(file.path(dir_gc, str_glue('gen_{bin_pred}.png')),
+          3.25, 2.15)   # TODO: final printed height
+  fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+          cex_axis = fig_cex_axis)
   plot_generativity_boxes(
     groups      = c(gp0_name, gp1_name),
     scores      = list(
@@ -1033,11 +1038,46 @@ if (run_generativity_diagnostics) {
     Ks          = NULL,
     vline_group = NULL,
     hline       = 0,
-    ylab        = "Log Normalized Conditional Generativity Scores",
-    main        = str_glue("Conditional Generativity"),
-    path        = file.path(dir_gc, str_glue('gen_{bin_pred}.png')),
+    # ylab        = "Log Normalized Conditional Generativity Scores",
+    ylab        = "Log norm. generativity",
+    main        = "",
     collapse    = TRUE
   )
+  dev.off()
+
+  ## Generativity examples: for each group, n_gen_examples single splits (same
+  ## recipe as evaluate_generativity above) comparing that group's validation
+  ## QFs (black) to a synthetic draw for the same group (teal), titled with
+  ## G~ = log(T_sv / T_tv) as in the box plot. Half-width paper figures.
+  n_gen_examples <- 3
+  dir_gen_ex <- file.path(dir_gc, 'gen-examples')
+  if (!dir.exists(dir_gen_ex)) dir.create(dir_gen_ex, recursive = TRUE)
+  gp_names <- c(gp0_name, gp1_name)
+  for (v in c(0, 1)) {
+    for (i in seq_len(n_gen_examples)) {
+      ex <- generativity_example(
+        pipeline = pipeline,
+        y_list = y_list[!is.na(df_cov[bin_pred])],
+        X = X,
+        y_mask = x == v,
+        fit_fun = fit_binary,
+        sample_fun = sample_binary,
+        val_subsample_n = 500,
+        seed = 1000 * (v + 1) + i
+      )
+      fig_png(file.path(dir_gen_ex, str_glue('gen-ex_{bin_pred}_{v}_{i}.png')),
+              3.25, 2.15)   # TODO: final printed height
+      fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+              cex_axis = fig_cex_axis)
+      plot_generativity_example(
+        ex,
+        main = bquote(.(gp_names[v + 1]) * "," ~ tilde(G) == .(sprintf("%.2f", ex$log_norm))),
+        legend_cex = fig_cex_legend
+      )
+      dev.off()
+    }
+  }
+
 }
 
 
@@ -1607,7 +1647,6 @@ if (run_generativity_diagnostics) {
       # ylab        = "Log Normalized Conditional Generativity Scores",
       ylab        = "Log norm. generativity",
       main        = "",
-      mar         = .trimmed_mar(par("mar"), "", "", "y"),
       collapse    = TRUE
     )
     dev.off()

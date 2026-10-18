@@ -1189,6 +1189,103 @@ evaluate_generativity <- function(
 }
 
 
+## One worked example of evaluate_generativity's procedure, keeping the data:
+## a single random train/val split (frac_train), latent model fit on the full
+## training half, the y_mask group's validation QFs (optionally subsampled to
+## val_subsample_n) vs one synthetic draw of the same size for that group, both
+## on the augmented p-grid. Same steps and scores as one (split, replicate) of
+## evaluate_generativity; seed makes the example reproducible. Returns the grid,
+## the real (val) and synthetic QF lists, T_tv, T_sv and
+## log_norm = log(T_sv / T_tv).
+generativity_example <- function(
+  pipeline, y_list, X, y_mask,
+  fit_fun, sample_fun,
+  cost_type       = 'wasserstein',
+  frac_train      = 0.5,
+  val_subsample_n = NULL,
+  J_aug           = 500,
+  seed            = 12345
+) {
+  stopifnot(is.logical(y_mask), length(y_mask) == length(y_list))
+  set.seed(seed)
+
+  p_grid     <- pipeline$training$cache$p_grid
+  p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(J_aug - length(p_grid)))))
+  w_aug      <- get_quadrature_weights(p_grid_aug)
+
+  ## Split, then fit on the full training half
+  n_pool  <- length(y_list)
+  n_train <- floor(frac_train * n_pool)
+  perm    <- sample(seq_len(n_pool))
+  idx_tr  <- perm[seq_len(n_train)]
+  idx_val <- perm[(n_train + 1):n_pool]
+  Z_tr <- encode_y_to_latent(pipeline, y_list[idx_tr])
+  X_tr <- if (is.null(X)) NULL else X[idx_tr, , drop = FALSE]
+  fit  <- fit_fun(Z_tr, X_tr)
+
+  ## Restrict to the group; optional validation subsample
+  idx_tr_grp  <- idx_tr[y_mask[idx_tr]]
+  idx_val_grp <- idx_val[y_mask[idx_val]]
+  if (!is.null(val_subsample_n)) {
+    stopifnot(val_subsample_n <= length(idx_val_grp))
+    idx_val_grp <- sample(idx_val_grp, val_subsample_n)
+  }
+  X_val_grp <- if (is.null(X)) NULL else X[idx_val_grp, , drop = FALSE]
+
+  ## Real (val), held-out real (train) and synthetic QFs; scores
+  Q_val_aug   <- encode_y_to_Qi_aug(pipeline, y_list[idx_val_grp], p_grid_aug)
+  Q_train_aug <- encode_y_to_Qi_aug(pipeline, y_list[idx_tr_grp], p_grid_aug)
+  T_tv        <- compute_generativity_score(Q_train_aug, Q_val_aug, w_aug, cost_type)
+  z_draws     <- sample_fun(length(idx_val_grp), fit, X_val_grp)
+  Q_synth_aug <- decode_latent_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
+  T_sv        <- compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
+
+  list(
+    p_grid   = p_grid_aug,
+    Q_val    = Q_val_aug,
+    Q_synth  = Q_synth_aug,
+    T_tv     = T_tv,
+    T_sv     = T_sv,
+    log_norm = log(T_sv / T_tv)
+  )
+}
+
+## Plot a generativity_example(): real (validation) QFs and synthetic QFs
+## overlaid in random order (so neither set systematically hides the other),
+## with a legend placed inside the axes clear of the curves (.legend_layout).
+## Draws to the active device; main may be an expression (e.g. built with
+## bquote for a tilde(G) title).
+plot_generativity_example <- function(ex, main = "",
+                                      col_real  = "black",
+                                      col_synth = "#1B9E77",
+                                      alpha     = 0.25,
+                                      lwd       = 0.25,
+                                      lwd_leg   = 1.5,
+                                      legend_cex = 1,
+                                      legend_loc = "topleft",
+                                      labels = c("real (val)", "synthetic")) {
+  x     <- ex$p_grid
+  funs  <- c(ex$Q_val, ex$Q_synth)
+  cols  <- c(rep(adjustcolor(col_real,  alpha), length(ex$Q_val)),
+             rep(adjustcolor(col_synth, alpha), length(ex$Q_synth)))
+  ord   <- sample(length(funs))
+  xlim  <- range(x)
+  ylim  <- range(unlist(funs), finite = TRUE)
+  leg_args <- list(legend = labels, col = c(col_real, col_synth),
+                   lwd = lwd_leg, lty = 1, cex = legend_cex, bty = "n")
+  objs <- lapply(funs, function(y) list(x = x, lo = y, hi = y))
+
+  old_mar <- par(mar = .trimmed_mar(par("mar"), main, "p", "Q(p)"))
+  on.exit(par(old_mar), add = TRUE)
+  lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc)
+  .draw_frame(xlim, lay$ylim, main = main, xlab = "p", ylab = "Q(p)",
+              ylim_data = ylim)
+  for (i in ord) lines(x, funs[[i]], col = cols[i], lwd = lwd)
+  do.call(legend, c(list(lay$pos), leg_args))
+  invisible(NULL)
+}
+
+
 ## Covariate-agnostic special case of evaluate_generativity: no covariates,
 ## the group under study is everyone, and the latent model is the
 ## unconditional mean-covariance model. Reduces to
@@ -1607,8 +1704,15 @@ plot_generativity_boxes <- function(groups,
                                      height      = 720,
                                      pointsize   = 14,
                                      collapse    = FALSE,
-                                     mar         = NULL) {
-  ## mar: plot margins (NULL: the original 4.5-line margins)
+                                     mar         = NULL,
+                                     medlwd      = NULL,
+                                     whisklty    = NULL) {
+  ## medlwd / whisklty: median line width and whisker line type (NULL: 1.5 and
+  ## solid for paper figures (path = NULL), else R's defaults of 3 and dashed)
+  ## Drawing to the caller's device (path = NULL, e.g. a fig_png() paper
+  ## figure), the default margins follow the current par: trimmed for an
+  ## omitted title / axis label (.trimmed_mar), with room for the K axis when
+  ## Ks is given. With a path, the original 4.5-line margins. mar overrides.
   L <- length(groups)
   stopifnot(length(scores) == L)
   if (!is.null(Ks)) stopifnot(length(Ks) == L)
@@ -1637,7 +1741,17 @@ plot_generativity_boxes <- function(groups,
   box_w     <- if (S == 1) 0.55 else min(0.18, (2 * half_span) / (S - 1) * 0.8)
 
   if (!is.null(path)) png(path, width = width, height = height, pointsize = pointsize)
-  old_par <- par(mar = mar %||% c(4.5, 4.5, 3, if (is.null(Ks)) 2 else 4.5))
+  if (is.null(mar)) {
+    if (is.null(path)) {
+      mar <- .trimmed_mar(par("mar"), main, xlab, ylab)
+      ## Without an x label only the group names sit below the axis: fit them
+      if (.is_blank(xlab)) mar[1] <- par("mgp")[2] + 1.2 * par("cex.axis") + 0.1
+      if (!is.null(Ks)) mar[4] <- max(mar[4], par("mgp")[1] + 1)
+    } else {
+      mar <- c(4.5, 4.5, 3, if (is.null(Ks)) 2 else 4.5)
+    }
+  }
+  old_par <- par(mar = mar)
   on.exit(par(old_par), add = TRUE)
 
   plot(NULL,
@@ -1661,7 +1775,9 @@ plot_generativity_boxes <- function(groups,
               add     = TRUE,
               axes    = FALSE,
               col     = "gray85",
-              border  = "black")
+              border  = "black",
+              medlwd  = medlwd %||% if (is.null(path)) 1.5 else 3,
+              whisklty = whisklty %||% if (is.null(path)) 1 else 2)
     }
   }
 
@@ -1677,7 +1793,8 @@ plot_generativity_boxes <- function(groups,
     k_ticks <- k_ticks[k_ticks >= K_ylim[1] & k_ticks <= K_ylim[2]]
     axis(side = 4, at = k_to_y(k_ticks), labels = k_ticks,
          col = "forestgreen", col.axis = "forestgreen", las = 1)
-    mtext("K", side = 4, line = 3, col = "forestgreen")
+    mtext("K", side = 4, line = par("mgp")[1], col = "forestgreen",
+          cex = par("cex.lab"))
   }
 
   if (!is.null(path)) dev.off()
