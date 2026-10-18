@@ -449,46 +449,42 @@ binary_diagnostics <- function(model, path_dir,
 
 ## ==================== Interpretation ====================
 
-## Parametric bootstrap of conditional latent means under the fitted linear
-## model. Simulates R synthetic datasets from the fitted model, refits lm on
-## each, and extracts per-replicate group-0 and group-1 conditional means in
-## z-space.
+## Draws from the sampling distribution of the conditional latent means under
+## the fitted linear model with pooled covariance Sigma_hat:
+## z_g* ~ N(z_hat_g, Sigma_hat / n_g), independently for g = 0, 1.
 ##
 ## Returns a list with:
-##   z_hat_0   length-K point estimate for group 0
-##   z_hat_1   length-K point estimate for group 1
-##   z_boot_0  length-R list of K-vectors (bootstrap group-0 means)
-##   z_boot_1  length-R list of K-vectors (bootstrap group-1 means)
+##   z_hat_0    length-K point estimate for group 0
+##   z_hat_1    length-K point estimate for group 1
+##   z_draws_0  length-R list of K-vectors (sampled group-0 means)
+##   z_draws_1  length-R list of K-vectors (sampled group-1 means)
 ##
 ## Decoding z → Qi is left to the script (pipeline-dependent).
-binary_boot_interpret <- function(model, R = 1000, seed = 12345) {
-  X         <- model.matrix(model)
+binary_sample_means <- function(model, R = 1000, seed = 12345) {
   B_hat     <- coef(model)
   E_hat     <- residuals(model)
   N_fit     <- nrow(E_hat)
+  K         <- ncol(B_hat)
   Sigma_hat <- crossprod(E_hat) / (N_fit - 2)
-  mu_hat    <- X %*% B_hat
   x         <- model$model[, "x"]
+  n0        <- sum(x == 0)
+  n1        <- sum(x == 1)
 
   z_hat_0 <- as.numeric(B_hat["(Intercept)", ])
   z_hat_1 <- as.numeric(B_hat["(Intercept)", ] + B_hat["x", ])
 
-  z_boot_0 <- vector('list', R)
-  z_boot_1 <- vector('list', R)
   set.seed(seed)
-  for (r in seq_len(R)) {
-    E_star  <- MASS::mvrnorm(N_fit, mu = rep(0, ncol(B_hat)), Sigma = Sigma_hat)
-    Z_star  <- mu_hat + E_star
-    model_r <- lm(Z_star ~ x)
-    B_r     <- coef(model_r)
-    z_boot_0[[r]] <- as.numeric(B_r["(Intercept)", ])
-    z_boot_1[[r]] <- as.numeric(B_r["(Intercept)", ] + B_r["x", ])
-  }
+  D0 <- matrix(MASS::mvrnorm(R, mu = z_hat_0, Sigma = Sigma_hat / n0),
+               nrow = R, ncol = K)
+  D1 <- matrix(MASS::mvrnorm(R, mu = z_hat_1, Sigma = Sigma_hat / n1),
+               nrow = R, ncol = K)
+  z_draws_0 <- asplit(D0, MARGIN = 1) |> lapply(as.numeric)
+  z_draws_1 <- asplit(D1, MARGIN = 1) |> lapply(as.numeric)
 
   list(
-    z_hat_0  = z_hat_0,
-    z_hat_1  = z_hat_1,
-    z_boot_0 = z_boot_0,
-    z_boot_1 = z_boot_1
+    z_hat_0   = z_hat_0,
+    z_hat_1   = z_hat_1,
+    z_draws_0 = z_draws_0,
+    z_draws_1 = z_draws_1
   )
 }

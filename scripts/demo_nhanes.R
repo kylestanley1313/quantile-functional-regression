@@ -857,6 +857,55 @@ for (bin_pred in c('old', 'male', 'low_income')) {
 
 }
 
+## Plot QFs color-coded by continuous covariate (blue = low, red = high;
+## linear in the covariate over its observed range), with a color bar legend.
+cont_cov_labels <- c(age = 'Age', pir = 'PIR')
+for (cont_pred in names(cont_cov_labels)) {
+
+  ## Plot: QF
+  set.seed(12345)
+  path_plot <- file.path(
+    dir_eda,
+    str_glue('eda_Qi_{cont_pred}.png')
+  )
+  fig_png(path_plot, 3.25, 2.15)   # TODO: final printed size
+  pal <- colorRampPalette(c("blue", "gray60", "red"))(101)
+  val_to_col <- function(v, rng) {
+    adjustcolor(pal[round((v - rng[1]) / diff(rng) * 100) + 1], alpha.f = 0.25)
+  }
+  mask <- !is.na(df_cov[[cont_pred]])
+  idx <- sample(1:sum(mask))
+  Q_to_plot <- Q_ctx$payload[mask]
+  vals <- df_cov[[cont_pred]][mask]
+  rng <- range(vals)
+  fun_list <- c(
+    Q_to_plot
+  )
+  grid_list <- rep(list(p_grid), length(fun_list))
+  colors <- val_to_col(vals, rng)
+  widths <- rep(1, length(fun_list))
+  types <- rep(1, length(fun_list))
+  ticks <- pretty(rng, n = 4)
+  ticks <- ticks[ticks >= rng[1] & ticks <= rng[2]]
+  plot_funs(
+    fun_list = fun_list[idx],
+    grid_list = grid_list[idx],
+    colors = colors[idx],
+    widths = widths[idx],
+    types = types[idx],
+    cex.lab = fig_cex_lab,
+    cex_main = fig_cex_main,
+    cex = fig_cex,
+    cex_axis = fig_cex_axis,
+    after_plot = function() {
+      draw_colorbar(pal, rng, ticks, title = cont_cov_labels[[cont_pred]],
+                    cex = fig_cex_legend)
+    }
+  )
+  dev.off()
+
+}
+
 
 
 ## ========== Group Comparison ========== ##
@@ -967,7 +1016,7 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'male'
+bin_pred <- 'old'
 run_latent_diagnostics <- FALSE
 run_generativity_diagnostics <- FALSE
 
@@ -1170,20 +1219,20 @@ quantile_levels <- list(
 
 ## ----- Conditional QF Plots
 
-## --- Parametric bootstrap of conditional latent means
+## --- Sampling distribution of conditional latent means
 
-alpha     <- 0.05
-boot_res  <- binary_boot_interpret(model, R = 1000, seed = 12345)
-z_hat_0   <- boot_res$z_hat_0
-z_hat_1   <- boot_res$z_hat_1
-z_boot_0  <- boot_res$z_boot_0
-z_boot_1  <- boot_res$z_boot_1
+alpha      <- 0.05
+mean_res   <- binary_sample_means(model, R = 1000, seed = 12345)
+z_hat_0    <- mean_res$z_hat_0
+z_hat_1    <- mean_res$z_hat_1
+z_draws_0  <- mean_res$z_draws_0
+z_draws_1  <- mean_res$z_draws_1
 
-## Decode original and bootstrap conditional means to Qi-space
-Qi_hat_0  <- decode_latent_to_Qi(pipeline, list(z_hat_0), Ji)[[1]]
-Qi_hat_1  <- decode_latent_to_Qi(pipeline, list(z_hat_1), Ji)[[1]]
-Qi_boot_0 <- decode_latent_to_Qi(pipeline, z_boot_0, Ji)
-Qi_boot_1 <- decode_latent_to_Qi(pipeline, z_boot_1, Ji)
+## Decode point estimates and sampled conditional means to Qi-space
+Qi_hat_0   <- decode_latent_to_Qi(pipeline, list(z_hat_0), Ji)[[1]]
+Qi_hat_1   <- decode_latent_to_Qi(pipeline, list(z_hat_1), Ji)[[1]]
+Qi_draws_0 <- decode_latent_to_Qi(pipeline, z_draws_0, Ji)
+Qi_draws_1 <- decode_latent_to_Qi(pipeline, z_draws_1, Ji)
 
 
 ## --- Paper figure settings for the conditional plots below
@@ -1236,7 +1285,7 @@ path_plot <- file.path(
 )
 gc_half_png(path_plot)
 plot_decoded_conditional_qfs(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   alpha = alpha,
   quantile_lines = quantile_levels,
   threshold_labels = "top",
@@ -1255,7 +1304,7 @@ path_plot <- file.path(
 )
 gc_half_png(path_plot)
 plot_decoded_conditional_qf_diff(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   alpha = alpha,
   quantile_lines = quantile_levels,
   threshold_labels = "top",
@@ -1268,7 +1317,7 @@ dev.off()
 
 
 ## --- Shared y-grid for CDF plots
-y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1)
+y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1)
 
 
 ## --- Plot conditional CDFs with bands
@@ -1279,7 +1328,7 @@ path_plot <- file.path(
 )
 gc_half_png(path_plot)
 plot_decoded_conditional_cdfs(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   alpha      = alpha,
   y_grid     = y_grid,
   thresholds = mims_thresholds,
@@ -1299,7 +1348,7 @@ path_plot <- file.path(
 )
 gc_half_png(path_plot)
 plot_decoded_conditional_cdf_diff(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   alpha      = alpha,
   y_grid     = y_grid,
   thresholds = mims_thresholds,
@@ -1320,7 +1369,7 @@ path_plot <- file.path(
 )
 gc_half_png(path_plot)
 plot_decoded_conditional_survivals(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   alpha      = alpha,
   y_grid     = y_grid,
   thresholds = mims_thresholds,
@@ -1341,7 +1390,7 @@ path_plot <- file.path(
 )
 gc_half_png(path_plot)
 plot_decoded_conditional_survival_diff(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   alpha      = alpha,
   y_grid     = y_grid,
   thresholds = mims_thresholds,
@@ -1363,7 +1412,7 @@ path_plot <- file.path(
 )
 gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_thresholds(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   thresholds   = mims_thresholds,
   eval_type    = sapply(mims_thresholds, `[[`, "eval_type"),
   panel_mains  = gc_thr_mains,
@@ -1387,7 +1436,7 @@ path_plot <- file.path(
 )
 gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_threshold_diff(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   thresholds  = mims_thresholds,
   eval_type   = sapply(mims_thresholds, `[[`, "eval_type"),
   panel_mains = gc_thr_mains,
@@ -1410,7 +1459,7 @@ path_plot <- file.path(
 )
 gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_quantile_levels(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   quantile_levels = quantile_levels,
   panel_mains     = gc_q_mains,
   panel_ylabs     = rep("", length(quantile_levels)),
@@ -1432,7 +1481,7 @@ path_plot <- file.path(
 )
 gc_strip_png(path_plot, gc_half_w)
 plot_decoded_conditional_quantile_level_diff(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   quantile_levels = quantile_levels,
   panel_mains     = gc_q_mains,
   panel_ylabs     = rep("", length(quantile_levels)),
@@ -1453,7 +1502,7 @@ path_plot <- file.path(
 )
 gc_strip_png(path_plot, gc_full_w)
 plot_decoded_conditional_moments(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   alpha        = alpha,
   group_labels = c("", ""),
   panel_ylabs  = rep("", 4),
@@ -1473,7 +1522,7 @@ path_plot <- file.path(
 )
 gc_strip_png(path_plot, gc_full_w)
 plot_decoded_conditional_moment_diff(
-  Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+  Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
   alpha       = alpha,
   diff_label  = "",
   panel_ylabs = rep("", 4),

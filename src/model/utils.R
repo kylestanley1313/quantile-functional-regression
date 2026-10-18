@@ -42,59 +42,59 @@ moments_from_Qi <- function(Qi) {
 }
 
 
-## ---------- Bootstrap helpers ----------
+## ---------- Draw-based band helpers ----------
 
-## Coerce bootstrap input to an R x Ji matrix (accepts list of length-Ji
+## Coerce draws to an R x Ji matrix (accepts list of length-Ji
 ## vectors or an R x Ji matrix already).
-.as_qi_boot_matrix <- function(Qi_boot) {
-  if (is.list(Qi_boot)) do.call(rbind, Qi_boot) else Qi_boot
+.as_qi_draws_matrix <- function(Qi_draws) {
+  if (is.list(Qi_draws)) do.call(rbind, Qi_draws) else Qi_draws
 }
 
-## Build a y_grid spanning both groups' point estimates and bootstrap replicates.
+## Build a y_grid spanning both groups' point estimates and draws.
 default_y_grid_two_group <- function(Qi_hat_0, Qi_hat_1,
-                                      Qi_boot_0, Qi_boot_1) {
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+                                      Qi_draws_0, Qi_draws_1) {
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   y_pool <- c(Qi_hat_0, Qi_hat_1,
-              as.vector(Qi_boot_0), as.vector(Qi_boot_1))
+              as.vector(Qi_draws_0), as.vector(Qi_draws_1))
   sort(unique(c(min(y_pool), Qi_hat_0, Qi_hat_1, max(y_pool))))
 }
 
 
-## Pointwise or joint bootstrap band around `center` from an R x G matrix of
-## bootstrap replicates (rows = replicates, columns = grid points).
+## Pointwise or joint band around `center` from an R x G matrix of
+## draws (rows = draws, columns = grid points).
 ## Both types have nominal (1 - alpha) coverage (two-sided, as in amm.R).
 ##   band_type = "pointwise": per-column alpha/2 / (1 - alpha/2) percentiles of
-##     the replicates (`center` is ignored).
+##     the draws (`center` is ignored).
 ##   band_type = "joint": a sup-t band obtained by inflating the pointwise
-##     bootstrap SD by the (1 - alpha) quantile of the replicate-wise max
+##     SD of the draws by the (1 - alpha) quantile of the draw-wise max
 ##     standardized deviation from `center`. Columns with zero SD (e.g. a CDF
 ##     pinned at 0 or 1) do not constrain the band.
-.boot_band <- function(mat_boot, center, alpha = 0.05,
-                       band_type = c("joint", "pointwise")) {
+.draws_band <- function(mat_draws, center, alpha = 0.05,
+                        band_type = c("joint", "pointwise")) {
   band_type <- match.arg(band_type)
   if (band_type == "pointwise") {
     return(list(
-      lo = apply(mat_boot, 2, quantile, probs = alpha / 2),
-      hi = apply(mat_boot, 2, quantile, probs = 1 - alpha / 2)
+      lo = apply(mat_draws, 2, quantile, probs = alpha / 2),
+      hi = apply(mat_draws, 2, quantile, probs = 1 - alpha / 2)
     ))
   }
-  sd_pt <- apply(mat_boot, 2, sd)
+  sd_pt <- apply(mat_draws, 2, sd)
   pos   <- sd_pt > 0
-  crit  <- .joint_crit(mat_boot, center, alpha)
+  crit  <- .joint_crit(mat_draws, center, alpha)
   lo <- hi <- center
   lo[pos] <- center[pos] - crit * sd_pt[pos]
   hi[pos] <- center[pos] + crit * sd_pt[pos]
   list(lo = lo, hi = hi)
 }
 
-## Sup-t critical value of the joint band in `.boot_band`: the (1 - alpha)
-## quantile of the replicate-wise max standardized deviation from `center`
+## Sup-t critical value of the joint band in `.draws_band`: the (1 - alpha)
+## quantile of the draw-wise max standardized deviation from `center`
 ## across the grid (zero-SD columns excluded).
-.joint_crit <- function(mat_boot, center, alpha = 0.05) {
-  sd_pt <- apply(mat_boot, 2, sd)
+.joint_crit <- function(mat_draws, center, alpha = 0.05) {
+  sd_pt <- apply(mat_draws, 2, sd)
   pos   <- sd_pt > 0
-  z_dev <- apply(mat_boot, 1, function(row) {
+  z_dev <- apply(mat_draws, 1, function(row) {
     if (!any(pos)) return(0)
     max(abs((row[pos] - center[pos]) / sd_pt[pos]))
   })
@@ -102,15 +102,15 @@ default_y_grid_two_group <- function(Qi_hat_0, Qi_hat_1,
 }
 
 ## Pointwise and joint intervals of a summary at a few points, as vertical
-## cross sections of the `.boot_band` bands. v_boot is R x n (replicates at the
+## cross sections of the `.draws_band` bands. v_draws is R x n (draws at the
 ## points), v_hat the length-n point estimate, and crit the sup-t critical value
 ## computed over the full grid the band is drawn on, so the joint interval
 ## matches the joint band rather than a band over the n points alone.
-.boot_intervals_at <- function(v_boot, v_hat, crit, alpha = 0.05) {
-  sd_v <- apply(v_boot, 2, sd)
+.draws_intervals_at <- function(v_draws, v_hat, crit, alpha = 0.05) {
+  sd_v <- apply(v_draws, 2, sd)
   list(
-    pw_lo = apply(v_boot, 2, quantile, probs = alpha / 2),
-    pw_hi = apply(v_boot, 2, quantile, probs = 1 - alpha / 2),
+    pw_lo = apply(v_draws, 2, quantile, probs = alpha / 2),
+    pw_hi = apply(v_draws, 2, quantile, probs = 1 - alpha / 2),
     jt_lo = v_hat - crit * sd_v,
     jt_hi = v_hat + crit * sd_v
   )
@@ -353,7 +353,7 @@ default_y_grid_two_group <- function(Qi_hat_0, Qi_hat_1,
 ##
 ## These primitives are consumed by both the Group Comparison section (binary
 ## predictor x) and the AMM male-effect interpretation section. Each function
-## takes Qi point estimates and Qi bootstrap replicate matrices (or lists) for
+## takes Qi point estimates and Qi draw matrices (or lists) for
 ## the two groups, computes pointwise quantile bands internally, and draws to
 ## the active device. The caller manages png/dev.off.
 
@@ -371,9 +371,9 @@ default_y_grid_two_group <- function(Qi_hat_0, Qi_hat_1,
 ##               NULL keeps the original widths.
 
 ## Two-group conditional QFs on the (0,1) p-grid with pointwise or joint
-## (sup-t across p) bootstrap bands.
+## (sup-t across p) bands.
 plot_decoded_conditional_qfs <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     alpha = 0.05, main = "",
     group_labels = c("0", "1"),
     group_colors = c("black", "red"),
@@ -386,13 +386,13 @@ plot_decoded_conditional_qfs <- function(
 ) {
   band_type <- match.arg(band_type)
   threshold_labels <- match.arg(threshold_labels)
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   Ji        <- length(Qi_hat_0)
   pi_grid   <- pi_grid_fun(Ji)
 
-  b0 <- .boot_band(Qi_boot_0, Qi_hat_0, alpha, band_type)
-  b1 <- .boot_band(Qi_boot_1, Qi_hat_1, alpha, band_type)
+  b0 <- .draws_band(Qi_draws_0, Qi_hat_0, alpha, band_type)
+  b1 <- .draws_band(Qi_draws_1, Qi_hat_1, alpha, band_type)
 
   lwd_est <- lwd %||% 1
   lwd_leg <- lwd %||% 4
@@ -447,10 +447,10 @@ plot_decoded_conditional_qfs <- function(
 }
 
 ## Group-difference QF (group 1 - group 0) with pointwise or joint (sup-t
-## across p) bands using within-replicate subtraction so bands pinch at any
+## across p) bands using within-draw subtraction so bands pinch at any
 ## common point.
 plot_decoded_conditional_qf_diff <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     alpha = 0.05, main = "", diff_label = "1 - 0",
     band_type = c("joint", "pointwise"),
     legend_loc = 'topleft',
@@ -461,14 +461,14 @@ plot_decoded_conditional_qf_diff <- function(
 ) {
   band_type <- match.arg(band_type)
   threshold_labels <- match.arg(threshold_labels)
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   Ji        <- length(Qi_hat_0)
   pi_grid   <- pi_grid_fun(Ji)
 
   Qi_hat_diff   <- Qi_hat_1 - Qi_hat_0
-  mat_boot_diff <- Qi_boot_1 - Qi_boot_0
-  bd <- .boot_band(mat_boot_diff, Qi_hat_diff, alpha, band_type)
+  mat_draws_diff <- Qi_draws_1 - Qi_draws_0
+  bd <- .draws_band(mat_draws_diff, Qi_hat_diff, alpha, band_type)
 
   lwd_est <- lwd %||% 4
   xlim <- range(pi_grid)
@@ -520,9 +520,9 @@ plot_decoded_conditional_qf_diff <- function(
 }
 
 ## Two-group conditional CDFs on a shared y_grid with pointwise or joint
-## (sup-t across y) bootstrap bands and optional vertical threshold lines.
+## (sup-t across y) bands and optional vertical threshold lines.
 plot_decoded_conditional_cdfs <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     alpha = 0.05, main = "",
     y_grid = NULL,
     group_labels = c("0", "1"),
@@ -536,19 +536,19 @@ plot_decoded_conditional_cdfs <- function(
 ) {
   band_type <- match.arg(band_type)
   threshold_labels <- match.arg(threshold_labels)
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   if (is.null(y_grid)) {
     y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1,
-                                        Qi_boot_0, Qi_boot_1)
+                                        Qi_draws_0, Qi_draws_1)
   }
 
   F_hat_0  <- qi_to_cdf(Qi_hat_0, y_grid)
   F_hat_1  <- qi_to_cdf(Qi_hat_1, y_grid)
-  F_boot_0 <- t(apply(Qi_boot_0, 1, qi_to_cdf, y_grid = y_grid))
-  F_boot_1 <- t(apply(Qi_boot_1, 1, qi_to_cdf, y_grid = y_grid))
-  b0 <- .boot_band(F_boot_0, F_hat_0, alpha, band_type)
-  b1 <- .boot_band(F_boot_1, F_hat_1, alpha, band_type)
+  F_draws_0 <- t(apply(Qi_draws_0, 1, qi_to_cdf, y_grid = y_grid))
+  F_draws_1 <- t(apply(Qi_draws_1, 1, qi_to_cdf, y_grid = y_grid))
+  b0 <- .draws_band(F_draws_0, F_hat_0, alpha, band_type)
+  b1 <- .draws_band(F_draws_1, F_hat_1, alpha, band_type)
 
   thr_vals   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "value") else NULL
   thr_cols   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "col")   else NULL
@@ -610,7 +610,7 @@ plot_decoded_conditional_cdfs <- function(
 ## Group-difference CDF (group 1 - group 0) on a shared y_grid with pointwise
 ## or joint (sup-t across y) bands and optional threshold lines.
 plot_decoded_conditional_cdf_diff <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     alpha = 0.05, main = "",
     y_grid = NULL, diff_label = "1 - 0",
     thresholds = NULL,
@@ -622,20 +622,20 @@ plot_decoded_conditional_cdf_diff <- function(
 ) {
   band_type <- match.arg(band_type)
   threshold_labels <- match.arg(threshold_labels)
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   if (is.null(y_grid)) {
     y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1,
-                                        Qi_boot_0, Qi_boot_1)
+                                        Qi_draws_0, Qi_draws_1)
   }
 
   F_hat_0  <- qi_to_cdf(Qi_hat_0, y_grid)
   F_hat_1  <- qi_to_cdf(Qi_hat_1, y_grid)
-  F_boot_0 <- t(apply(Qi_boot_0, 1, qi_to_cdf, y_grid = y_grid))
-  F_boot_1 <- t(apply(Qi_boot_1, 1, qi_to_cdf, y_grid = y_grid))
+  F_draws_0 <- t(apply(Qi_draws_0, 1, qi_to_cdf, y_grid = y_grid))
+  F_draws_1 <- t(apply(Qi_draws_1, 1, qi_to_cdf, y_grid = y_grid))
   F_hat_diff      <- F_hat_1 - F_hat_0
-  F_boot_diff_mat <- F_boot_1 - F_boot_0
-  bd <- .boot_band(F_boot_diff_mat, F_hat_diff, alpha, band_type)
+  F_draws_diff_mat <- F_draws_1 - F_draws_0
+  bd <- .draws_band(F_draws_diff_mat, F_hat_diff, alpha, band_type)
   band_lo_diff    <- bd$lo
   band_hi_diff    <- bd$hi
 
@@ -696,11 +696,11 @@ plot_decoded_conditional_cdf_diff <- function(
 }
 
 ## Two-group conditional survival curves 1 - F(y) on a shared y_grid with
-## pointwise or joint (sup-t across y) bootstrap bands and optional vertical
+## pointwise or joint (sup-t across y) bands and optional vertical
 ## threshold lines. Axis labels are written in CDF terms (1 - F(y)), not
 ## survival-function notation.
 plot_decoded_conditional_survivals <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     alpha = 0.05, main = "",
     y_grid = NULL,
     group_labels = c("0", "1"),
@@ -714,19 +714,19 @@ plot_decoded_conditional_survivals <- function(
 ) {
   band_type <- match.arg(band_type)
   threshold_labels <- match.arg(threshold_labels)
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   if (is.null(y_grid)) {
     y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1,
-                                        Qi_boot_0, Qi_boot_1)
+                                        Qi_draws_0, Qi_draws_1)
   }
 
   S_hat_0  <- 1 - qi_to_cdf(Qi_hat_0, y_grid)
   S_hat_1  <- 1 - qi_to_cdf(Qi_hat_1, y_grid)
-  S_boot_0 <- 1 - t(apply(Qi_boot_0, 1, qi_to_cdf, y_grid = y_grid))
-  S_boot_1 <- 1 - t(apply(Qi_boot_1, 1, qi_to_cdf, y_grid = y_grid))
-  b0 <- .boot_band(S_boot_0, S_hat_0, alpha, band_type)
-  b1 <- .boot_band(S_boot_1, S_hat_1, alpha, band_type)
+  S_draws_0 <- 1 - t(apply(Qi_draws_0, 1, qi_to_cdf, y_grid = y_grid))
+  S_draws_1 <- 1 - t(apply(Qi_draws_1, 1, qi_to_cdf, y_grid = y_grid))
+  b0 <- .draws_band(S_draws_0, S_hat_0, alpha, band_type)
+  b1 <- .draws_band(S_draws_1, S_hat_1, alpha, band_type)
 
   thr_vals   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "value") else NULL
   thr_cols   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "col")   else NULL
@@ -790,7 +790,7 @@ plot_decoded_conditional_survivals <- function(
 ## lines. The survival contrast is the negative of the CDF contrast; the axis
 ## label is kept in CDF terms.
 plot_decoded_conditional_survival_diff <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     alpha = 0.05, main = "",
     y_grid = NULL, diff_label = "1 - 0",
     thresholds = NULL,
@@ -802,20 +802,20 @@ plot_decoded_conditional_survival_diff <- function(
 ) {
   band_type <- match.arg(band_type)
   threshold_labels <- match.arg(threshold_labels)
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   if (is.null(y_grid)) {
     y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1,
-                                        Qi_boot_0, Qi_boot_1)
+                                        Qi_draws_0, Qi_draws_1)
   }
 
   S_hat_0  <- 1 - qi_to_cdf(Qi_hat_0, y_grid)
   S_hat_1  <- 1 - qi_to_cdf(Qi_hat_1, y_grid)
-  S_boot_0 <- 1 - t(apply(Qi_boot_0, 1, qi_to_cdf, y_grid = y_grid))
-  S_boot_1 <- 1 - t(apply(Qi_boot_1, 1, qi_to_cdf, y_grid = y_grid))
+  S_draws_0 <- 1 - t(apply(Qi_draws_0, 1, qi_to_cdf, y_grid = y_grid))
+  S_draws_1 <- 1 - t(apply(Qi_draws_1, 1, qi_to_cdf, y_grid = y_grid))
   S_hat_diff      <- S_hat_1 - S_hat_0
-  S_boot_diff_mat <- S_boot_1 - S_boot_0
-  bd <- .boot_band(S_boot_diff_mat, S_hat_diff, alpha, band_type)
+  S_draws_diff_mat <- S_draws_1 - S_draws_0
+  bd <- .draws_band(S_draws_diff_mat, S_hat_diff, alpha, band_type)
 
   thr_vals   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "value") else NULL
   thr_cols   <- if (!is.null(thresholds)) sapply(thresholds, `[[`, "col")   else NULL
@@ -911,10 +911,10 @@ plot_decoded_conditional_survival_diff <- function(
 ## the joint interval uses the sup-t critical value computed over the full grid
 ## that band is drawn on (y_grid or the p-grid), not over the few points shown.
 
-## Apply f(row, pts) to each bootstrap row and return an R x length(pts) matrix
+## Apply f(row, pts) to each draw (row) and return an R x length(pts) matrix
 ## (also when length(pts) == 1).
-.eval_boot_rows <- function(mat_boot, f, pts) {
-  matrix(t(apply(mat_boot, 1, f, pts)), ncol = length(pts))
+.eval_draws_rows <- function(mat_draws, f, pts) {
+  matrix(t(apply(mat_draws, 1, f, pts)), ncol = length(pts))
 }
 
 ## Flip selected columns (or entries) from F to 1 - F.
@@ -993,7 +993,7 @@ plot_decoded_conditional_survival_diff <- function(
 }
 
 ## Two-group probability mass relative to fixed activity-intensity thresholds
-## (one panel per threshold) with pointwise and joint bootstrap intervals. Each
+## (one panel per threshold) with pointwise and joint intervals. Each
 ## `thresholds` entry is a list(label=, value=, col=) as used by the CDF plots.
 ## For panel k, `eval_type[k]` selects the vertical-axis summary: "cdf" plots
 ## F(threshold) (mass at or below the intensity) and "survival" plots
@@ -1005,7 +1005,7 @@ plot_decoded_conditional_survival_diff <- function(
 ## override the per-panel title and y-axis label (defaults: threshold label,
 ## and a CDF-terms label).
 plot_decoded_conditional_thresholds <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     thresholds,
     eval_type = NULL,
     panel_mains = NULL,
@@ -1019,11 +1019,11 @@ plot_decoded_conditional_thresholds <- function(
     size = 1,
     xlim = NULL
 ) {
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   if (is.null(y_grid)) {
     y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1,
-                                        Qi_boot_0, Qi_boot_1)
+                                        Qi_draws_0, Qi_draws_1)
   }
 
   thr_vals   <- sapply(thresholds, `[[`, "value")
@@ -1039,21 +1039,21 @@ plot_decoded_conditional_thresholds <- function(
   flip <- eval_type == "survival"
 
   ## Joint critical values over the full CDF grid
-  crit_0 <- .joint_crit(.eval_boot_rows(Qi_boot_0, qi_to_cdf, y_grid),
+  crit_0 <- .joint_crit(.eval_draws_rows(Qi_draws_0, qi_to_cdf, y_grid),
                         qi_to_cdf(Qi_hat_0, y_grid), alpha)
-  crit_1 <- .joint_crit(.eval_boot_rows(Qi_boot_1, qi_to_cdf, y_grid),
+  crit_1 <- .joint_crit(.eval_draws_rows(Qi_draws_1, qi_to_cdf, y_grid),
                         qi_to_cdf(Qi_hat_1, y_grid), alpha)
 
   ## Summaries at the thresholds
   v_hat_0  <- .flip_survival(qi_to_cdf(Qi_hat_0, thr_vals), flip)
   v_hat_1  <- .flip_survival(qi_to_cdf(Qi_hat_1, thr_vals), flip)
-  v_boot_0 <- .flip_survival(.eval_boot_rows(Qi_boot_0, qi_to_cdf, thr_vals), flip)
-  v_boot_1 <- .flip_survival(.eval_boot_rows(Qi_boot_1, qi_to_cdf, thr_vals), flip)
+  v_draws_0 <- .flip_survival(.eval_draws_rows(Qi_draws_0, qi_to_cdf, thr_vals), flip)
+  v_draws_1 <- .flip_survival(.eval_draws_rows(Qi_draws_1, qi_to_cdf, thr_vals), flip)
 
   .plot_two_group_cross_sections(
     v_hat_0, v_hat_1,
-    .boot_intervals_at(v_boot_0, v_hat_0, crit_0, alpha),
-    .boot_intervals_at(v_boot_1, v_hat_1, crit_1, alpha),
+    .draws_intervals_at(v_draws_0, v_hat_0, crit_0, alpha),
+    .draws_intervals_at(v_draws_1, v_hat_1, crit_1, alpha),
     panel_mains, panel_ylabs, main, group_labels, group_colors,
     cex = cex, mar = mar, size = size,
     xlim = xlim
@@ -1062,13 +1062,13 @@ plot_decoded_conditional_thresholds <- function(
 
 ## Group-difference probability mass at fixed thresholds (group 1 - group 0, one
 ## panel per threshold) with pointwise and joint intervals from the
-## within-replicate bootstrap contrast, as cross sections of the CDF / survival
+## within-draw contrast, as cross sections of the CDF / survival
 ## contrast bands on `y_grid`. `eval_type[k]` picks F(threshold) ("cdf") or
 ## 1 - F(threshold) ("survival") for panel k; the survival contrast is the
 ## negative of the CDF contrast. `panel_mains` / `panel_ylabs` override the
 ## per-panel title and y-axis label.
 plot_decoded_conditional_threshold_diff <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     thresholds,
     eval_type = NULL,
     panel_mains = NULL,
@@ -1080,11 +1080,11 @@ plot_decoded_conditional_threshold_diff <- function(
     size = 1,
     xlim = NULL
 ) {
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
   if (is.null(y_grid)) {
     y_grid <- default_y_grid_two_group(Qi_hat_0, Qi_hat_1,
-                                        Qi_boot_0, Qi_boot_1)
+                                        Qi_draws_0, Qi_draws_1)
   }
 
   thr_vals   <- sapply(thresholds, `[[`, "value")
@@ -1101,8 +1101,8 @@ plot_decoded_conditional_threshold_diff <- function(
 
   ## Joint critical value over the full CDF-contrast grid
   crit_diff <- .joint_crit(
-    .eval_boot_rows(Qi_boot_1, qi_to_cdf, y_grid) -
-      .eval_boot_rows(Qi_boot_0, qi_to_cdf, y_grid),
+    .eval_draws_rows(Qi_draws_1, qi_to_cdf, y_grid) -
+      .eval_draws_rows(Qi_draws_0, qi_to_cdf, y_grid),
     qi_to_cdf(Qi_hat_1, y_grid) - qi_to_cdf(Qi_hat_0, y_grid),
     alpha
   )
@@ -1111,13 +1111,13 @@ plot_decoded_conditional_threshold_diff <- function(
   v_hat_diff <-
     .flip_survival(qi_to_cdf(Qi_hat_1, thr_vals), flip) -
     .flip_survival(qi_to_cdf(Qi_hat_0, thr_vals), flip)
-  v_boot_diff <-
-    .flip_survival(.eval_boot_rows(Qi_boot_1, qi_to_cdf, thr_vals), flip) -
-    .flip_survival(.eval_boot_rows(Qi_boot_0, qi_to_cdf, thr_vals), flip)
+  v_draws_diff <-
+    .flip_survival(.eval_draws_rows(Qi_draws_1, qi_to_cdf, thr_vals), flip) -
+    .flip_survival(.eval_draws_rows(Qi_draws_0, qi_to_cdf, thr_vals), flip)
 
   .plot_contrast_cross_sections(
     v_hat_diff,
-    .boot_intervals_at(v_boot_diff, v_hat_diff, crit_diff, alpha),
+    .draws_intervals_at(v_draws_diff, v_hat_diff, crit_diff, alpha),
     panel_mains, panel_ylabs, main, diff_label,
     cex = cex, mar = mar, size = size,
     xlim = xlim
@@ -1125,13 +1125,13 @@ plot_decoded_conditional_threshold_diff <- function(
 }
 
 ## Two-group quantile values Q(p) at fixed quantile levels (one panel per level)
-## with pointwise and joint bootstrap intervals, as cross sections of the bands
+## with pointwise and joint intervals, as cross sections of the bands
 ## in plot_decoded_conditional_qfs. Each `quantile_levels` entry is a
 ## list(label=, value=, col=) as used by the QF plots. `panel_mains` /
 ## `panel_ylabs` override the per-panel title and y-axis label (defaults: level
 ## label, and "Q(p)").
 plot_decoded_conditional_quantile_levels <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     quantile_levels,
     panel_mains = NULL,
     panel_ylabs = NULL,
@@ -1143,8 +1143,8 @@ plot_decoded_conditional_quantile_levels <- function(
     size = 1,
     xlim = NULL
 ) {
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
 
   p_vals   <- sapply(quantile_levels, `[[`, "value")
   p_labels <- sapply(quantile_levels, `[[`, "label")
@@ -1155,19 +1155,19 @@ plot_decoded_conditional_quantile_levels <- function(
   stopifnot(length(panel_mains) == n_p, length(panel_ylabs) == n_p)
 
   ## Joint critical values over the full p-grid
-  crit_0 <- .joint_crit(Qi_boot_0, Qi_hat_0, alpha)
-  crit_1 <- .joint_crit(Qi_boot_1, Qi_hat_1, alpha)
+  crit_0 <- .joint_crit(Qi_draws_0, Qi_hat_0, alpha)
+  crit_1 <- .joint_crit(Qi_draws_1, Qi_hat_1, alpha)
 
   ## Quantiles at the levels
   v_hat_0  <- qi_at_p(Qi_hat_0, p_vals)
   v_hat_1  <- qi_at_p(Qi_hat_1, p_vals)
-  v_boot_0 <- .eval_boot_rows(Qi_boot_0, qi_at_p, p_vals)
-  v_boot_1 <- .eval_boot_rows(Qi_boot_1, qi_at_p, p_vals)
+  v_draws_0 <- .eval_draws_rows(Qi_draws_0, qi_at_p, p_vals)
+  v_draws_1 <- .eval_draws_rows(Qi_draws_1, qi_at_p, p_vals)
 
   .plot_two_group_cross_sections(
     v_hat_0, v_hat_1,
-    .boot_intervals_at(v_boot_0, v_hat_0, crit_0, alpha),
-    .boot_intervals_at(v_boot_1, v_hat_1, crit_1, alpha),
+    .draws_intervals_at(v_draws_0, v_hat_0, crit_0, alpha),
+    .draws_intervals_at(v_draws_1, v_hat_1, crit_1, alpha),
     panel_mains, panel_ylabs, main, group_labels, group_colors,
     cex = cex, mar = mar, size = size,
     xlim = xlim
@@ -1176,10 +1176,10 @@ plot_decoded_conditional_quantile_levels <- function(
 
 ## Group-difference quantile values Q(p) at fixed quantile levels (group 1 -
 ## group 0, one panel per level) with pointwise and joint intervals from the
-## within-replicate bootstrap contrast, as cross sections of the bands in
+## within-draw contrast, as cross sections of the bands in
 ## plot_decoded_conditional_qf_diff.
 plot_decoded_conditional_quantile_level_diff <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     quantile_levels,
     panel_mains = NULL,
     panel_ylabs = NULL,
@@ -1189,8 +1189,8 @@ plot_decoded_conditional_quantile_level_diff <- function(
     size = 1,
     xlim = NULL
 ) {
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
 
   p_vals   <- sapply(quantile_levels, `[[`, "value")
   p_labels <- sapply(quantile_levels, `[[`, "label")
@@ -1201,16 +1201,16 @@ plot_decoded_conditional_quantile_level_diff <- function(
   stopifnot(length(panel_mains) == n_p, length(panel_ylabs) == n_p)
 
   ## Joint critical value over the full p-grid
-  crit_diff <- .joint_crit(Qi_boot_1 - Qi_boot_0, Qi_hat_1 - Qi_hat_0, alpha)
+  crit_diff <- .joint_crit(Qi_draws_1 - Qi_draws_0, Qi_hat_1 - Qi_hat_0, alpha)
 
   ## Contrasts at the levels
   v_hat_diff  <- qi_at_p(Qi_hat_1, p_vals) - qi_at_p(Qi_hat_0, p_vals)
-  v_boot_diff <- .eval_boot_rows(Qi_boot_1, qi_at_p, p_vals) -
-                 .eval_boot_rows(Qi_boot_0, qi_at_p, p_vals)
+  v_draws_diff <- .eval_draws_rows(Qi_draws_1, qi_at_p, p_vals) -
+                 .eval_draws_rows(Qi_draws_0, qi_at_p, p_vals)
 
   .plot_contrast_cross_sections(
     v_hat_diff,
-    .boot_intervals_at(v_boot_diff, v_hat_diff, crit_diff, alpha),
+    .draws_intervals_at(v_draws_diff, v_hat_diff, crit_diff, alpha),
     panel_mains, panel_ylabs, main, diff_label,
     cex = cex, mar = mar, size = size,
     xlim = xlim
@@ -1218,9 +1218,9 @@ plot_decoded_conditional_quantile_level_diff <- function(
 }
 
 ## Two-group moments (4 panels: mean, variance, skewness, kurtosis) with
-## interval bars from the bootstrap.
+## interval bars from the draws.
 plot_decoded_conditional_moments <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     alpha = 0.05, main = "",
     group_labels = c("0", "1"),
     group_colors = c("black", "red"),
@@ -1230,17 +1230,17 @@ plot_decoded_conditional_moments <- function(
     panel_ylabs = NULL,
     xlim = NULL
 ) {
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
 
   mom_hat_0  <- moments_from_Qi(Qi_hat_0)
   mom_hat_1  <- moments_from_Qi(Qi_hat_1)
-  mom_boot_0 <- t(apply(Qi_boot_0, 1, moments_from_Qi))
-  mom_boot_1 <- t(apply(Qi_boot_1, 1, moments_from_Qi))
-  band_lo_0  <- apply(mom_boot_0, 2, quantile, probs = alpha / 2)
-  band_hi_0  <- apply(mom_boot_0, 2, quantile, probs = 1 - alpha / 2)
-  band_lo_1  <- apply(mom_boot_1, 2, quantile, probs = alpha / 2)
-  band_hi_1  <- apply(mom_boot_1, 2, quantile, probs = 1 - alpha / 2)
+  mom_draws_0 <- t(apply(Qi_draws_0, 1, moments_from_Qi))
+  mom_draws_1 <- t(apply(Qi_draws_1, 1, moments_from_Qi))
+  band_lo_0  <- apply(mom_draws_0, 2, quantile, probs = alpha / 2)
+  band_hi_0  <- apply(mom_draws_0, 2, quantile, probs = 1 - alpha / 2)
+  band_lo_1  <- apply(mom_draws_1, 2, quantile, probs = alpha / 2)
+  band_hi_1  <- apply(mom_draws_1, 2, quantile, probs = 1 - alpha / 2)
 
   moment_names <- c("Mean", "Variance", "Skewness", "Kurtosis")
   if (is.null(panel_ylabs)) panel_ylabs <- moment_names
@@ -1272,9 +1272,9 @@ plot_decoded_conditional_moments <- function(
 }
 
 ## Group-difference moments (4 panels) with interval bars from the
-## within-replicate bootstrap contrast.
+## within-draw contrast.
 plot_decoded_conditional_moment_diff <- function(
-    Qi_hat_0, Qi_hat_1, Qi_boot_0, Qi_boot_1,
+    Qi_hat_0, Qi_hat_1, Qi_draws_0, Qi_draws_1,
     alpha = 0.05, main = "", diff_label = "1 - 0",
     cex = NULL,
     mar = c(2.5, 4.5, 3, 1),
@@ -1282,17 +1282,17 @@ plot_decoded_conditional_moment_diff <- function(
     panel_ylabs = NULL,
     xlim = NULL
 ) {
-  Qi_boot_0 <- .as_qi_boot_matrix(Qi_boot_0)
-  Qi_boot_1 <- .as_qi_boot_matrix(Qi_boot_1)
+  Qi_draws_0 <- .as_qi_draws_matrix(Qi_draws_0)
+  Qi_draws_1 <- .as_qi_draws_matrix(Qi_draws_1)
 
   mom_hat_0     <- moments_from_Qi(Qi_hat_0)
   mom_hat_1     <- moments_from_Qi(Qi_hat_1)
-  mom_boot_0    <- t(apply(Qi_boot_0, 1, moments_from_Qi))
-  mom_boot_1    <- t(apply(Qi_boot_1, 1, moments_from_Qi))
+  mom_draws_0    <- t(apply(Qi_draws_0, 1, moments_from_Qi))
+  mom_draws_1    <- t(apply(Qi_draws_1, 1, moments_from_Qi))
   mom_hat_diff  <- mom_hat_1 - mom_hat_0
-  mom_boot_diff <- mom_boot_1 - mom_boot_0
-  band_lo_diff  <- apply(mom_boot_diff, 2, quantile, probs = alpha / 2)
-  band_hi_diff  <- apply(mom_boot_diff, 2, quantile, probs = 1 - alpha / 2)
+  mom_draws_diff <- mom_draws_1 - mom_draws_0
+  band_lo_diff  <- apply(mom_draws_diff, 2, quantile, probs = alpha / 2)
+  band_hi_diff  <- apply(mom_draws_diff, 2, quantile, probs = 1 - alpha / 2)
 
   moment_names <- c("Mean", "Variance", "Skewness", "Kurtosis")
   if (is.null(panel_ylabs)) panel_ylabs <- paste(moment_names, "Contrast")

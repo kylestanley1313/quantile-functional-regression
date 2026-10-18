@@ -710,10 +710,10 @@ amm_replicate_smooth_at <- function(boot_reps, covariate_name, x_grid,
 
 ## Joint (sup-t over the grid) (1 - alpha) band around `center` from a G x B
 ## matrix of bootstrap replicates (rows = grid points, columns = replicates).
-## Same construction as the group-comparison bands (.boot_band in
+## Same construction as the group-comparison bands (.draws_band in
 ## src/model/utils.R).
 .amm_joint_band <- function(mat_gb, center, alpha) {
-  .boot_band(t(mat_gb), center, alpha, band_type = "joint")
+  .draws_band(t(mat_gb), center, alpha, band_type = "joint")
 }
 
 ## Ji x 3 matrix (mean_hat, lo, hi) of the decoded conditional QF at

@@ -1359,6 +1359,39 @@ fig_par <- function(cex_main = 1.2, cex_lab = 1, cex = NULL, cex_axis = NULL) {
 }
 
 
+## Horizontal color bar in the top-left corner of the current plot: the colors
+## in pal span lims left to right, with tick labels at ticks below the bar and
+## an optional title above it. Sizes and insets are in inches, so the bar looks
+## the same regardless of the axis scales.
+draw_colorbar <- function(pal, lims, ticks, title = NULL, cex = 1,
+                          width_in = 1.2, height_in = 0.1,
+                          inset_in = c(0.15, 0.12)) {
+  usr      <- par("usr")
+  x_per_in <- diff(usr[1:2]) / par("pin")[1]
+  y_per_in <- diff(usr[3:4]) / par("pin")[2]
+  title_in <- if (is.null(title)) 0 else
+    strheight(title, units = "inches", cex = cex) + 0.05
+
+  x0 <- usr[1] + inset_in[1] * x_per_in
+  x1 <- x0 + width_in * x_per_in
+  y1 <- usr[4] - (inset_in[2] + title_in) * y_per_in
+  y0 <- y1 - height_in * y_per_in
+
+  n  <- length(pal)
+  xs <- seq(x0, x1, length.out = n + 1)
+  rect(xs[-(n + 1)], y0, xs[-1], y1, col = pal, border = NA)
+  rect(x0, y0, x1, y1, col = NA, border = "black", lwd = 0.5)
+
+  tx <- x0 + (ticks - lims[1]) / diff(lims) * (x1 - x0)
+  segments(tx, y0, tx, y0 - 0.04 * y_per_in, lwd = 0.5)
+  text(tx, y0 - 0.06 * y_per_in, labels = ticks, adj = c(0.5, 1), cex = cex)
+  if (!is.null(title)) {
+    text(x0, y1 + 0.05 * y_per_in, labels = title, adj = c(0, 0), cex = cex)
+  }
+  invisible(NULL)
+}
+
+
 plot_funs <- function(
     fun_list,
     grid_list,
@@ -1379,10 +1412,13 @@ plot_funs <- function(
     cex_main = NULL,
     cex = NULL,
     cex_axis = NULL,
-    legend_cex = 1
+    legend_cex = 1,
+    after_plot = NULL
 ) {
   ## cex_main / cex / cex_axis: if any is set, text and margins follow fig_par().
   ## bands: optional list of list(x, lo, hi), shaded beneath the curves.
+  ## after_plot: optional function of no arguments, called after the curves are
+  ## drawn (in the plot's coordinates and par), e.g. to add a draw_colorbar().
   if (!is.null(path)) {
     png(path, width = fig_width, height = fig_height)
   }
@@ -1447,7 +1483,9 @@ plot_funs <- function(
       lty = types[i]
     )
   }
-  
+
+  if (!is.null(after_plot)) after_plot()
+
   ## ---- Legend ---- ##
   if (!is.null(color_width_type_labels)) {
     
