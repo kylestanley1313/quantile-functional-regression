@@ -57,6 +57,7 @@ library(splines)
   attr(W, "all_knots")      <- all_knots
   attr(W, "Z_scaled")       <- Z_scaled
   attr(W, "range")          <- range_x
+  attr(W, "x_mean")         <- mean(x)
   W
 }
 
@@ -64,11 +65,15 @@ library(splines)
 ## Fit an additive mixed model to each column of Z separately:
 ##   Z_k = X beta_k + W_age u_{age,k} + W_pir u_{pir,k} + eps_k
 ## where W_age, W_pir are Demmler-Reinsch spline bases and u ~ N(0, sigma^2_u I).
+## method sets the likelihood ("REML" or "ML") for the per-column fits and the
+## boundary refits (ML is needed to compare models with different fixed effects).
 ## Returns a named list with all fitted quantities (see return statement).
 fit_amm <- function(Z, covariates,
                     n_knots_age = 10, n_knots_pir = 10,
                     linear_covariates = c("male", "age", "pir"),
-                    smooth_covariates = c("age", "pir")) {
+                    smooth_covariates = c("age", "pir"),
+                    method = c("REML", "ML")) {
+  method <- match.arg(method)
 
   keep <- complete.cases(covariates[, c("male", "age", "pir")])
   Z    <- Z[keep, , drop = FALSE]
@@ -150,7 +155,7 @@ fit_amm <- function(Z, covariates,
         fixed   = fixed_form,
         random  = random,
         data    = df_k,
-        method  = "REML",
+        method  = method,
         control = lmeControl(opt = "optim")
       )),
       error = function(e) {
@@ -186,8 +191,8 @@ fit_amm <- function(Z, covariates,
       ## collapse (a random-effect variance -> 0, i.e., a smooth that is exactly
       ## linear). Refit at the boundary solution: drop each smooth in turn and keep
       ## the single-smooth fit with the highest REML logLik; if none converges (or
-      ## only one smooth was present), fall back to fixed effects only (gls, REML,
-      ## so logLik stays comparable with the lme fits).
+      ## only one smooth was present), fall back to fixed effects only (gls with the
+      ## same method, so logLik stays comparable with the lme fits).
       if (is.null(fit_k)) {
         message(str_glue("  lme failed at k = {k}; refitting at the variance-component boundary"))
         cands <- list()
@@ -204,7 +209,7 @@ fit_amm <- function(Z, covariates,
           dropped <- best
         } else {
           fit_k <- tryCatch(
-            do.call(gls, list(model = fixed_form, data = df_k, method = "REML")),
+            do.call(gls, list(model = fixed_form, data = df_k, method = method)),
             error = function(e) {
               message(str_glue("  gls failed at k = {k}: {conditionMessage(e)}"))
               NULL
@@ -296,6 +301,7 @@ fit_amm <- function(Z, covariates,
     n_knots_pir       = n_knots_pir,
     linear_covariates = linear_covariates,
     smooth_covariates = smooth_covariates,
+    method            = method,
     keep              = keep,
     fits              = fits,
     R_mat             = R_mat,
@@ -332,11 +338,30 @@ sample_amm <- function(n, fit, X) {
 
 ## ==================== Inference ====================
 
+## Mean of covariate_name over the fitted (kept) subjects. Stored on the spline
+## basis; fits made before that fall back to the linear design column.
+.amm_x_mean <- function(fit_result, covariate_name) {
+  x_mean <- attr(fit_result[[paste0("W_", covariate_name)]], "x_mean")
+  if (is.null(x_mean) && covariate_name %in% colnames(fit_result$X_design)) {
+    x_mean <- mean(fit_result$X_design[, covariate_name])
+  }
+  if (is.null(x_mean)) {
+    stop(str_glue("No data mean for '{covariate_name}'; refit with fit_amm()."))
+  }
+  x_mean
+}
+
 ## Evaluate the smooth effect of covariate_name on a grid of values.
 ## Returns a (length(grid)) x K matrix of smooth (optionally total) effects.
 ## include_linear = TRUE adds the linear slope * grid to the smooth BLUP.
+## The curve is identified only up to a constant (absorbed by the intercept);
+## by default the linear part is anchored at 0 when x = 0, as the conditional
+## mean requires. center = TRUE instead centers each part over the fitted
+## subjects (mean_i f(x_i) = 0), i.e. the effect relative to the average
+## subject; x_mean (default .amm_x_mean) is the covariate's data mean.
 amm_evaluate_smooth <- function(fit_result, covariate_name, grid,
-                                include_linear = TRUE) {
+                                include_linear = TRUE, center = FALSE,
+                                x_mean = NULL) {
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   U_hat <- fit_result[[paste0("U_", covariate_name, "_hat")]]
   if (is.null(W_obj) || is.null(U_hat)) {
@@ -351,11 +376,196 @@ amm_evaluate_smooth <- function(fit_result, covariate_name, grid,
                         outer.ok = TRUE)
   W_new <- B_new %*% Z_scaled
   out   <- W_new %*% U_hat
+  if (center) {
+    ## W_obj's rows are the basis at the fitted subjects
+    out <- sweep(out, 2, as.numeric(colMeans(W_obj) %*% U_hat))
+  }
   if (include_linear && covariate_name %in% rownames(fit_result$beta_hat)) {
     beta_slope <- fit_result$beta_hat[covariate_name, ]
-    out <- out + outer(grid, beta_slope)
+    x_ref <- if (center) x_mean %||% .amm_x_mean(fit_result, covariate_name) else 0
+    out <- out + outer(grid - x_ref, beta_slope)
   }
   out
+}
+
+## ----- Parametric-bootstrap likelihood-ratio tests -----
+## Procedure and rationale: .claude/summaries/amm-null-model-bootstrap.md
+
+## Null models for the AMM tests, each nested in the full model (all linear
+## terms; age and pir smooths). "none" nulls drop fixed effects, so they are
+## compared by ML; "linear" nulls drop only a smooth (same fixed effects), so
+## REML is valid. Every null keeps a smooth, so fit_amm always fits with lme.
+amm_hypotheses <- function() {
+  hyps <- list(
+    male_none = list(
+      covariate = "male", label = "No effect", method = "ML",
+      linear_covariates = c("age", "pir"),
+      smooth_covariates = c("age", "pir")
+    ),
+    age_none = list(
+      covariate = "age", label = "No effect", method = "ML",
+      linear_covariates = c("male", "pir"),
+      smooth_covariates = "pir"
+    ),
+    age_linear = list(
+      covariate = "age", label = "Linear", method = "REML",
+      linear_covariates = c("male", "age", "pir"),
+      smooth_covariates = "pir"
+    ),
+    pir_none = list(
+      covariate = "pir", label = "No effect", method = "ML",
+      linear_covariates = c("male", "age"),
+      smooth_covariates = "age"
+    ),
+    pir_linear = list(
+      covariate = "pir", label = "Linear", method = "REML",
+      linear_covariates = c("male", "age", "pir"),
+      smooth_covariates = "age"
+    )
+  )
+  for (id in names(hyps)) hyps[[id]]$id <- id
+  hyps
+}
+
+## Likelihood of a fit_amm result (fits made before `method` existed are REML).
+.amm_method <- function(fit) fit$method %||% "REML"
+
+## Per-column likelihood-ratio statistics Lambda_k = max(0, -2 (l0_k - l1_k))
+## between a full and a null fit_amm result (same method), and their sum. A
+## column with no fit (none converged, even at the boundary) gives NA.
+.amm_lrt <- function(fit_alt, fit_null) {
+  stopifnot(.amm_method(fit_alt) == .amm_method(fit_null))
+  loglik <- function(fit) vapply(fit$fits, function(f) {
+    if (is.null(f)) NA_real_ else as.numeric(logLik(f))
+  }, numeric(1))
+  per_k <- pmax(0, -2 * (loglik(fit_null) - loglik(fit_alt)))
+  list(per_k = per_k, total = sum(per_k))
+}
+
+## Share of latent variance explained by the term a null model drops:
+## Delta R^2 = sum_k (RSS_0k - RSS_1k) / sum_k TSS_k, with fitted values that
+## include the smooths' BLUPs (R_mat). Unlike the LRT it does not grow with N,
+## so it measures effect size on one scale across tests. per_k divides by TSS_k.
+## Not clamped: a small negative value means the term explains nothing.
+amm_delta_r2 <- function(fit_alt, fit_null, Z) {
+  stopifnot(identical(fit_alt$keep, fit_null$keep))
+  Z_kept <- Z[fit_alt$keep, , drop = FALSE]
+  tss    <- colSums(sweep(Z_kept, 2, colMeans(Z_kept))^2)
+  d_rss  <- colSums(fit_null$R_mat^2) - colSums(fit_alt$R_mat^2)
+  list(per_k = d_rss / tss, total = sum(d_rss) / sum(tss))
+}
+
+## One bootstrap replicate of the LRT: simulate from the null fit (conditional
+## on its BLUPs), refit both models, return T* (NA on failure). Built by a
+## factory so the closure shipped to parallel workers carries only what it uses.
+.amm_make_boot_lrt_one <- function(fit_sim, covariates, null_spec, method,
+                                   n_knots_age, n_knots_pir) {
+  refit <- function(Z_, linear_covariates, smooth_covariates) {
+    fit_amm(Z_, covariates,
+            n_knots_age = n_knots_age, n_knots_pir = n_knots_pir,
+            linear_covariates = linear_covariates,
+            smooth_covariates = smooth_covariates,
+            method = method)
+  }
+  function(b) {
+    Z_b <- .amm_simulate_one(fit_sim)
+    tryCatch(suppressMessages({
+      fit_b_alt  <- refit(Z_b, c("male", "age", "pir"), c("age", "pir"))
+      fit_b_null <- refit(Z_b, null_spec$linear_covariates,
+                          null_spec$smooth_covariates)
+      .amm_lrt(fit_b_alt, fit_b_null)$total
+    }), error = function(e) NA_real_)
+  }
+}
+
+## Parametric-bootstrap LRT of a null model (an element of amm_hypotheses())
+## against the full AMM. T = sum_k Lambda_k; its null distribution comes from B
+## data sets simulated from the null fit, with both models refit to each.
+## fit_alt is the full model fit to (Z, covariates) with hypothesis$method (fit
+## here if NULL; pass it to share one full fit across tests). Failed replicates
+## are dropped (B_eff = B - n_fail); p_upper counts them as exceedances.
+## delta_r2 (amm_delta_r2) gives the effect size of the dropped term.
+amm_boot_lrt <- function(Z, covariates, hypothesis, fit_alt = NULL,
+                         B = 999, n_cores = 1, seed = 12345,
+                         n_knots_age = 10, n_knots_pir = 10) {
+  method <- hypothesis$method
+  if (is.null(fit_alt)) {
+    fit_alt <- fit_amm(Z, covariates, n_knots_age = n_knots_age,
+                       n_knots_pir = n_knots_pir, method = method)
+  }
+  stopifnot(.amm_method(fit_alt) == method,
+            setequal(fit_alt$linear_covariates, c("male", "age", "pir")),
+            setequal(fit_alt$smooth_covariates, c("age", "pir")))
+
+  ## Observed statistic
+  fit_null <- fit_amm(Z, covariates,
+                      n_knots_age = fit_alt$n_knots_age,
+                      n_knots_pir = fit_alt$n_knots_pir,
+                      linear_covariates = hypothesis$linear_covariates,
+                      smooth_covariates = hypothesis$smooth_covariates,
+                      method = method)
+  lrt_obs <- .amm_lrt(fit_alt, fit_null)
+  if (is.na(lrt_obs$total)) {
+    stop(str_glue("amm_boot_lrt ({hypothesis$id}): a column of the observed-data ",
+                  "fit failed, so T_obs is undefined."))
+  }
+  r2_obs <- amm_delta_r2(fit_alt, fit_null, Z)
+
+  ## Bootstrap null distribution
+  fit_sim <- fit_null[c("keep", "beta_hat", "X_design", "W_age", "W_pir",
+                        "U_age_hat", "U_pir_hat", "Sigma_E")]
+  boot_one <- .amm_make_boot_lrt_one(
+    fit_sim, covariates[fit_null$keep, , drop = FALSE], hypothesis, method,
+    fit_alt$n_knots_age, fit_alt$n_knots_pir
+  )
+  set.seed(seed)
+  T_boot <- if (n_cores > 1) {
+    old_plan <- future::plan(future::multisession, workers = n_cores)
+    on.exit(future::plan(old_plan), add = TRUE)
+    unlist(future.apply::future_lapply(seq_len(B), boot_one, future.seed = TRUE))
+  } else {
+    vapply(seq_len(B), boot_one, numeric(1))
+  }
+
+  T_obs    <- lrt_obs$total
+  n_fail   <- sum(is.na(T_boot))
+  B_eff    <- B - n_fail
+  n_exceed <- sum(T_boot >= T_obs, na.rm = TRUE)
+  if (n_fail > 0) {
+    warning(str_glue("amm_boot_lrt ({hypothesis$id}): {n_fail} of {B} replicates ",
+                     "failed and were dropped; see p_upper."))
+  }
+
+  list(
+    id          = hypothesis$id,
+    covariate   = hypothesis$covariate,
+    label       = hypothesis$label,
+    method      = method,
+    T_obs       = T_obs,
+    T_obs_per_k = lrt_obs$per_k,
+    T_boot      = T_boot,
+    B           = B,
+    B_eff       = B_eff,
+    n_fail      = n_fail,
+    n_exceed    = n_exceed,
+    p_value     = (1 + n_exceed) / (B_eff + 1),
+    p_upper     = (1 + n_exceed + n_fail) / (B + 1),
+    p_floor     = 1 / (B_eff + 1),
+    delta_r2       = r2_obs$total,
+    delta_r2_per_k = r2_obs$per_k
+  )
+}
+
+## p-value text for an amm_boot_lrt result: "<floor" when no replicate reaches
+## T_obs (the smallest attainable p is 1 / (B_eff + 1)), else the point value.
+## prefix = TRUE gives "p < ..." / "p = ..."; drop_leading_zero gives ".03".
+amm_format_p <- function(res, prefix = FALSE, drop_leading_zero = FALSE) {
+  bound <- res$n_exceed == 0
+  num   <- trimws(formatC(if (bound) res$p_floor else res$p_value,
+                          digits = 2, format = "fg"))
+  if (drop_leading_zero) num <- sub("^0\\.", ".", num)
+  if (prefix) paste(if (bound) "p <" else "p =", num)
+  else paste0(if (bound) "<" else "", num)
 }
 
 
@@ -521,6 +731,42 @@ amm_plot_re_cov <- function(U_hat, K_, title_expr, path = NULL,
   par(mar = .trimmed_mar(bar_base, bar_main, "k", bar_ylab))
   barplot(log10(diag(Sigma_U)), names.arg = 1:K_, horiz = FALSE,
           xlab = "k", ylab = bar_ylab, main = bar_main)
+  invisible(NULL)
+}
+
+## Histogram of the bootstrap null distribution T* from amm_boot_lrt, with
+## T_obs marked in red and the p-value (and B_eff) in the top-right margin.
+## When T_obs lies far beyond T* (> off_scale x max T*), the x-axis keeps to T*
+## and T_obs is shown as a labelled arrow off the right edge.
+amm_plot_boot_hist <- function(res, path = NULL, main = "", xlab = "T",
+                               ylab = "Count", breaks = 40, off_scale = 1.25) {
+  if (!is.null(path)) {
+    png(path, width = 720, height = 480, pointsize = 14)
+    on.exit(dev.off(), add = TRUE)
+    par(mar = c(4, 4, 3, 1))
+  }
+  T_ok <- res$T_boot[!is.na(res$T_boot)]
+  mar  <- .trimmed_mar(par("mar"), main, xlab, ylab)
+  mar[3] <- max(mar[3], 1.2)   # room for the p-value label
+  old_mar <- par(mar = mar)
+  on.exit(par(old_mar), add = TRUE, after = FALSE)
+  obs_off <- res$T_obs > off_scale * max(T_ok)
+  xlim    <- range(if (obs_off) T_ok else c(T_ok, res$T_obs))
+  if (diff(xlim) == 0) xlim <- xlim + c(-0.5, 0.5)
+  hist(T_ok, breaks = breaks, col = "gray85", border = "white",
+       xlim = xlim, main = main, xlab = xlab, ylab = ylab)
+  if (obs_off) {
+    usr <- par("usr")
+    x0  <- usr[1] + 0.7 * diff(usr[1:2])
+    y0  <- usr[3] + 0.8 * diff(usr[3:4])
+    arrows(x0, y0, usr[2], y0, col = "red", lwd = 2, length = 0.06, xpd = NA)
+    text(x0, y0, sprintf("T = %.3g", res$T_obs), pos = 3, col = "red",
+         cex = par("cex.axis"))
+  } else {
+    abline(v = res$T_obs, col = "red", lwd = 2)
+  }
+  mtext(str_glue("{amm_format_p(res, prefix = TRUE)}  (B = {res$B_eff})"),
+        side = 3, line = 0.2, adj = 1, cex = par("cex.axis"))
   invisible(NULL)
 }
 
@@ -694,14 +940,16 @@ amm_replicate_z_at <- function(boot_reps, covariate_values) {
 
 ## J x K x B array of bootstrap smooth-curve evaluations on x_grid.
 amm_replicate_smooth_at <- function(boot_reps, covariate_name, x_grid,
-                                     include_linear = TRUE) {
+                                     include_linear = TRUE, center = FALSE,
+                                     x_mean = NULL) {
   B_ <- length(boot_reps)
   J_ <- length(x_grid)
   K_ <- ncol(boot_reps[[1]]$beta_hat)
   out <- array(NA_real_, dim = c(J_, K_, B_))
   for (b in seq_len(B_)) {
     out[, , b] <- amm_evaluate_smooth(boot_reps[[b]], covariate_name,
-                                      x_grid, include_linear = include_linear)
+                                      x_grid, include_linear = include_linear,
+                                      center = center, x_mean = x_mean)
   }
   out
 }
@@ -771,11 +1019,15 @@ amm_compute_band_qf_contrast <- function(fit_result, boot_reps,
 ## Bands are sup-t joint bands; joint_over = "x" calibrates a separate
 ## critical value per k (joint over the covariate within each panel), while
 ## "x_k" uses one critical value from the max over both the covariate and k
-## (joint across all panels).
+## (joint across all panels). center = TRUE (default) plots the curves, the
+## dashed linear part, and the replicates centered over the fitted subjects
+## (effect relative to the average subject); FALSE anchors the linear part at
+## x = 0, which makes the band width depend on that arbitrary anchor.
 amm_plot_latent_effects <- function(fit_result, covariate_name,
                                      x_grid = NULL, n_grid = 100,
                                      band = FALSE, alpha = 0.05,
                                      joint_over = c("x", "x_k"),
+                                     center = TRUE,
                                      boot_reps = NULL,
                                      covariates_df = NULL,
                                      ncol = NULL,
@@ -791,16 +1043,20 @@ amm_plot_latent_effects <- function(fit_result, covariate_name,
   range_x <- attr(W_obj, "range")
   if (is.null(x_grid)) x_grid <- seq(range_x[1], range_x[2], length.out = n_grid)
 
-  K_    <- ncol(fit_result$beta_hat)
-  f_mat <- amm_evaluate_smooth(fit_result, covariate_name, x_grid,
-                                include_linear = TRUE)
+  K_     <- ncol(fit_result$beta_hat)
+  x_mean <- if (center) .amm_x_mean(fit_result, covariate_name) else NULL
+  f_mat  <- amm_evaluate_smooth(fit_result, covariate_name, x_grid,
+                                include_linear = TRUE, center = center,
+                                x_mean = x_mean)
   edf_k    <- fit_result[[paste0("edf_", covariate_name)]]
   beta_lin <- fit_result$beta_hat[covariate_name, ]
+  x_lin    <- x_grid - (x_mean %||% 0)   # dashed linear part: beta * x_lin
 
   band_lo <- band_hi <- NULL
   if (isTRUE(band) && !is.null(boot_reps)) {
     sm_arr <- amm_replicate_smooth_at(boot_reps, covariate_name, x_grid,
-                                      include_linear = TRUE)
+                                      include_linear = TRUE, center = center,
+                                      x_mean = x_mean)
     if (joint_over == "x") {
       band_lo <- band_hi <- matrix(NA_real_, nrow = length(x_grid), ncol = K_)
       for (k in seq_len(K_)) {
@@ -835,14 +1091,14 @@ amm_plot_latent_effects <- function(fit_result, covariate_name,
               covariates_df[[covariate_name]][fit_result$keep] else NULL
 
   for (k in seq_len(K_)) {
-    y_vals <- c(f_mat[, k], beta_lin[k] * x_grid, band_lo[, k], band_hi[, k])
+    y_vals <- c(f_mat[, k], beta_lin[k] * x_lin, band_lo[, k], band_hi[, k])
     y_lim  <- range(y_vals, finite = TRUE)
     par(mar = .trimmed_mar(mar, panel_mains[k], xlab, ylab))
     plot(NULL, xlim = range(x_grid), ylim = y_lim,
          xlab = xlab, ylab = ylab, main = panel_mains[k])
     if (!is.null(band_lo)) draw_band(x_grid, band_lo[, k], band_hi[, k])
     abline(h = 0, col = "gray85", lty = 1)
-    lines(x_grid, beta_lin[k] * x_grid, col = "gray40", lwd = 0.75 * lwd, lty = 2)
+    lines(x_grid, beta_lin[k] * x_lin, col = "gray40", lwd = 0.75 * lwd, lty = 2)
     lines(x_grid, f_mat[, k], col = "black", lwd = lwd)
     if (!is.null(rug_x)) rug(rug_x, col = rgb(0, 0, 0, 0.2))
   }

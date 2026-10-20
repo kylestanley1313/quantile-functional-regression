@@ -1700,6 +1700,155 @@ if (run_generativity_diagnostics) {
 }
 
 
+## ========== AMM Inference ========== ##
+
+## Parametric-bootstrap LRTs of the null models in amm_hypotheses() against the
+## full AMM (see .claude/summaries/amm-null-model-bootstrap.md)
+
+run_amm_inference <- FALSE
+
+## Create directory
+dir_amm_inf <- file.path(dir_amm, 'inference')
+if (!dir.exists(dir_amm_inf)) dir.create(dir_amm_inf)
+path_amm_inf <- file.path(dir_amm_inf, 'amm_boot_lrt.rds')
+
+
+## ---------- Driver ----------
+
+B_inf <- 999  ## TODO: Increase this! (B = 999 -> smallest reportable p is <.001)
+
+if (run_amm_inference) {
+
+  ## Full model under ML for the no-effect tests; the REML fit (amm) serves
+  ## the linearity tests
+  amm_ml <- fit_amm(
+    Z_amm, covariates_amm,
+    n_knots_age = n_knots_age,
+    n_knots_pir = n_knots_pir,
+    method = "ML"
+  )
+  fit_alt <- list(REML = amm, ML = amm_ml)
+
+  hyps <- amm_hypotheses()
+  amm_lrts <- list()
+  for (j in seq_along(hyps)) {
+    h <- hyps[[j]]
+    message(str_glue("==== AMM bootstrap LRT: {h$id} ===="))
+    start <- Sys.time()
+    amm_lrts[[h$id]] <- amm_boot_lrt(
+      Z_amm, covariates_amm, h,
+      fit_alt = fit_alt[[h$method]],
+      B       = B_inf,
+      n_cores = 5,
+      seed    = 12345 + j
+    )
+    stop <- Sys.time()
+    print(stop - start)
+  }
+  saveRDS(amm_lrts, path_amm_inf)
+}
+
+
+## ---------- Results ----------
+
+if (file.exists(path_amm_inf)) {
+
+  amm_lrts <- readRDS(path_amm_inf)
+  cov_names_inf <- c(male = "Sex", age = "Age", pir = "Income")
+
+  ## Summary table
+  inference_tbl <- data.frame(
+    test      = names(amm_lrts),
+    covariate = unname(cov_names_inf[sapply(amm_lrts, `[[`, "covariate")]),
+    null      = sapply(amm_lrts, `[[`, "label"),
+    method    = sapply(amm_lrts, `[[`, "method"),
+    T_obs     = sapply(amm_lrts, `[[`, "T_obs"),
+    B_eff     = sapply(amm_lrts, `[[`, "B_eff"),
+    n_fail    = sapply(amm_lrts, `[[`, "n_fail"),
+    p_value   = sapply(amm_lrts, `[[`, "p_value"),
+    p_upper   = sapply(amm_lrts, `[[`, "p_upper"),
+    p_text    = sapply(amm_lrts, amm_format_p),
+    delta_r2  = sapply(amm_lrts, `[[`, "delta_r2"),
+    row.names = NULL
+  )
+  print(inference_tbl)
+  write.csv(
+    inference_tbl,
+    file.path(dir_amm_inf, 'amm_inference_summary.csv'),
+    row.names = FALSE
+  )
+
+  ## Per-column contributions Lambda_k to each T_obs
+  per_k_tbl <- data.frame(
+    k = seq_along(amm_lrts[[1]]$T_obs_per_k),
+    sapply(amm_lrts, `[[`, "T_obs_per_k")
+  )
+  print(per_k_tbl)
+  write.csv(
+    per_k_tbl,
+    file.path(dir_amm_inf, 'amm_inference_per_k.csv'),
+    row.names = FALSE
+  )
+
+  ## Per-column share of latent variance explained (Delta R^2_k)
+  per_k_r2_tbl <- data.frame(
+    k = seq_along(amm_lrts[[1]]$delta_r2_per_k),
+    sapply(amm_lrts, `[[`, "delta_r2_per_k")
+  )
+  print(per_k_r2_tbl)
+  write.csv(
+    per_k_r2_tbl,
+    file.path(dir_amm_inf, 'amm_inference_per_k_r2.csv'),
+    row.names = FALSE
+  )
+
+  ## LaTeX table: p-value and Delta R^2 (% of latent variance) per covariate
+  p_cell  <- function(id) amm_format_p(amm_lrts[[id]], drop_leading_zero = TRUE)
+  r2_cell <- function(id) {
+    r2 <- round(100 * amm_lrts[[id]]$delta_r2, 2)
+    sprintf("%.2f", if (r2 == 0) 0 else r2)   # avoid "-0.00"
+  }
+  inf_tbl_latex <- data.frame(
+    "Null Model" = c("No effect", "Linear"),
+    "Sex_p"      = c(p_cell("male_none"), "{---}"),
+    "Sex_r2"     = c(r2_cell("male_none"), "{---}"),
+    "Age_p"      = c(p_cell("age_none"), p_cell("age_linear")),
+    "Age_r2"     = c(r2_cell("age_none"), r2_cell("age_linear")),
+    "Income_p"   = c(p_cell("pir_none"), p_cell("pir_linear")),
+    "Income_r2"  = c(r2_cell("pir_none"), r2_cell("pir_linear"))
+  )
+  sink(file.path(dir_amm_inf, 'amm_inf_latex.txt'))
+  print(
+    kbl(inf_tbl_latex,
+        format = "latex",
+        booktabs = TRUE,
+        escape = FALSE,
+        align = c("l", rep("S", 6)),
+        caption = paste("Parametric bootstrap tests for the additive mixed",
+                        "model, with the share of latent variance explained",
+                        "by each dropped term ($\\Delta R^2$, \\%)"),
+        col.names = c("Null Model",
+                      rep(c("{$p$}", "{$\\Delta R^2$}"), 3))) %>%
+      add_header_above(c(" " = 1, "Sex" = 2, "Age" = 2, "Income" = 2)) %>%
+      kable_styling(latex_options = c("HOLD_position"))
+  )
+  sink()
+
+  ## Bootstrap null distributions (half width)
+  for (res in amm_lrts) {
+    fig_png(file.path(dir_amm_inf, str_glue('amm_boot_hist_{res$id}.png')),
+            3.25, 2.15)   # TODO: final printed height
+    fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+            cex_axis = fig_cex_axis)
+    amm_plot_boot_hist(
+      res,
+      main = str_glue("{cov_names_inf[[res$covariate]]}: {tolower(res$label)}")
+    )
+    dev.off()
+  }
+
+}
+
 
 ## ========== AMM Interpretation ========== ##
 
