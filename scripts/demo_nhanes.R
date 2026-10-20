@@ -907,10 +907,7 @@ for (cont_pred in names(cont_cov_labels)) {
 }
 
 
-
-## ========== Group Comparison ========== ##
-
-## ---------- Latent Traversal Plots ---------- ##
+##========== Latent Traversals ========== ##
 
 ## Sweep one latent coordinate across its empirical quantiles, holding the
 ## others at their mean, and decode. Characterizes what each direction of the
@@ -1012,8 +1009,7 @@ for (k_star in 1:K) {
 }
 
 
-
-## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
+## ========== Group Comparison ========== ##
 
 ## Set binary predictor
 bin_pred <- 'male'
