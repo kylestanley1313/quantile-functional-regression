@@ -1016,7 +1016,7 @@ for (k_star in 1:K) {
 ## ---------- Frequentist Group Comparison (via conditional Z-means) ---------- ##
 
 ## Set binary predictor
-bin_pred <- 'old'
+bin_pred <- 'male'
 run_latent_diagnostics <- FALSE
 run_generativity_diagnostics <- FALSE
 
@@ -1715,7 +1715,7 @@ if (!dir.exists(dir_amm_interp)) dir.create(dir_amm_interp)
 ## ---------- Driver ----------
 
 Ji_interp <- length(Qi_ctx$payload[[1]])
-B_interp  <- 20  ## TODO: Increase this!
+B_interp  <- 100  ## TODO: Increase this!
 
 amm_boots <- amm_boot_interpret(
   amm,
@@ -1727,7 +1727,7 @@ amm_boots <- amm_boot_interpret(
 
 ## Interpret continuous covariates
 cov_to_plot <- c('age', 'pir') # c('age', 'pir')
-fam_to_plot <- c('latent', 'qf', 'cdf', 'survival', 'moment', 'threshold', 'quantile')
+fam_to_plot <- c('latent')#, 'qf', 'cdf', 'survival', 'moment', 'threshold', 'quantile')
 
 ## Paper figures: same sizes and styling as the group comparison (gc_*
 ## settings above). Overlaid QF / CDF / survival plots (and their contrasts)
@@ -1744,10 +1744,10 @@ amm_cov_labels <- c(age = "Age", pir = "PIR")
 amm_legend_ncol <- 1
 ## Strip margins: bottom fits the x tick labels (the strips drop their x labels;
 ## the covariate is named in the caption); tops as for the group-comparison
-## strips (two-line titles in row 2 and the latent strip, one-line for moments)
+## strips (two-line titles in row 2, one-line for moments and the latent strip)
 amm_row2_mar   <- c(1.8, 3.2, 3.4, 0.5)
 amm_moment_mar <- c(1.8, 3.2, 2.2, 0.5)
-amm_latent_mar <- c(1.8, 3.2, 3.4, 0.5)
+amm_latent_mar <- c(1.8, 3.2, 2.2, 0.5)
 
 for (cov in cov_to_plot) {
 
@@ -1769,12 +1769,10 @@ for (cov in cov_to_plot) {
     K_amm <- ncol(amm$beta_hat)
     path_plot <- file.path(dir_amm_cov, str_glue("amm_{cov}_latent-effect.png"))
     gc_strip_png(path_plot, gc_full_w)
-    amm_plot_latent_effects(amm, cov, band = TRUE,
+    amm_plot_latent_effects(amm, cov, band = TRUE, joint_over = 'x_k',
                             boot_reps = amm_boots,
-                            covariates_df = covariates_amm,
                             ncol = K_amm,
-                            panel_mains = sprintf("k = %d\nedf = %.2f", seq_len(K_amm),
-                                                  amm[[paste0("edf_", cov)]]),
+                            panel_mains = sprintf("k = %d", seq_len(K_amm)),
                             xlab = "", ylab = "",
                             cex = fig_cex, mar = amm_latent_mar, mgp = NULL,
                             lwd = gc_lwd)

@@ -768,9 +768,14 @@ amm_compute_band_qf_contrast <- function(fit_result, boot_reps,
 ## ----- Latent-space effect curve plots -----
 
 ## Per-k smooth effect curves in z-space (one panel per latent dimension).
+## Bands are sup-t joint bands; joint_over = "x" calibrates a separate
+## critical value per k (joint over the covariate within each panel), while
+## "x_k" uses one critical value from the max over both the covariate and k
+## (joint across all panels).
 amm_plot_latent_effects <- function(fit_result, covariate_name,
                                      x_grid = NULL, n_grid = 100,
                                      band = FALSE, alpha = 0.05,
+                                     joint_over = c("x", "x_k"),
                                      boot_reps = NULL,
                                      covariates_df = NULL,
                                      ncol = NULL,
@@ -779,6 +784,7 @@ amm_plot_latent_effects <- function(fit_result, covariate_name,
                                      cex = NULL, mar = c(3, 3, 2, 1),
                                      mgp = c(1.8, 0.6, 0),
                                      lwd = 2, main = "") {
+  joint_over <- match.arg(joint_over)
   W_obj <- fit_result[[paste0("W_", covariate_name)]]
   if (is.null(W_obj))
     stop(str_glue("No smooth for '{covariate_name}' in fit_result."))
@@ -795,11 +801,20 @@ amm_plot_latent_effects <- function(fit_result, covariate_name,
   if (isTRUE(band) && !is.null(boot_reps)) {
     sm_arr <- amm_replicate_smooth_at(boot_reps, covariate_name, x_grid,
                                       include_linear = TRUE)
-    band_lo <- band_hi <- matrix(NA_real_, nrow = length(x_grid), ncol = K_)
-    for (k in seq_len(K_)) {
-      bd <- .amm_joint_band(sm_arr[, k, ], f_mat[, k], alpha)
-      band_lo[, k] <- bd$lo
-      band_hi[, k] <- bd$hi
+    if (joint_over == "x") {
+      band_lo <- band_hi <- matrix(NA_real_, nrow = length(x_grid), ncol = K_)
+      for (k in seq_len(K_)) {
+        bd <- .amm_joint_band(sm_arr[, k, ], f_mat[, k], alpha)
+        band_lo[, k] <- bd$lo
+        band_hi[, k] <- bd$hi
+      }
+    } else {
+      ## Stack (x, k) into one (J * K) x B grid; column-major flattening keeps
+      ## the replicate rows aligned with as.vector(f_mat)
+      mat_all <- matrix(sm_arr, nrow = length(x_grid) * K_)
+      bd <- .amm_joint_band(mat_all, as.vector(f_mat), alpha)
+      band_lo <- matrix(bd$lo, nrow = length(x_grid), ncol = K_)
+      band_hi <- matrix(bd$hi, nrow = length(x_grid), ncol = K_)
     }
   }
 
