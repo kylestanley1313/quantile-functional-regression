@@ -341,7 +341,7 @@ default_y_grid_two_group <- function(Qi_hat_0, Qi_hat_1,
 
 ## Decode a single latent vector to a length-Ji Qi vector via the pipeline.
 ## Which stage output `z` is taken to live in follows pipeline$latent ('z_rot'
-## by default, or 'c'); see the "Latent-space selection" block in src/utils.R.
+## by default, 'z' or 'c'); see the "Latent-space selection" block in src/utils.R.
 ## This is the single choke point for every decode in src/model/amm.R, so the
 ## whole AMM interpretation section follows the switch without further changes.
 .decode_z_vec <- function(pipeline, z, Ji) {

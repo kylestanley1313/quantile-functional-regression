@@ -87,6 +87,43 @@ binary_intervals <- function(model, alpha = 0.05) {
   )
 }
 
+## Roy-Bose simultaneous interval for one projection a^T beta, on the same
+## critical value as binary_intervals. The union-intersection bound covers all
+## a jointly, so a may be chosen from the data (e.g. a = beta_hat / ||beta_hat||)
+## without losing coverage. Returns a one-row data frame like binary_intervals.
+binary_interval_projection <- function(model, a, alpha = 0.05) {
+  beta_hat <- coef(model)["x", ]
+  N <- nrow(model$model)
+  K <- length(beta_hat)
+  a <- as.numeric(a)
+  stopifnot(length(a) == K)
+
+  n0    <- sum(model$model[, "x"] == 0)
+  n1    <- sum(model$model[, "x"] == 1)
+  n_eff <- n0 * n1 / (n0 + n1)
+
+  S_p      <- crossprod(residuals(model)) / (N - 2)
+  estimate <- sum(a * beta_hat)
+  se       <- sqrt(as.numeric(t(a) %*% S_p %*% a) / n_eff)
+  t_stat   <- abs(estimate) / se
+
+  F_crit  <- qf(1 - alpha, df1 = K, df2 = N - K - 1)
+  rb_crit <- sqrt((N - 2) * K / (N - K - 1) * F_crit)
+
+  F_stat <- (N - K - 1) / (K * (N - 2)) * t_stat^2
+  p_adj  <- pf(F_stat, df1 = K, df2 = N - K - 1, lower.tail = FALSE)
+
+  data.frame(
+    estimate    = estimate,
+    se          = se,
+    lower       = estimate - rb_crit * se,
+    upper       = estimate + rb_crit * se,
+    t_stat      = t_stat,
+    p_adj       = p_adj,
+    significant = (estimate - rb_crit * se > 0) | (estimate + rb_crit * se < 0)
+  )
+}
+
 ## Margin p-value legend geometry (inches): gap from plot box, ramp width, gap
 ## from ramp to tick labels
 binary_lgd_gap_in <- 0.12

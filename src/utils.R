@@ -266,7 +266,7 @@ compute_pwds <- function(
 ## fused inside the single `wame` stage, so there is no separate G/G_Q_star
 ## boundary. Update these indices if the stage layout changes.
 ##
-## Downstream models (binary, amm) can treat either `z_rot` or `c` as the latent
+## Downstream models (binary, amm) can treat `z_rot`, `z` or `c` as the latent
 ## representation; see the "Latent-space selection" block below.
 
 decode_z_to_Qi <- function(pipeline, z_list, Ji) {
@@ -434,6 +434,7 @@ encode_y_to_c <- function(pipeline, y_list) {
 ## `pipeline$latent` selects which stage output the downstream models (binary,
 ## amm, generativity) treat as the latent representation:
 ##   'z_rot' (default) -> stage 5, the PCA-rotated flow output
+##   'z'               -> stage 4, the unrotated flow output
 ##   'c'               -> stage 3, the wame coefficients
 ##
 ## Set it on the pipeline object (pipeline$latent <- 'c'); every consumer reads
@@ -450,6 +451,7 @@ encode_y_to_latent <- function(pipeline, y_list) {
   switch(
     .latent_of(pipeline),
     z_rot = encode_y_to_z(pipeline, y_list),
+    z     = encode_y_to_z(pipeline, y_list),
     c     = encode_y_to_c(pipeline, y_list),
     stop(str_glue("Unknown pipeline$latent: '{.latent_of(pipeline)}'"))
   )
@@ -459,6 +461,7 @@ decode_latent_to_Qi <- function(pipeline, latent_list, Ji) {
   switch(
     .latent_of(pipeline),
     z_rot = decode_z_rot_to_Qi(pipeline, latent_list, Ji),
+    z     = decode_z_to_Qi(pipeline, latent_list, Ji),
     c     = decode_c_to_Qi(pipeline, latent_list, Ji),
     stop(str_glue("Unknown pipeline$latent: '{.latent_of(pipeline)}'"))
   )
@@ -468,6 +471,7 @@ decode_latent_to_Qi_aug <- function(pipeline, latent_list, p_grid_aug, p_grid) {
   switch(
     .latent_of(pipeline),
     z_rot = decode_z_to_Qi_aug(pipeline, latent_list, p_grid_aug, p_grid),
+    z     = decode_z_to_Qi_aug(pipeline, latent_list, p_grid_aug, p_grid),
     c     = decode_c_to_Qi_aug(pipeline, latent_list, p_grid_aug, p_grid),
     stop(str_glue("Unknown pipeline$latent: '{.latent_of(pipeline)}'"))
   )
@@ -1738,19 +1742,22 @@ plot_generativity_boxes <- function(groups,
                                      ylab        = "log normalized generativity",
                                      main        = "",
                                      path        = NULL,
-                                     width       = 960,
-                                     height      = 720,
-                                     pointsize   = 14,
+                                     width       = 3.25,
+                                     height      = 2.15,
+                                     pointsize   = 7,
+                                     res         = 600,
                                      collapse    = FALSE,
                                      mar         = NULL,
-                                     medlwd      = NULL,
-                                     whisklty    = NULL) {
-  ## medlwd / whisklty: median line width and whisker line type (NULL: 1.5 and
-  ## solid for paper figures (path = NULL), else R's defaults of 3 and dashed)
-  ## Drawing to the caller's device (path = NULL, e.g. a fig_png() paper
-  ## figure), the default margins follow the current par: trimmed for an
-  ## omitted title / axis label (.trimmed_mar), with room for the K axis when
-  ## Ks is given. With a path, the original 4.5-line margins. mar overrides.
+                                     medlwd      = 1.5,
+                                     whisklty    = 1) {
+  ## medlwd / whisklty: median line width and whisker line type.
+  ## path = NULL draws to the caller's device (e.g. a fig_png() paper figure
+  ## with fig_par() set). With a path, opens a png at the paper figure spec of
+  ## demo_nhanes.R: width / height in inches at res dpi, pointsize the printed
+  ## text size, and fig_par()'s baseline title / label / tick sizes.
+  ## The default margins follow the current par: trimmed for an omitted title /
+  ## axis label (.trimmed_mar), with room for the K axis when Ks is given. mar
+  ## overrides.
   L <- length(groups)
   stopifnot(length(scores) == L)
   if (!is.null(Ks)) stopifnot(length(Ks) == L)
@@ -1778,19 +1785,20 @@ plot_generativity_boxes <- function(groups,
   offsets   <- if (S == 1) 0 else seq(-half_span, half_span, length.out = S)
   box_w     <- if (S == 1) 0.55 else min(0.18, (2 * half_span) / (S - 1) * 0.8)
 
-  if (!is.null(path)) png(path, width = width, height = height, pointsize = pointsize)
+  if (!is.null(path)) {
+    png(path, width = width, height = height, units = "in", res = res,
+        pointsize = pointsize)
+    fig_par(cex_main = 1.2, cex_lab = 1, cex = 1, cex_axis = 0.8)
+  }
   if (is.null(mar)) {
-    if (is.null(path)) {
-      mar <- .trimmed_mar(par("mar"), main, xlab, ylab)
-      ## Without an x label only the group names sit below the axis: fit them
-      if (.is_blank(xlab)) mar[1] <- par("mgp")[2] + 1.2 * par("cex.axis") + 0.1
-      if (!is.null(Ks)) mar[4] <- max(mar[4], par("mgp")[1] + 1)
-    } else {
-      mar <- c(4.5, 4.5, 3, if (is.null(Ks)) 2 else 4.5)
-    }
+    mar <- .trimmed_mar(par("mar"), main, xlab, ylab)
+    ## Without an x label only the group names sit below the axis: fit them
+    if (.is_blank(xlab)) mar[1] <- par("mgp")[2] + 1.2 * par("cex.axis") + 0.1
+    if (!is.null(Ks)) mar[4] <- max(mar[4], par("mgp")[1] + 1)
   }
   old_par <- par(mar = mar)
-  on.exit(par(old_par), add = TRUE)
+  ## Restore only the caller's device; our own png is closed below
+  if (is.null(path)) on.exit(par(old_par), add = TRUE)
 
   plot(NULL,
        xlim = c(0.5, L + 0.5),
@@ -1814,8 +1822,8 @@ plot_generativity_boxes <- function(groups,
               axes    = FALSE,
               col     = "gray85",
               border  = "black",
-              medlwd  = medlwd %||% if (is.null(path)) 1.5 else 3,
-              whisklty = whisklty %||% if (is.null(path)) 1 else 2)
+              medlwd  = medlwd,
+              whisklty = whisklty)
     }
   }
 

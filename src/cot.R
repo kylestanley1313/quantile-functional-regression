@@ -71,6 +71,14 @@ integrate <- function(G, p_grid, p_star, Q_star) {  ## via trapezoidal rule
   Q
 }
 
+## SVD signs are arbitrary: orient each basis column so its last value (the
+## highest quantile level) is positive.
+fix_basis_signs <- function(E) {
+  flip <- E[nrow(E), ] < 0
+  E[, flip] <- -E[, flip]
+  E
+}
+
 compute_quantlets <- function(G_list, K, sqrt_w) {
   G_mat <- do.call(rbind, G_list)
 
@@ -78,7 +86,7 @@ compute_quantlets <- function(G_list, K, sqrt_w) {
   G_center <- colMeans(G_mat)
   G_mat_c  <- scale(G_mat, center = G_center, scale = FALSE)
   svd_res  <- irlba(sweep(G_mat_c, 2, sqrt_w, '*'), nv = K, nu = 0)
-  E        <- svd_res$v / sqrt_w
+  E        <- fix_basis_signs(svd_res$v / sqrt_w)
   sd_k     <- svd_res$d[1:K] / sqrt(nrow(G_mat) - 1)
   list(E = E, G_center = G_center, sd_k = sd_k)
 }
@@ -88,7 +96,7 @@ compute_q_pcs <- function(Q_list, K, sqrt_w) {
   Q_center <- colMeans(Q_mat)
   Q_mat <- scale(Q_mat, center = Q_center, scale = FALSE)
   svd_res <- irlba(sweep(Q_mat, 2, sqrt_w, '*'), nv = K, nu = 0)
-  E <- svd_res$v / sqrt_w
+  E <- fix_basis_signs(svd_res$v / sqrt_w)
   sd_k <- svd_res$d[1:K] / sqrt(nrow(Q_mat) - 1)
   list(E = E, Q_center = Q_center, sd_k = sd_k)
 }
@@ -959,30 +967,32 @@ fit_fun_eqf_cgrid <- function(context, state, ...) {
     ratio_trans <- function(x, ...) x
   }
   
-  ## Compute ratios for tail extrapolation
+  ## Compute ratios for tail extrapolation. With extrap = 'ratio' the ratio is
+  ## Q_j / Q_{j-1}; with 'ratio_of_diffs' it is
+  ## (Q_j - Q_{j-1}) / (Q_{j-1} - Q_{j-2}) (indices mirrored in the left tail).
+  extrap <- state$extrap %||% 'ratio'  ## pipelines saved before extrap existed
   exterior_scales <- vector('list', length(exterior_cols))
   names(exterior_scales) <- exterior_cols
   p_mid <- which.min(abs(p_grid - 0.5))
   ext_cols_left <- sort(exterior_cols[exterior_cols < p_mid], decreasing = TRUE)
   ext_cols_right <- sort(exterior_cols[exterior_cols > p_mid])
   for (j in c(ext_cols_left, ext_cols_right)) {
-    j_ <- ifelse(j < p_mid, j + 1, j - 1)
+    j_1 <- ifelse(j < p_mid, j + 1, j - 1)
+    j_2 <- ifelse(j < p_mid, j + 2, j - 2)
     I_j <- interior_sets[[as.character(j)]]  ## interior indices
-    E_j <- which(is.na(Q_mat[,j]))           ## exterior indices
+    ratio_vec <- switch(
+      extrap,
+      ratio = Q_mat[I_j,j] / Q_mat[I_j,j_1],
+      ratio_of_diffs =
+        (Q_mat[I_j,j] - Q_mat[I_j,j_1]) / (Q_mat[I_j,j_1] - Q_mat[I_j,j_2]),
+      stop(glue("Unknown extrap: '{extrap}'"))
+    )
     exterior_scales[[as.character(j)]] <- ratio_trans(
-      mean(ratio_trans(Q_mat[I_j,j] / Q_mat[I_j,j_])),
+      mean(ratio_trans(ratio_vec)),
       inverse = TRUE
     )
   }
-  # for (j in c(ext_cols_left, ext_cols_right)) {
-  #   j_1 <- ifelse(j < p_mid, j + 1, j - 1)
-  #   j_2 <- ifelse(j < p_mid, j + 2, j - 2)
-  #   I_j <- interior_sets[[as.character(j)]]  ## interior indices
-  #   E_j <- which(is.na(Q_mat[,j]))           ## exterior indices
-  #   ratio_vec <- (Q_mat[I_j,j] - Q_mat[I_j,j_1]) / (Q_mat[I_j,j_1] - Q_mat[I_j,j_2])
-  #   exterior_scales[[as.character(j)]] <- ratio_trans(mean(ratio_trans(ratio_vec)), inverse = TRUE)
-  # } 
-  
+
   state$exterior_scales <- exterior_scales
   state
 }
@@ -1012,21 +1022,20 @@ encode_fun_eqf_cgrid <- function(context, state) {
   p_mid <- which.min(abs(p_grid - 0.5))
   ext_cols_left <- sort(exterior_cols[exterior_cols < p_mid], decreasing = TRUE)
   ext_cols_right <- sort(exterior_cols[exterior_cols > p_mid])
+  extrap <- state$extrap %||% 'ratio'  ## pipelines saved before extrap existed
   for (j in c(ext_cols_left, ext_cols_right)) {
-    j_ <- ifelse(j < p_mid, j + 1, j - 1)
-    I_j <- interior_sets[[as.character(j)]]  ## interior indices
+    j_1 <- ifelse(j < p_mid, j + 1, j - 1)
+    j_2 <- ifelse(j < p_mid, j + 2, j - 2)
     E_j <- which(is.na(Q_mat[,j]))           ## exterior indices
-    Q_mat[E_j,j] <- state$exterior_scales[[as.character(j)]] * Q_mat[E_j,j_]
+    scale_j <- state$exterior_scales[[as.character(j)]]
+    Q_mat[E_j,j] <- switch(
+      extrap,
+      ratio = scale_j * Q_mat[E_j,j_1],
+      ratio_of_diffs =
+        Q_mat[E_j,j_1] + (Q_mat[E_j,j_1] - Q_mat[E_j,j_2]) * scale_j,
+      stop(glue("Unknown extrap: '{extrap}'"))
+    )
   }
-  # for (j in c(ext_cols_left, ext_cols_right)) {
-  #   j_1 <- ifelse(j < p_mid, j + 1, j - 1)
-  #   j_2 <- ifelse(j < p_mid, j + 2, j - 2)
-  #   I_j <- interior_sets[[as.character(j)]]  ## interior indices
-  #   E_j <- which(is.na(Q_mat[,j]))           ## exterior indices
-  #   Q_mat[E_j,j] <- Q_mat[E_j,j_1] + 
-  #     (Q_mat[E_j,j_1] - Q_mat[E_j,j_2]) * 
-  #     state$exterior_scales[[as.character(j)]]
-  # }
   
   Q_list <- asplit(Q_mat, MARGIN = 1)
   context$payload <- Q_list
@@ -1061,13 +1070,18 @@ decode_fun_eqf_cgrid <- function(context, state) {
   context
 }
 
-stage_eqf_cgrid <- function(p_grid = seq(0.01, 0.99, by = 0.01), Ji_min = 100, ratio_trans = NULL) {
+## extrap selects the tail extrapolation rule: 'ratio' scales the neighbouring
+## value, 'ratio_of_diffs' scales the neighbouring increment.
+stage_eqf_cgrid <- function(p_grid = seq(0.01, 0.99, by = 0.01), Ji_min = 100, ratio_trans = NULL,
+                            extrap = c('ratio_of_diffs', 'ratio')) {
+  extrap <- match.arg(extrap)
   new_stage(
     name = "eqf_cgrid",
     input_space = "Qi",
     output_space = "Q",
     requires_fit = TRUE,
-    init_state = list(p_grid = p_grid, Ji_min = Ji_min, ratio_trans = ratio_trans),
+    init_state = list(p_grid = p_grid, Ji_min = Ji_min, ratio_trans = ratio_trans,
+                      extrap = extrap),
     fit_fun = fit_fun_eqf_cgrid,
     encode_fun = encode_fun_eqf_cgrid,
     decode_fun = decode_fun_eqf_cgrid
