@@ -19,10 +19,11 @@ source('src/utils.R')
 ## ========== Representation Learning ========== ##
 
 ## Globals
-dir_art <- 'demo_nhanes_v6'
+dir_art <- 'demo_nhanes_v11'
 
 ## Latent representation used by the Group Comparison and AMM sections:
 ##   'z_rot' -> output of the PCA layer (stage 5)
+##   'z'     -> output of the flow layer (stage 4)
 ##   'c'     -> output of the WAME layer (stage 3)
 ## Analysis output directories are suffixed for anything other than z_rot, so
 ## the two runs sit side by side under the same dir_art (and therefore share a
@@ -34,7 +35,6 @@ suffix <- if (latent == 'z_rot') '' else str_glue('-{latent}')
 ## Load data
 path <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
 y_list <- readRDS(path)
-# y_list <- y_list[1:500]
 N <- length(y_list)
 Ji_vec <- lengths(y_list)
 Ji_max <- max(Ji_vec)
@@ -52,12 +52,10 @@ p_grid <- p_grid_fun(
 pipeline <- construct_pipeline(
   stages = list(
     stage_eqf_sgrid(),
-    stage_eqf_cgrid(p_grid = p_grid, Ji_min = 100),
+    stage_eqf_cgrid(p_grid = p_grid, Ji_min = 100, extrap = 'ratio'),
     stage_wame(
       K = 5,
-      K_max = 20,
-      epsilon = 1.45,
-      alpha = 0.05,
+      K_max = 30,
       V = 5,
       lambda = 0,
       order_by = 'importance'
@@ -75,7 +73,7 @@ pipeline <- construct_pipeline(
   p_star = 0,
   y_star = 0,
   y_min = 0,
-  seed = 12345
+  seed = 1234
 )
 
 ## Fitting
@@ -91,7 +89,7 @@ if (file.exists(path)) {
   saveRDS(pipeline, path)
 }
 pipeline$latent <- latent
-pipeline <- set_rotation_signs(pipeline, flip = c(1, 3))
+pipeline <- set_rotation_signs(pipeline, flip = c(1, 2, 3, 4, 5)) ## TODO: Generalize this function to any output layer
 pipeline <- set_c_signs(pipeline, flip = c(1))
 
 ## New context
@@ -119,6 +117,7 @@ y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 Z_latent <- switch(
   latent,
   z_rot = do.call(rbind, z_rot_ctx$payload),
+  z = do.call(rbind, z_ctx$payload),
   c     = c_ctx_to_matrix(pipeline, c_ctx),
   stop(str_glue("Unknown latent: '{latent}'"))
 )
@@ -145,9 +144,19 @@ fig_png <- function(path, width_in, height_in, pointsize = fig_pointsize) {
   png(path, width = width_in, height = height_in, units = "in",
       res = fig_res, pointsize = pointsize)
 }
+## Square size (inches) of a pairs-plot figure (plot_embeddings) of n_k
+## dimensions: fig_emb_panel_in per panel, so text, axes and points keep the
+## same proportions to the panels whatever the number of plotted dimensions
+## (5 dimensions -> 6.5in, full width).
+fig_emb_panel_in <- 1.3
+fig_emb_size <- function(n_k) fig_emb_panel_in * n_k
 
 
 ## ----- Visualize reconstructions
+
+## Create directory
+dir_rep_plots <- file.path('artifacts', dir_art, 'plots', 'representation')
+if (!dir.exists(dir_rep_plots)) dir.create(dir_rep_plots, recursive = TRUE)
 
 ## Compute reconstruction losses
 recon_losses <- numeric(N)
@@ -158,7 +167,7 @@ for (i in 1:N) {
   recon_losses[i] <- wasserstein(Q1, Q2, w)
 }
 
-set.seed(12345)
+set.seed(1234)
 
 lower_mat_3x5 <- matrix(
   c(0.00, 0.10, 0.20, 0.30, 0.40,
@@ -175,7 +184,7 @@ upper_mat_3x5 <- matrix(
 
 log_scale <- FALSE   # toggle: TRUE => plot on log(Q(p) + 1) scale
 
-path_plot <- file.path('artifacts', dir_art, 'plots', 'representation',
+path_plot <- file.path(dir_rep_plots,
                        sprintf('Qi-recon_grid_3x5%s.png',
                                if (log_scale) '_log' else ''))
 fig_png(path_plot, 6.5, 4)   # TODO: final printed size
@@ -186,6 +195,7 @@ plot_qi_recon_grid(
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
   log_x_plus_1  = log_scale,
+  share_ylim    = TRUE,
   cex_main      = fig_cex_main,
   cex_lab       = fig_cex_lab,
   cex           = fig_cex,
@@ -200,8 +210,8 @@ dev.off()
 ## Plotting globals
 mark_outliers <- FALSE
 include_legend <- FALSE
-k_from <- 1
-k_to <- 3
+ks_plot <- 1:5   # components to plot (any subset, e.g. c(1, 3, 5))
+w_emb   <- fig_emb_size(length(ks_plot))
 idx_outliers <- pipeline$training$meta$idx_outliers
 N_outlier <- length(idx_outliers)
 idx_train <- if (N_outlier > 0) -idx_outliers else seq_len(N)
@@ -210,13 +220,13 @@ col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
 
 ## Plot z-rot-embeddings
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots', 'representation',
+  dir_rep_plots,
   str_glue('data_z-rot.png')
 )
-fig_png(path_plot, 4.5, 4.5)   # TODO: final printed size
+fig_png(path_plot, w_emb, w_emb)
 Z_plot <- rbind(
-  do.call(rbind, z_rot_ctx$payload)[idx_train,k_from:k_to],
-  do.call(rbind, z_rot_ctx$payload)[idx_outliers,k_from:k_to]
+  do.call(rbind, z_rot_ctx$payload)[idx_train, ks_plot, drop = FALSE],
+  do.call(rbind, z_rot_ctx$payload)[idx_outliers, ks_plot, drop = FALSE]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -249,19 +259,20 @@ plot_embeddings(
   cex_lab = fig_cex_lab,
   cex = fig_cex,
   cex_axis = fig_cex_axis,
-  legend_cex = fig_cex_legend
+  legend_cex = fig_cex_legend,
+  ks = ks_plot
 )
 dev.off()
 
 ## Plot z-embeddings
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots', 'representation',
+  dir_rep_plots,
   str_glue('data_z.png')
 )
-fig_png(path_plot, 4.5, 4.5)   # TODO: final printed size
+fig_png(path_plot, w_emb, w_emb)
 Z_plot <- rbind(
-  do.call(rbind, z_ctx$payload)[idx_train,k_from:k_to],
-  do.call(rbind, z_ctx$payload)[idx_outliers,k_from:k_to]
+  do.call(rbind, z_ctx$payload)[idx_train, ks_plot, drop = FALSE],
+  do.call(rbind, z_ctx$payload)[idx_outliers, ks_plot, drop = FALSE]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -294,19 +305,20 @@ plot_embeddings(
   cex_lab = fig_cex_lab,
   cex = fig_cex,
   cex_axis = fig_cex_axis,
-  legend_cex = fig_cex_legend
+  legend_cex = fig_cex_legend,
+  ks = ks_plot
 )
 dev.off()
 
 ## Plot c-embeddings
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots', 'representation',
+  dir_rep_plots,
   str_glue('data_c.png')
 )
-fig_png(path_plot, 4.5, 4.5)   # TODO: final printed size
+fig_png(path_plot, w_emb, w_emb)
 C_plot <- rbind(
-  c_ctx_to_matrix(pipeline, c_ctx)[idx_train,k_from:k_to],
-  c_ctx_to_matrix(pipeline, c_ctx)[idx_outliers,k_from:k_to]
+  c_ctx_to_matrix(pipeline, c_ctx)[idx_train, ks_plot, drop = FALSE],
+  c_ctx_to_matrix(pipeline, c_ctx)[idx_outliers, ks_plot, drop = FALSE]
 )
 colors <- c(
   rep(col_train, N - N_outlier),
@@ -339,14 +351,15 @@ plot_embeddings(
   cex_lab = fig_cex_lab,
   cex = fig_cex,
   cex_axis = fig_cex_axis,
-  legend_cex = fig_cex_legend
+  legend_cex = fig_cex_legend,
+  ks = ks_plot
 )
 dev.off()
 
 
 ## Plot Q
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots', 'representation',
+  dir_rep_plots,
   str_glue('data_q.png')
 )
 fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
@@ -393,7 +406,7 @@ dev.off()
 ## NOTE: For Jeff's slides
 N_samp <- 500
 if (!is.null(N_samp)) {
-  set.seed(12345)
+  set.seed(1234)
 
   ## Compute overall mean
   Q_mean <- colMeans(do.call(rbind, Q_ctx$payload))
@@ -404,7 +417,7 @@ if (!is.null(N_samp)) {
 
   ## Plot
   path_plot <- file.path(
-    'artifacts', dir_art, 'plots', 'representation',
+    dir_rep_plots,
     str_glue('data_q-subsamp.png')
   )
   fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
@@ -451,7 +464,7 @@ if (!is.null(N_samp)) {
 
 ## Plot Qi
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots', 'representation',
+  dir_rep_plots,
   str_glue('data_qi.png')
 )
 fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
@@ -502,7 +515,7 @@ i <- 1
 p_idx_start <- 1
 p_idx_stop <- 100
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots', 'representation',
+  dir_rep_plots,
   str_glue('data_qi-v-q_i-{i}_p-{p_idx_start}-{p_idx_stop}.png')
 )
 pi_grid <- pi_grid_fun(Ji_vec[i])
@@ -550,69 +563,233 @@ points(
 dev.off()
 
 
-## ----- Visualize synthetic
+## ----- Check generativity
 
-## Globals
-K  <- pipeline$stages[[3]]$state$child_qg_pca$state$K
-Ji <- 7350
+## Unconditional generativity of the fitted pipeline, with the same procedure
+## and settings as assess_generativity_for_K.R (S splits x R replicates; per
+## replicate: fit the latent mean-cov model on a random train half, draw |val|
+## synthetic latents, decode, score G~ = log(T_sv / T_tv)). keep_draws = TRUE
+## stores every replicate's synthetic latents (~0.17 MB per replicate at K = 5)
+## so the examples below are the exact datasets behind boxplot points.
+##
+## The evaluation is cached in dir_gen; delete gen_res.rds to recompute after
+## refitting the pipeline or changing the settings below. Each parallel worker
+## holds its own copy of the pipeline (~500 MB) plus ~150 MB per OT solve.
+gen_S       <- 5
+gen_R       <- 20
+gen_seed    <- 1234
+gen_n_cores <- 3
+dir_gen <- file.path('artifacts', dir_art, 'plots', 'representation', 'generativity')
+if (!dir.exists(dir_gen)) dir.create(dir_gen, recursive = TRUE)
+path_gen <- file.path(dir_gen, 'gen_res.rds')
+if (file.exists(path_gen)) {
+  gen_res <- readRDS(path_gen)
+} else {
+  start <- Sys.time()
+  gen_res <- evaluate_unconditional_generativity(
+    pipeline, y_list,
+    S = gen_S, R = gen_R,
+    frac_train       = 0.5,
+    pool_subsample_n = NULL,
+    J_aug            = 500,
+    ridge            = 0,
+    seed             = gen_seed,
+    n_cores          = gen_n_cores,
+    keep_draws       = TRUE
+  )
+  print(Sys.time() - start)
+  saveRDS(gen_res, path_gen)
+}
 
-## Train/val split (same convention as evaluate_pipeline_generativity): fit the
-## latent mean-cov model on the train half, then draw |val| synthetic z's
-## and compare against the held-out real Qi.
-set.seed(12345)
-frac_train <- 0.5
-n_train    <- floor(frac_train * N)
-perm       <- sample(N)
-idx_tr     <- perm[seq_len(n_train)]
-idx_val    <- perm[(n_train + 1):N]
+## Pooled scores with their (split, replicate) of origin
+gen_scores <- do.call(rbind, lapply(seq_along(gen_res$splits), function(s) {
+  data.frame(split = s, rep = seq_along(gen_res$splits[[s]]$log_norm),
+             log_norm = gen_res$splits[[s]]$log_norm)
+}))
 
-fit     <- fit_mean_cov(encode_y_to_z(pipeline, y_list[idx_tr]), ridge = 0)
-z_draws <- sample_mean_cov(length(idx_val), fit)
-Qi_draws <- decode_z_to_Qi(pipeline, z_draws, Ji = Ji)
+## Examples: stratify the pooled scores by rank into n_gen_examples equal
+## strata (e.g. 10 -> deciles: ranks 1-10, 11-20, ..., 91-100 of S * R = 100;
+## 4 -> quartiles: 1-25, 26-50, ...) and draw one replicate at random from each,
+## so the examples span the typical to the worst synthetic datasets. Labels
+## 1, ..., n_gen_examples follow the strata (lowest scores first) and are
+## numbered on the boxplot.
+n_gen_examples <- 4
+n_gen_scores   <- nrow(gen_scores)
+stopifnot(n_gen_examples <= n_gen_scores)
+gen_strata <- split(seq_len(n_gen_scores),
+                    ceiling(seq_len(n_gen_scores) * n_gen_examples / n_gen_scores))
+set.seed(gen_seed)
+ranks  <- vapply(gen_strata, function(k) k[sample.int(length(k), 1)], integer(1))
+gen_ex <- gen_scores[order(gen_scores$log_norm)[ranks], ]
+gen_ex$label <- seq_len(nrow(gen_ex))
 
-## Plot
-col_real  <- rgb(0, 0, 0, alpha = 0.25)
-col_synth <- rgb(1, 0, 0, alpha = 0.25)
-path_plot <- file.path(
-  'artifacts', dir_art, 'plots', 'representation',
-  str_glue('synth_qi.png')
-)
-fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
-Qi_val    <- Qi_ctx$payload[idx_val]
-n_real    <- length(Qi_val)
-n_synth   <- length(Qi_draws)
-fun_list  <- c(Qi_val, Qi_draws)
-grid_list <- c(
-  lapply(Ji_vec[idx_val], pi_grid_fun),
-  lapply(rep(Ji, n_synth), pi_grid_fun)
-)
-colors <- c(rep(col_real, n_real), rep(col_synth, n_synth))
-widths <- rep(0.25, length(fun_list))
-types  <- rep(1,    length(fun_list))
-shuff     <- sample(length(fun_list))
-fun_list  <- fun_list[shuff]
-grid_list <- grid_list[shuff]
-colors    <- colors[shuff]
-color_width_type_labels <- data.frame(
-  color = c(col_real, col_synth),
-  width = c(2.5, 2.5),
-  type  = c(1, 1),
-  label = c('real (val)', 'synth')
-)
-plot_funs(
-  fun_list  = fun_list,
-  grid_list = grid_list,
-  colors    = colors,
-  widths    = widths,
-  types     = types,
-  color_width_type_labels = color_width_type_labels,
-  cex.lab = fig_cex_lab,
-  cex_main = fig_cex_main,
-  cex = fig_cex,
-  cex_axis = fig_cex_axis,
-  legend_cex = fig_cex_legend
+## Paneled paper figure (full width, 6.5in): the boxplot tall and thin on the
+## left, the n_gen_examples = 4 QF-space examples in a 2 x 2 grid to its right.
+## Each png is rendered at the size it is included at in LaTeX, so text sizes
+## match across panels: 1.4 + 2 * 2.5 = 6.4in wide (0.1in for gaps), and the
+## boxplot spans both example rows.
+gen_fig_ex_w  <- 2.5
+gen_fig_ex_h  <- 1.6
+gen_fig_box_w <- 1.4
+gen_fig_box_h <- 2 * gen_fig_ex_h
+
+## Boxplot of the pooled scores (one box: the scores are unconditional)
+K_fit <- pipeline$stages[[3]]$state$child_qg_pca$state$K
+fig_png(file.path(dir_gen, str_glue('gen_scores_K-{K_fit}.png')), gen_fig_box_w, gen_fig_box_h)
+fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+        cex_axis = fig_cex_axis)
+plot_generativity_boxes(
+  groups    = str_glue("K = {K_fit}"),
+  scores    = list(lapply(gen_res$splits, `[[`, "log_norm")),
+  hline     = 0,
+  ylab      = "Log norm. generativity",
+  main      = "",
+  collapse  = TRUE,
+  highlight = data.frame(group = 1, value = gen_ex$log_norm, label = gen_ex$label)
 )
 dev.off()
+
+## Example plots: each selected replicate's held-out real QFs (black) vs its
+## decoded synthetic QFs (green), titled with its number on the boxplot and
+## its G~. Same plot style as the group-comparison generativity examples.
+## Half-width paper figures.
+##
+## Each example is also shown in z-rot space (pairs plot of the first
+## n_gen_k_plot components, same layout as data_z-rot.png): held-out real
+## subjects vs the synthetic latents that produced the QFs. And in c space
+## (gen-ex_{i}_c*.png, same layout as data_c.png): the same synthetic latents
+## decoded back through the flow vs the held-out subjects' encoded c.
+##
+## gen_outlier_w2: synthetic QFs at least this W2 distance from the mean
+## training-half QF are flagged (orange) in extra *_outliers.png versions of
+## both plots, alongside the plain unflagged ones; NULL gives only the plain
+## plots.
+## For scale, the real subjects farthest from the mean QF sit at W2 ~ 20-25.
+n_gen_k_plot   <- min(5, ncol(Z_latent))
+gen_outlier_w2 <- 30
+col_gen_real    <- adjustcolor("black",   0.25)
+col_gen_synth   <- adjustcolor("#1B9E77", 0.25)
+col_gen_outlier <- "#D95F02"
+dir_gen_ex <- file.path(dir_gen, 'examples')
+if (!dir.exists(dir_gen_ex)) dir.create(dir_gen_ex, recursive = TRUE)
+if (!latent %in% c('z_rot', 'z')) {
+  stop("z-rot view of generativity examples assumes latent 'z_rot' or 'z'.")
+}
+Z_rot_all <- do.call(rbind, z_rot_ctx$payload)
+C_all     <- c_ctx_to_matrix(pipeline, c_ctx)
+
+## Pairs plot of held-out real vs synthetic latents in one embedding space
+## (z-rot or c), with outlying synthetic draws (is_out) drawn larger and on top.
+plot_gen_ex_embeddings <- function(path, A_real, A_synth, is_out, main,
+                                   leg_labels, leg_cols) {
+  n_real <- nrow(A_real)
+  ord_rs <- sample(n_real + sum(!is_out))   # interleave real / non-outlying synth
+  A_plot <- rbind(A_real, A_synth[!is_out, , drop = FALSE])[ord_rs, ]
+  colors <- c(rep(col_gen_real, n_real), rep(col_gen_synth, sum(!is_out)))[ord_rs]
+  sizes  <- rep(0.5, nrow(A_plot))
+  A_plot <- rbind(A_plot, A_synth[is_out, , drop = FALSE])   # outliers on top
+  colors <- c(colors, rep(col_gen_outlier, sum(is_out)))
+  sizes  <- c(sizes, rep(1, sum(is_out)))
+  w_emb_ex <- fig_emb_size(n_gen_k_plot)
+  fig_png(path, w_emb_ex, w_emb_ex)   # TODO: final printed size
+  par(oma = c(0, 0, 1.5, 0))
+  plot_embeddings(
+    A_plot[, seq_len(n_gen_k_plot), drop = FALSE],
+    colors = colors,
+    shapes = rep(16, nrow(A_plot)),
+    sizes  = sizes,
+    color_shape_size_labels = NULL,
+    stats = FALSE,
+    cex_main = fig_cex_main,
+    cex_lab = fig_cex_lab,
+    cex = fig_cex,
+    cex_axis = fig_cex_axis
+  )
+  ## plot_embeddings restores mfrow's automatic text shrink on exit; undo it
+  ## so the title and legend match the other figures.
+  par(cex = fig_cex)
+  mtext(main, side = 3, outer = TRUE, cex = fig_cex_main)
+  ## Legend in the empty upper-right triangle of the pairs grid
+  par(fig = c(0.5, 1, 0.5, 1), new = TRUE, mar = c(0, 0, 0, 0))
+  plot.new()
+  legend("center", legend = leg_labels, col = leg_cols, pch = 16,
+         pt.cex = 1.2, cex = fig_cex_legend, bty = "n")
+  dev.off()
+}
+
+for (j in seq_len(nrow(gen_ex))) {
+  s_ex <- gen_ex$split[j]
+  r_ex <- gen_ex$rep[j]
+  i    <- str_glue("{j}")   # file tag
+  ex   <- generativity_replicate(gen_res, pipeline, y_list, s = s_ex, r = r_ex)
+  main_gen <- bquote(.(paste0("(", j, ")")) ~~ tilde(G) == .(sprintf("%.2f", ex$log_norm)))
+  is_out_w2 <- if (is.null(gen_outlier_w2)) rep(FALSE, length(ex$w2_synth)) else
+    ex$w2_synth >= gen_outlier_w2
+
+  ## z-rot space. With latent 'z_rot' or 'z', the synthetic draws live in the
+  ## flow output (stage 4), so rotate them with the PCA stage; real held-out
+  ## subjects come from the already-encoded z_rot.
+  Z_rot_synth <- do.call(rbind, encode(
+    pipeline,
+    new_context(asplit(ex$z_draws, 1), pipeline$training$cache, list()),
+    from = 4, to = 5
+  )$payload)
+  Z_rot_real <- Z_rot_all[ex$idx_val, , drop = FALSE]
+
+  ## c space (WAME output, stage 3): decode the synthetic flow-output draws back
+  ## through the flow; real held-out subjects come from the already-encoded c.
+  ## Both in the pipeline's c sign convention (c_ctx_to_matrix).
+  C_synth <- c_ctx_to_matrix(pipeline, decode(
+    pipeline,
+    new_context(asplit(ex$z_draws, 1), pipeline$training$cache, list()),
+    from = 4, to = 3
+  ))
+  C_real <- C_all[ex$idx_val, , drop = FALSE]
+
+  ## Each example is drawn twice: plain, every synthetic draw in the same color
+  ## (gen-ex_{i}*.png), and with outliers highlighted (gen-ex_{i}*_outliers.png).
+  ## Only the plain version when outlier flagging is disabled.
+  hl_modes <- if (is.null(gen_outlier_w2)) FALSE else c(FALSE, TRUE)
+  for (hl in hl_modes) {
+    is_out <- if (hl) is_out_w2 else rep(FALSE, length(is_out_w2))
+    sfx    <- if (hl) "_outliers" else ""
+
+    ## QF space. No legend at panel size (the LaTeX caption explains the
+    ## colors); when highlighting, the outlier count goes in the title instead.
+    main_gen_qf <- if (!hl) main_gen else {
+      n_out <- sum(is_out)
+      bquote(.(main_gen) * "," ~~ .(sprintf("%d %s", n_out, if (n_out == 1) "outlier" else "outliers")))
+    }
+    fig_png(file.path(dir_gen_ex, str_glue('gen-ex_{i}{sfx}.png')),
+            gen_fig_ex_w, gen_fig_ex_h)
+    fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+            cex_axis = fig_cex_axis)
+    plot_generativity_example(
+      ex,
+      main = main_gen_qf,
+      show_legend = FALSE,
+      outlier_w2 = if (hl) gen_outlier_w2 else NULL,
+      col_outlier = col_gen_outlier
+    )
+    dev.off()
+
+    ## z-rot and c spaces
+    leg_labels <- c("real (val)", "synthetic")
+    leg_cols   <- c("black", "#1B9E77")
+    if (hl) {
+      leg_labels <- c(leg_labels, sprintf("synthetic outlier (n = %d)", sum(is_out)))
+      leg_cols   <- c(leg_cols, col_gen_outlier)
+    }
+    plot_gen_ex_embeddings(
+      file.path(dir_gen_ex, str_glue('gen-ex_{i}_z-rot{sfx}.png')),
+      Z_rot_real, Z_rot_synth, is_out, main_gen, leg_labels, leg_cols
+    )
+    plot_gen_ex_embeddings(
+      file.path(dir_gen_ex, str_glue('gen-ex_{i}_c{sfx}.png')),
+      C_real, C_synth, is_out, main_gen, leg_labels, leg_cols
+    )
+  }
+}
 
 
 
@@ -654,7 +831,7 @@ mean_f <- approx(
 
 ## Plotting
 path_plot <- file.path(
-  'artifacts', dir_art, 'plots', 'representation',
+  dir_rep_plots,
   str_glue('frechet_nhanes.png')
 )
 fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
@@ -759,6 +936,46 @@ get_plot_name_for_cov <- function(cov, other_cov = FALSE) {
   name_map[[cov]]
 }
 
+
+############## Temporary ####################
+
+# B <- 100
+
+# ## Male - female contrast of mean QFs, computed directly on the smooth EQFs on
+# ## the common grid (Q_ctx). Joint (sup-t over p) bands from a nonparametric
+# ## bootstrap that resamples subjects with replacement within each sex.
+# Q_mat <- do.call(rbind, Q_ctx$payload)
+# idx_m <- which(df_cov$male == 1)
+# idx_f <- which(df_cov$male == 0)
+
+# Q_diff_hat <- colMeans(Q_mat[idx_m, ]) - colMeans(Q_mat[idx_f, ])
+
+# set.seed(1234)
+# Q_diff_boot <- t(replicate(B, {
+#   colMeans(Q_mat[sample(idx_m, replace = TRUE), ]) -
+#     colMeans(Q_mat[sample(idx_f, replace = TRUE), ])
+# }))
+# Q_diff_band <- .draws_band(Q_diff_boot, Q_diff_hat, alpha = 0.05,
+#                            band_type = "joint")
+
+# ## Plot
+# fig_png(file.path(dir_eda, 'eda_Q-mean-contrast_male_boot.png'), 3.25, 2.15)   # TODO: final printed size
+# fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+#         cex_axis = fig_cex_axis)
+# plot(
+#   NULL,
+#   xlim = range(p_grid),
+#   ylim = range(c(Q_diff_band$lo, Q_diff_band$hi, 0)),
+#   xlab = "p",
+#   ylab = "Q(p) Contrast (M - F)"
+# )
+# draw_band(p_grid, Q_diff_band$lo, Q_diff_band$hi)
+# abline(h = 0, col = "red", lty = 3)
+# lines(p_grid, Q_diff_hat, lwd = 1.5)
+# dev.off()
+
+#############################################
+
 ## Plot QFs color-coded by covariate level
 for (bin_pred in c('old', 'male', 'low_income')) {
 
@@ -766,7 +983,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
   k_to <- 2
 
   ## Plot: QF
-  set.seed(12345)
+  set.seed(1234)
   path_plot <- file.path(
     dir_eda,
     str_glue('eda_Qi_{bin_pred}.png')
@@ -811,7 +1028,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
   dev.off()
 
   ## Plot: z-rot-embeddings
-  set.seed(12345)
+  set.seed(1234)
   path_plot <- file.path(
     dir_eda,
     str_glue('eda_z-rot_{bin_pred}.png')
@@ -863,7 +1080,7 @@ cont_cov_labels <- c(age = 'Age', pir = 'PIR')
 for (cont_pred in names(cont_cov_labels)) {
 
   ## Plot: QF
-  set.seed(12345)
+  set.seed(1234)
   path_plot <- file.path(
     dir_eda,
     str_glue('eda_Qi_{cont_pred}.png')
@@ -907,7 +1124,7 @@ for (cont_pred in names(cont_cov_labels)) {
 }
 
 
-##========== Latent Traversals ========== ##
+## ========== Latent Component-Wise Traversals ========== ##
 
 ## Sweep one latent coordinate across its empirical quantiles, holding the
 ## others at their mean, and decode. Characterizes what each direction of the
@@ -1012,9 +1229,9 @@ for (k_star in 1:K) {
 ## ========== Group Comparison ========== ##
 
 ## Set binary predictor
-bin_pred <- 'male'
+bin_pred <- 'old'
 run_latent_diagnostics <- FALSE
-run_generativity_diagnostics <- FALSE
+run_generativity_diagnostics <- TRUE
 
 ## Covariate names for plotting
 gp1_name <- get_plot_name_for_cov(bin_pred, FALSE)
@@ -1213,12 +1430,130 @@ quantile_levels <- list(
   )
 )
 
+## ----- Latent Traversal: Mean-Difference
+
+## For two groups the latent mean difference lies along the single direction
+## u = beta_hat / ||beta_hat||. Sweep the projections s_i = Z_i^T u across their
+## sample deciles, holding the orthogonal complement at the sample mean (the
+## component-wise traversal in a basis whose first axis is u), and decode. This
+## shows what the direction means at population scale; the two group means are
+## overlaid (dashed) with their percentile ranks in s to show the effect size.
+## u is chosen from the data, but Roy-Bose intervals cover every projection
+## a^T beta jointly, so the interval for u^T beta keeps its simultaneous
+## coverage.
+
+## Roy-Bose interval for the projection onto the mean-difference direction
+beta_hat <- coef(model)["x", ]
+u_md     <- beta_hat / sqrt(sum(beta_hat^2))
+res_rb_md <- binary_interval_projection(model, u_md)
+print(res_rb_md)
+
+## Append to the saved results
+sink(file.path(dir_gc, str_glue('mod_{bin_pred}.txt')), append = TRUE)
+print("========== Roy-Bose: mean-difference projection ==========")
+print(res_rb_md)
+sink()
+
+## Projections onto u of the fitted sample, and of the two group means
+Z_gc    <- fitted(model) + residuals(model)
+s_md    <- as.numeric(Z_gc %*% u_md)
+z_bar   <- colMeans(Z_gc)
+s_bar   <- mean(s_md)
+z_gp    <- list(coef(model)["(Intercept)", ],
+                coef(model)["(Intercept)", ] + beta_hat)
+s_gp    <- sapply(z_gp, function(z) sum(z * u_md))
+pct_gp  <- 100 * ecdf(s_md)(s_gp)   # percentile rank of each group mean in s
+print(setNames(round(pct_gp, 1), c(gp0_name, gp1_name)))
+
+## Append the group-mean percentile ranks to the saved results
+sink(file.path(dir_gc, str_glue('mod_{bin_pred}.txt')), append = TRUE)
+print("========== Group-mean percentile ranks along u ==========")
+print(setNames(round(pct_gp, 1), c(gp0_name, gp1_name)))
+sink()
+
+## Decode z(q) = z_bar + (Q_s(q) - s_bar) * u at the deciles of s, followed by
+## the two group means projected onto the same line
+q_md  <- seq(0.1, 0.9, by = 0.1)
+s_pts <- c(quantile(s_md, q_md), s_gp)
+Z_md  <- t(sapply(s_pts, function(s) z_bar + (s - s_bar) * u_md))
+Ji    <- length(Qi_ctx$payload[[1]])
+Qi_md <- decode_latent_to_Qi(
+  pipeline,
+  latent_list = asplit(Z_md, MARGIN = 1),
+  Ji          = Ji
+)
+
+## Center each QF by subtracting the median (q = 0.5) QF
+idx_med <- which(q_md == 0.5)
+Qi_med  <- Qi_md[[idx_med]]
+Qi_md   <- lapply(Qi_md, function(q) q - Qi_med)
+idx_gp  <- length(q_md) + 1:2
+
+## Plot (same layout as the component-wise traversals)
+pi_grid <- pi_grid_fun(Ji)
+path_plot <- file.path(dir_gc, str_glue('traversal-md_{bin_pred}.png'))
+pal <- colorRampPalette(c("blue", "gray", "red"))(101)
+line_cols <- pal[round(q_md * 100) + 1]
+gp_ltys   <- c(2, 3)
+y_lim <- range(unlist(Qi_md))
+fig_png(path_plot, 2.15, 2.15)   # TODO: final printed size
+fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+        cex_axis = fig_cex_axis)
+## Legend: deciles of s, then the group means with their percentile ranks
+leg_args <- list(
+  "topleft",
+  legend  = c(sprintf("%.1f", q_md),
+              sprintf("%s (%.0f)", c(gp0_name, gp1_name), pct_gp)),
+  col     = c(line_cols, "black", "black"),
+  lty     = c(rep(1, length(q_md)), gp_ltys),
+  lwd     = c(rep(2, length(q_md)), 1.5, 1.5),
+  seg.len = 1.5,
+  ncol    = 3,
+  title   = "Quantile",
+  cex     = 0.8*fig_cex_legend,
+  bty     = "n"
+)
+## Raise the top of ylim so the legend clears every curve (as above)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = y_lim)
+usr <- par("usr")
+leg <- do.call(legend, c(leg_args, plot = FALSE))
+under_leg <- pi_grid <= leg$rect$left + leg$rect$w
+y_max_under <- max(sapply(Qi_md, function(q) max(q[under_leg])))
+f_leg <- leg$rect$h / diff(usr[3:4])
+pad   <- 0.02
+ext   <- 0.04
+c_    <- ext - (1 + 2 * ext) * (f_leg + pad)
+y_top <- (y_max_under + c_ * y_lim[1]) / (1 + c_)
+y_lim[2] <- max(y_lim[2], y_top)
+
+## Draw
+plot.window(xlim = c(0, 1), ylim = y_lim)
+axis(1)
+axis(2)
+box()
+title(
+  main = str_glue("Mean difference ({gp1_name})"),
+  xlab = "p",
+  ylab = "Q(p) - Q_0.5(p)"
+)
+for (i in seq_along(q_md)) {
+  lines(pi_grid, Qi_md[[i]], col = line_cols[i], lwd = 2)
+}
+for (g in 1:2) {
+  lines(pi_grid, Qi_md[[idx_gp[g]]], col = "black", lty = gp_ltys[g],
+        lwd = 1.5)
+}
+do.call(legend, leg_args)
+dev.off()
+
+
 ## ----- Conditional QF Plots
 
 ## --- Sampling distribution of conditional latent means
 
 alpha      <- 0.05
-mean_res   <- binary_sample_means(model, R = 1000, seed = 12345)
+mean_res   <- binary_sample_means(model, R = 1000, seed = 1234)
 z_hat_0    <- mean_res$z_hat_0
 z_hat_1    <- mean_res$z_hat_1
 z_draws_0  <- mean_res$z_draws_0
@@ -1740,7 +2075,7 @@ if (run_amm_inference) {
       fit_alt = fit_alt[[h$method]],
       B       = B_inf,
       n_cores = 5,
-      seed    = 12345 + j
+      seed    = 1234 + j
     )
     stop <- Sys.time()
     print(stop - start)
@@ -1867,12 +2202,12 @@ amm_boots <- amm_boot_interpret(
   covariates_kept = covariates_amm[amm$keep, , drop = FALSE],
   B               = B_interp,
   n_cores         = 5,
-  seed            = 12345
+  seed            = 1234
 )
 
 ## Interpret continuous covariates
 cov_to_plot <- c('age', 'pir') # c('age', 'pir')
-fam_to_plot <- c('latent')#, 'qf', 'cdf', 'survival', 'moment', 'threshold', 'quantile')
+fam_to_plot <- c('latent', 'quantile')#, 'qf', 'cdf', 'survival', 'moment', 'threshold', 'quantile')
 
 ## Paper figures: same sizes and styling as the group comparison (gc_*
 ## settings above). Overlaid QF / CDF / survival plots (and their contrasts)
@@ -2350,832 +2685,3 @@ plot_decoded_conditional_quantile_level_diff(
   size            = gc_size
 )
 dev.off()
-
-
-
-## ========== Hierarchical Clustering ========== ##
-
-## Ward clustering of the latent embeddings, characterized by decoding
-## embedding-space group means back to QF space, with a QF-space clustering as
-## a baseline. Outputs land in plots/hca/<latent> so that the c and z_rot runs
-## sit side by side rather than overwriting each other.
-
-## ---------- Helpers ---------- ##
-
-## Place every Qi on the shared augmented p-grid, as a J x N matrix. Subjects
-## have different Ji, so this is what makes them comparable pointwise.
-hca_qf_aug <- function(Qi_list, p_grid_aug, supp_Y) {
-  vapply(
-    Qi_list,
-    function(Qi) inv_eqf_cgrid(Qi, pi_grid_fun(length(Qi)), p_grid_aug, supp_Y),
-    numeric(length(p_grid_aug))
-  )
-}
-
-## Pairwise Wasserstein distances between QFs, as a `dist`, from the augmented
-## matrix above. The metric is a w-weighted L2, so scaling coordinates by
-## sqrt(w) reduces it to plain Euclidean distance and dist() does the O(N^2)
-## work in C -- the R-level loop in compute_pwds() is hopeless at N ~ 8k.
-hca_qf_dist <- function(Q_aug, p_grid_aug) {
-  w_aug <- get_quadrature_weights(p_grid_aug)
-  dist(sweep(t(Q_aug), 2, sqrt(w_aug), `*`))
-}
-
-## Wasserstein barycenter of the columns in `idx`. In one dimension the W2
-## barycenter has a closed form -- it is the pointwise mean of the quantile
-## functions -- so this is exact, not an iterative solve.
-hca_qf_barycenter <- function(Q_aug, idx) {
-  rowMeans(Q_aug[, idx, drop = FALSE])
-}
-
-## Relabel clusters 1..k manually: cutree() cluster i becomes cluster
-## `new_ids[i]`, so `new_ids` must be a permutation of the cutree() ids.
-hca_relabel_manual <- function(cl, new_ids) {
-  stopifnot(setequal(new_ids, cl), !anyDuplicated(new_ids))
-  new_ids[cl]
-}
-
-## Overlaid per-cluster densities of a covariate.
-hca_plot_density <- function(v, cl, cols, xlab, main, path) {
-  ok    <- !is.na(v)
-  dens  <- lapply(seq_along(cols), function(g) density(v[ok & cl == g]))
-  png(path, width = 960, height = 720, pointsize = 18)
-  plot(
-    NULL,
-    xlim = range(sapply(dens, function(d) range(d$x))),
-    ylim = c(0, max(sapply(dens, function(d) max(d$y)))),
-    xlab = xlab, ylab = 'density', main = main
-  )
-  for (g in seq_along(dens)) lines(dens[[g]], col = cols[g], lwd = 3)
-  legend(
-    'topright',
-    legend = str_glue('cluster {seq_along(cols)}'),
-    col = cols, lwd = 3, bty = 'n'
-  )
-  dev.off()
-}
-
-## Cluster-wise horizontal boxplots stacked vertically, with the pooled median
-## marked, drawn into the current device. Groups are passed in reverse because
-## boxplot() draws its first group at the bottom, and cluster 1 reads better at
-## the top.
-##
-## Args:
-##   show_names      label the cluster axis; turn off for all but the first of
-##                   several panels sharing that axis
-##   faint_outliers  draw outliers as small translucent dots, so that the
-##                   boxes stay readable when N is large
-##   show_n          print each cluster's non-missing count in the right margin
-##   hide_outliers   draw no outliers at all, which also limits the value
-##                   axis to the span of the whiskers so that a few extreme
-##                   points do not compress the boxes. Overrides
-##                   faint_outliers.
-##   mean_ci         overlay each cluster's mean (white diamond) and its 95%
-##                   t-interval (black bar). The reference line then marks the
-##                   pooled mean rather than the pooled median, so that it is
-##                   the quantity the intervals are compared against.
-##   labels          group names for the cluster axis, indexed by group id;
-##                   defaults to the ids themselves
-hca_draw_boxes <- function(v, cl, cols, xlab, main, ylab = 'cluster',
-                           show_names = TRUE, faint_outliers = FALSE,
-                           show_n = FALSE, hide_outliers = FALSE,
-                           mean_ci = FALSE, labels = seq_along(cols)) {
-  idx    <- rev(seq_along(cols))
-  groups <- lapply(idx, function(g) v[cl == g & !is.na(v)])
-  out_par <- if (faint_outliers) {
-    list(outpch = 16, outcex = 0.4, outcol = adjustcolor('black', alpha.f = 0.25))
-  }
-  do.call(boxplot, c(
-    list(
-      groups,
-      horizontal = TRUE,
-      names      = if (show_names) labels[idx] else rep('', length(idx)),
-      col        = cols[idx],
-      las        = 1,
-      xlab       = xlab,
-      ylab       = ylab,
-      main       = main,
-      outline    = !hide_outliers
-    ),
-    out_par
-  ))
-  if (mean_ci) {
-    abline(v = mean(v, na.rm = TRUE), lty = 3, lwd = 2)
-    m    <- vapply(groups, mean, numeric(1))
-    ## NA for a cluster of fewer than two, which then draws no bar
-    half <- vapply(
-      groups,
-      function(x) qt(0.975, max(length(x) - 1, 1)) * sd(x) / sqrt(length(x)),
-      numeric(1)
-    )
-    at <- seq_along(groups)
-    ## White casing keeps the bar visible on top of the box and median line
-    segments(m - half, at, m + half, at, lwd = 5, col = 'white', lend = 'butt')
-    segments(m - half, at, m + half, at, lwd = 2.5, lend = 'butt')
-    points(m, at, pch = 23, bg = 'white', cex = 0.9)
-  } else {
-    abline(v = median(v, na.rm = TRUE), lty = 3, lwd = 2)
-  }
-  if (show_n) hca_margin_n(lengths(groups))
-}
-
-## Counts in the right margin of a cluster-axis panel, one per row.
-hca_margin_n <- function(n) {
-  mtext(n, side = 4, at = seq_along(n), las = 1, line = 0.3,
-        cex = 0.7 * par('cex'), col = 'grey40')
-}
-
-## hca_draw_boxes() as a standalone png. `width` and `height` are in pixels at
-## 72 dpi; the file written is res / 72 times larger in each direction.
-hca_plot_boxes <- function(v, cl, cols, xlab, main, path,
-                           width = 960, height = 720, pointsize = 18,
-                           res = 72, mar = c(5, 5, 4, 2), ...) {
-  ## An individual empty cluster is fine (boxplot just leaves a gap), but an
-  ## all-missing covariate has no finite xlim and would error.
-  if (all(is.na(v))) {
-    warning(str_glue("hca_plot_boxes: '{xlab}' is entirely missing; skipping."))
-    return(invisible(NULL))
-  }
-  png(path, width = width * res / 72, height = height * res / 72,
-      pointsize = pointsize, res = res)
-  on.exit(dev.off(), add = TRUE)
-  par(mar = mar)
-  hca_draw_boxes(v, cl, cols, xlab = xlab, main = main, ...)
-}
-
-## One figure summarizing every covariate by cluster: a row of panels sharing
-## the cluster axis (cluster 1 at the top). A binary covariate gets a bar per
-## cluster for its proportion; a continuous one gets cluster-wise boxplots
-## without outliers, overlaid with each cluster's mean and 95% CI. The dotted line is the pooled proportion / mean, and the grey numbers
-## in each panel's right margin are the non-missing counts behind each row,
-## since missingness differs by covariate and by cluster.
-##
-## `cl` may hold any grouping coded 1..length(cols), not just clusters: pass
-## the group names as `labels` and the axis title as `group_lab`, and the left
-## margin widens to fit the names.
-hca_plot_cov_summary <- function(covs, cl, cols, path,
-                                 width = 1200, height = 520, pointsize = 16,
-                                 res = 288, labels = NULL,
-                                 group_lab = 'cluster') {
-  covs <- as.data.frame(covs)
-  k    <- length(cols)
-  idx  <- rev(seq_len(k))
-  png(path, width = width * res / 72, height = height * res / 72,
-      pointsize = pointsize, res = res)
-  on.exit(dev.off(), add = TRUE)
-  ## Cluster labels live in the outer margin so that all panels are equally
-  ## wide. mfrow shrinks cex for a row this long, so set it back explicitly.
-  par(mfrow = c(1, ncol(covs)), mar = c(4, 0.8, 2.5, 2.6),
-      mgp = c(2.4, 0.7, 0), cex = 0.8)
-  if (is.null(labels)) {
-    labels   <- seq_len(k)
-    oma_left <- 3.5
-  } else {
-    ## Widest name, in margin lines, plus room for the tick and axis title
-    oma_left <- max(strwidth(labels, units = 'inches')) /
-      (par('mai')[1] / par('mar')[1]) + 2.5
-  }
-  par(oma = c(0, oma_left, 0, 0))
-  for (j in seq_len(ncol(covs))) {
-    v  <- covs[[j]]
-    nm <- names(covs)[j]
-    if (all(is.na(v))) {
-      warning(str_glue("hca_plot_cov_summary: '{nm}' is entirely missing."))
-      plot.new()
-      title(main = nm)
-      next
-    }
-    if (all(v[!is.na(v)] %in% c(0, 1))) {
-      prop <- vapply(idx, function(g) mean(v[cl == g], na.rm = TRUE), numeric(1))
-      ## Same row positions and bar width as boxplot(), so rows line up
-      plot(NULL, xlim = c(0, 1), ylim = c(0.5, k + 0.5), yaxt = 'n',
-           xlab = 'proportion', ylab = '', main = nm)
-      rect(0, seq_len(k) - 0.4, prop, seq_len(k) + 0.4, col = cols[idx])
-      axis(2, at = seq_len(k), labels = if (j == 1) labels[idx] else FALSE,
-           las = 1)
-      abline(v = mean(v, na.rm = TRUE), lty = 3, lwd = 2)
-      hca_margin_n(vapply(idx, function(g) sum(cl == g & !is.na(v)), numeric(1)))
-    } else {
-      hca_draw_boxes(v, cl, cols, xlab = '', main = nm, ylab = '',
-                     show_names = j == 1, show_n = TRUE,
-                     hide_outliers = TRUE, mean_ci = TRUE, labels = labels)
-    }
-  }
-  mtext(group_lab, side = 2, outer = TRUE, line = oma_left - 1.3, cex = 0.8)
-}
-
-## Move labels at heights `y` apart until neighbours are at least `gap` apart,
-## keeping each run of colliding labels centred on its original positions.
-hca_spread_labels <- function(y, gap) {
-  o   <- order(y)
-  ys  <- y[o]
-  grp <- seq_along(ys)
-  repeat {
-    pos <- ys
-    for (g in unique(grp)) {
-      i <- which(grp == g)
-      pos[i] <- mean(ys[i]) + (seq_along(i) - (length(i) + 1) / 2) * gap
-    }
-    clash <- which(diff(pos) < gap - 1e-9 & diff(grp) != 0)
-    if (length(clash) == 0) break
-    grp[grp == grp[clash[1] + 1]] <- grp[clash[1]]
-  }
-  y[o] <- pos
-  y
-}
-
-## --- Clustered-heatmap colour scales
-
-## Missing covariate values get their own colour rather than falling back on
-## white: in a binary column white is already 0, so NA would otherwise be
-## indistinguishable from it (low_income, say, inherits every pir NA). Orange
-## sits outside both covariate ramps and outside the green cluster rules.
-hca_na_col <- 'orange'
-
-## Black/white for a binary covariate.
-hca_cols_bw <- function(v, na_col = hca_na_col) {
-  out <- rep('white', length(v))
-  out[!is.na(v) & v == 1] <- 'black'
-  out[is.na(v)] <- na_col
-  out
-}
-
-## Greys for a continuous covariate.
-hca_grey_pal <- function(n = 256) gray.colors(n, start = 0.92, end = 0)
-hca_cols_grey <- function(v, n = 256, na_col = hca_na_col) {
-  pal <- hca_grey_pal(n)
-  rng <- range(v, na.rm = TRUE)
-  out <- rep(na_col, length(v))
-  ok  <- !is.na(v)
-  out[ok] <- if (diff(rng) > 0) {
-    pal[round((v[ok] - rng[1]) / diff(rng) * (n - 1)) + 1]
-  } else {
-    pal[1]
-  }
-  out
-}
-
-## Blue (negative) - white (zero) - red (positive) over [-lim, lim].
-hca_div_pal <- function(n = 255) colorRampPalette(c('blue', 'white', 'red'))(n)
-hca_cols_div <- function(v, lim, n = 255) {
-  if (!is.finite(lim) || lim <= 0) lim <- 1
-  vc <- pmax(pmin(v, lim), -lim)
-  hca_div_pal(n)[round((vc + lim) / (2 * lim) * (n - 1)) + 1]
-}
-
-## One labelled colour ramp in the key panel.
-hca_legend_ramp <- function(pal, y0, y1, title, labels) {
-  rasterImage(as.raster(matrix(rev(pal), ncol = 1)), 0.05, y0, 0.30, y1)
-  text(0.05, y1 + 0.035, title, adj = 0, font = 2)
-  text(0.34, seq(y1, y0, length.out = length(labels)), labels, adj = 0)
-}
-
-## Color each dendrogram branch that lies wholly inside one cluster with that
-## cluster's color; branches above the cut keep the default. `cl` is indexed by
-## observation, as returned by cutree(), and `cols` by cluster id.
-hca_color_dendrogram <- function(dend, cl, cols) {
-  rec <- function(node) {
-    if (is.leaf(node)) {
-      g <- cl[as.integer(node)]
-    } else {
-      gs <- integer(length(node))
-      for (i in seq_along(node)) {
-        child     <- rec(node[[i]])
-        node[[i]] <- child$node
-        gs[i]     <- child$g
-      }
-      g <- if (!anyNA(gs) && all(gs == gs[1])) gs[1] else NA_integer_
-    }
-    if (!is.na(g)) attr(node, 'edgePar') <- list(col = cols[g])
-    list(node = node, g = g)
-  }
-  rec(dend)$node
-}
-
-## Clustered heatmap: an N x (A + K) raster of covariate and latent values,
-## rows in dendrogram order with the tree drawn alongside (one leaf per row).
-## Columns are never re-ordered, so the latent block stays in component order.
-##
-## Args:
-##   hc         hclust whose leaves index the rows of `covs` and `Z`
-##   Z          N x K latent matrix. Each column gets its own symmetric scale,
-##              +/- max|Z[, k]|, so zero is white everywhere and every
-##              component is legible regardless of its variance.
-##   covs       data.frame of covariates, one per heatmap column, drawn left of
-##              the latent block in the order given
-##   cov_types  optional 'binary'/'continuous' per covariate; the default
-##              infers 'binary' when every non-NA value of a column is 0 or 1
-##   n_clusts   positive integer -> cutree(hc, n_clusts) to partition the rows;
-##              NULL (default) leaves the rows unmarked, the dendrogram
-##              uncolored, and makes the two flags below no-ops
-##   cl         optional cluster label per row, used in place of the raw
-##              cutree() ids so relabelled clusters print consistently with
-##              the other figures. Must be a relabelling of that same cut.
-##   cl_cols    color per cluster id, for the dendrogram branches; defaults
-##              to the 'Dark 3' palette used by the other figures
-##   cluster_lines   draw rules (in `line_col`) between the row blocks
-##   label_clusters  print each cluster's number in the right margin, centred
-##                   on its block
-##   na_col     colour for missing covariate values, in both column types
-##   z_labs     column labels for the Z block; defaults to 'k = 1..K'. Pass a
-##              mostly-'' vector when Z is wide (Qi on the augmented p-grid)
-##              so the axis stays readable.
-##   cov_frac   share of the plot width given to the covariate block; the
-##              default A/(A + K) makes every column equally wide, which is
-##              right for a K-column latent but squeezes the covariates to a
-##              sliver when K is in the hundreds
-##   path       output png
-##   width, height   figure size in pixels at 72 dpi; the file written is
-##                   res / 72 times larger in each direction
-##   res        resolution in dpi. Text, lines and layout scale with it, so
-##              raising it sharpens the figure without changing its look.
-hca_plot_heatmap <- function(hc, Z, covs, path,
-                            cov_types = NULL, n_clusts = NULL, cl = NULL,
-                            cl_cols = NULL,
-                            cluster_lines = TRUE, label_clusters = TRUE,
-                            line_col = 'green3',
-                            na_col = hca_na_col, z_labs = NULL,
-                            cov_frac = NULL,
-                            width = 1000, height = 1200, pointsize = 16,
-                            res = 288) {
-  covs <- as.data.frame(covs)
-  nr   <- nrow(Z)
-  A    <- ncol(covs)
-  K    <- ncol(Z)
-  stopifnot(nrow(covs) == nr, length(hc$order) == nr, A >= 1)
-
-  if (is.null(cov_types)) {
-    cov_types <- vapply(
-      covs,
-      function(v) if (all(v[!is.na(v)] %in% c(0, 1))) 'binary' else 'continuous',
-      character(1)
-    )
-  }
-  stopifnot(length(cov_types) == A,
-            cov_types %in% c('binary', 'continuous'))
-
-  ## vapply (not sapply/mapply) so a single covariate still yields a matrix
-  cols_cov <- vapply(
-    seq_len(A),
-    function(j) {
-      v <- covs[[j]]
-      if (cov_types[j] == 'binary') {
-        hca_cols_bw(v, na_col = na_col)
-      } else {
-        hca_cols_grey(v, na_col = na_col)
-      }
-    },
-    character(nr)
-  )
-  ## One symmetric scale per component: +/- max|Z[, k]|, so each column uses
-  ## the full blue-to-red range regardless of how much variance it carries.
-  lims <- apply(abs(Z), 2, max, na.rm = TRUE)
-  cols_lat <- vapply(
-    seq_len(K),
-    function(k) hca_cols_div(Z[, k], lims[k]),
-    character(nr)
-  )
-
-  ord      <- hc$order
-  cols_cov <- cols_cov[ord, , drop = FALSE]
-  cols_lat <- cols_lat[ord, , drop = FALSE]
-  if (is.null(z_labs)) z_labs <- paste('k =', seq_len(K))
-  stopifnot(length(z_labs) == K)
-  ## The two blocks are drawn as separate rasters on a [0, 1] axis so their
-  ## widths are independent of their column counts -- otherwise a wide Z (Qi
-  ## on the augmented p-grid, K ~ 500) squeezes the covariates to a sliver.
-  if (is.null(cov_frac)) cov_frac <- A / (A + K)
-  stopifnot(cov_frac > 0, cov_frac < 1)
-
-  dend <- as.dendrogram(hc)
-  if (!is.null(n_clusts)) {
-    stopifnot(length(n_clusts) == 1, n_clusts == round(n_clusts), n_clusts >= 1)
-    if (is.null(cl)) cl <- cutree(hc, k = n_clusts)
-    if (is.null(cl_cols)) cl_cols <- hcl.colors(n_clusts, palette = 'Dark 3')
-    stopifnot(length(cl) == nr, length(cl_cols) == n_clusts)
-    dend <- hca_color_dendrogram(dend, cl, cl_cols)
-  }
-
-  png(path, width = width * res / 72, height = height * res / 72,
-      pointsize = pointsize, res = res)
-  on.exit({dev.off(); layout(1)}, add = TRUE)
-  layout(matrix(1:3, nrow = 1), widths = c(1.1, 2.4, 0.9))
-
-  ## Dendrogram: yaxs = 'i' makes leaf i sit at y = i, matching the raster
-  par(mar = c(5, 2, 6, 0))
-  plot(dend, horiz = TRUE, axes = FALSE, yaxs = 'i', leaflab = 'none')
-
-  ## Heatmap. as.raster() draws its first row at the top, so flip to put
-  ## dendrogram-order row 1 at the bottom where the first leaf is.
-  ## Right margin holds the cluster numbers, between heatmap and key
-  par(mar = c(5, 0, 6, if (label_clusters) 2.5 else 1))
-  plot(NULL, xlim = c(0, 1), ylim = 0.5 + c(0, nr),
-      xaxs = 'i', yaxs = 'i', axes = FALSE, xlab = '', ylab = '')
-  rasterImage(as.raster(cols_cov[nr:1, , drop = FALSE]),
-              xleft = 0, ybottom = 0.5, xright = cov_frac, ytop = nr + 0.5,
-              interpolate = FALSE)
-  rasterImage(as.raster(cols_lat[nr:1, , drop = FALSE]),
-              xleft = cov_frac, ybottom = 0.5, xright = 1, ytop = nr + 0.5,
-              interpolate = FALSE)
-  ## Column centres in axis units, per block
-  at_cov <- (seq_len(A) - 0.5) / A * cov_frac
-  at_z   <- cov_frac + (seq_len(K) - 0.5) / K * (1 - cov_frac)
-  ## Two axis() calls over only the labelled positions: one call spanning both
-  ## blocks lets axis() thin out labels it judges too dense, which silently
-  ## drops the sparse p-marks used for a wide Z.
-  axis(3, at = at_cov, labels = names(covs), las = 2, tick = FALSE, line = -0.5)
-  keep <- nzchar(z_labs)
-  if (any(keep)) {
-    axis(3, at = at_z[keep], labels = z_labs[keep], las = 2,
-         tick = FALSE, line = -0.5)
-  }
-  abline(v = cov_frac, lwd = 2)
-  if (!is.null(n_clusts)) {
-    ## Clusters are contiguous in dendrogram order, so run-lengths give both
-    ## the cut points and each block's extent in one pass
-    runs <- rle(unname(cl[ord]))
-    stopifnot(length(runs$values) == n_clusts)
-    ends <- cumsum(runs$lengths)
-    if (cluster_lines) {
-      abline(h = head(ends, -1) + 0.5, col = line_col, lwd = 2)
-    }
-    if (label_clusters) {
-      ## mtext rather than axis() so no label is dropped when a block is thin
-      mids <- ends - (runs$lengths - 1) / 2
-      for (i in seq_along(mids)) {
-        mtext(runs$values[i], side = 4, at = mids[i], line = 0.6, las = 1)
-      }
-    }
-  }
-  box()
-
-  ## Key
-  par(mar = c(5, 1, 6, 1))
-  plot(NULL, xlim = c(0, 1), ylim = c(0, 1), axes = FALSE, xlab = '', ylab = '')
-  rect(0.05, c(0.90, 0.83), 0.30, c(0.96, 0.89),
-      col = c('white', 'black'), border = 'grey50')
-  text(0.05, 0.995, 'binary', adj = 0, font = 2)
-  text(0.34, c(0.93, 0.86), c('0', '1'), adj = 0)
-  hca_legend_ramp(hca_grey_pal(), 0.52, 0.74, 'continuous', c('max', 'min'))
-  ## Scale is per column, so the key shows sign rather than a shared bound
-  hca_legend_ramp(hca_div_pal(), 0.14, 0.36, 'latent', c('+', '0', '-'))
-  ## NA applies to the covariate columns only; latent values are never missing
-  rect(0.05, 0.035, 0.30, 0.085, col = na_col, border = 'grey50')
-  text(0.05, 0.115, 'missing', adj = 0, font = 2)
-  text(0.34, 0.06, 'NA', adj = 0)
-}
-
-
-## ---------- Settings ---------- ##
-
-# hca_latent   <- 'z_rot'      # 'c' or 'z_rot'
-# hca_k        <- 20        # set after eyeballing hca_dendrogram.png, then re-run
-
-hca_J_aug <- 500      # augmented p-grid size for the Qi representation
-
-## Shared by the four figures that make up the activity panel in LaTeX
-## (cluster-qfs-contrast.png over the three box-q*.png), so text sizes match.
-hca_pointsize <- 14
-hca_res       <- 288
-
-## Cluster Relabels, by representation and then k. Entry i is the new label
-## for cutree() cluster i, so 1:k keeps the default labeling. A representation
-## or k with no entry also keeps the default.
-cluster_relabels <- list(
-  'c' = list(
-    '11' = c(2, 3, 1, 8, 9, 7, 10, 4, 6, 5, 11)
-  )
-)
-
-## Phenotypes defined manually post-hoc
-phenotypes_to_clusters <- list(
-  'c' = list(
-    '11' = list(
-      'very active' = c(1, 2),
-      'moderately active' = c(3, 4, 5),
-      'weekend warrior' = c(6),
-      'frequent mover' = c(7),
-      'inactive' = c(8, 9, 10),
-      'very inactive' = c(11)
-    )
-  )
-)
-
-## Subject-level activity quantiles, boxplotted per cluster alongside the
-## covariates. These are a property of the data, not of the clustering, so
-## they are evaluated once rather than per representation or per k.
-hca_q_levels <- c(0.5, 0.75, 0.99)
-Q_lvl_hca <- t(hca_qf_aug(Qi_ctx$payload, hca_q_levels,
-                          pipeline$training$cache$supp_Y))
-
-## 'c' and 'z_rot' are latent embeddings; 'qi' clusters the quantile functions
-## themselves, on the augmented p-grid under the Wasserstein metric. Qi is not
-## a latent representation, so it skips the pairwise-embedding scatter plot --
-## every other figure is produced for it exactly as for the embeddings.
-for (hca_latent in c('c')) {
-
-  hca_is_qi     <- hca_latent == 'qi'
-  hca_rep_label <- switch(
-    hca_latent,
-    z_rot = 'z_rot-embeddings',
-    c     = 'c-embeddings',
-    qi    = 'Qi',
-    stop(str_glue("Unknown hca_latent: '{hca_latent}'"))
-  )
-
-  dir_hca <- file.path('artifacts', dir_art, 'plots', 'hca', hca_latent)
-  if (!dir.exists(dir_hca)) dir.create(dir_hca, recursive = TRUE)
-
-  ## NOTE: N, K, Ji, mask, x, y_grid, ... are all clobbered by earlier
-  ## sections, so every name introduced below carries an _hca suffix.
-  Ji_hca         <- length(Qi_ctx$payload[[1]])
-  pi_grid_hca    <- pi_grid_fun(Ji_hca)
-  p_grid_aug_hca <- sort(unique(c(
-    p_grid, pi_grid_fun(hca_J_aug - length(p_grid))
-  )))
-
-  ## Representation, metric, and cluster representative. The tree does not
-  ## depend on k, so it is built once per representation rather than once per
-  ## k -- the Qi distance matrix alone is ~8k x 8k.
-  start <- Sys.time()
-  if (hca_is_qi) {
-    ## Qi on the shared augmented grid; rows are subjects, as for a latent
-    Q_aug_hca <- hca_qf_aug(Qi_ctx$payload, p_grid_aug_hca,
-                            pipeline$training$cache$supp_Y)
-    Z_hca     <- t(Q_aug_hca)
-    d_hca     <- hca_qf_dist(Q_aug_hca, p_grid_aug_hca)
-    grid_hca  <- p_grid_aug_hca
-    ## In 1-D the W2 barycenter is the pointwise mean of the QFs, so it is the
-    ## exact analogue of decoding the mean of a cluster's embeddings.
-    hca_rep_mean <- function(idx) hca_qf_barycenter(Q_aug_hca, idx)
-  } else {
-    Z_hca <- switch(
-      hca_latent,
-      z_rot = do.call(rbind, z_rot_ctx$payload),
-      c     = c_ctx_to_matrix(pipeline, c_ctx)
-    )
-    d_hca    <- dist(Z_hca)
-    grid_hca <- pi_grid_hca
-    pipe_hca <- pipeline
-    pipe_hca$latent <- hca_latent
-    hca_rep_mean <- function(idx) {
-      z_bar <- colMeans(Z_hca[idx, , drop = FALSE])
-      decode_latent_to_Qi(pipe_hca, list(z_bar), Ji_hca)[[1]]
-    }
-  }
-  N_hca <- nrow(Z_hca)
-  K_hca <- ncol(Z_hca)
-  stopifnot(nrow(df_cov) == N_hca)
-
-  hc_hca <- hclust(d_hca, method = 'ward.D2')
-  ## dist objects are ~N^2/2 doubles; drop once the tree is built
-  rm(d_hca)
-  gc()
-  print(Sys.time() - start)
-
-  png(file.path(dir_hca, 'dendrogram.png'),
-      width = 1280, height = 720, pointsize = 14)
-  plot(hc_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
-       main = str_glue("Ward linkage on {hca_rep_label}"))
-  dev.off()
-
-  ## Heatmap Z block: for Qi the natural analogue of the latent columns is the
-  ## QF itself, centred on the overall barycenter so that the diverging scale
-  ## has a meaningful zero. 500 columns, so label only a few p levels.
-  if (hca_is_qi) {
-    Z_heat_hca <- sweep(Z_hca, 2, hca_qf_barycenter(Q_aug_hca, seq_len(N_hca)))
-    z_labs_hca <- rep('', K_hca)
-    p_marks    <- c(0.1, 0.25, 0.5, 0.75, 0.9, 0.99)
-    z_labs_hca[sapply(p_marks, function(p) which.min(abs(p_grid_aug_hca - p)))] <-
-      sprintf('p = %g', p_marks)
-    ## ~500 Z columns vs a handful of covariates, so fix the split by width
-    cov_frac_hca <- 0.3
-  } else {
-    Z_heat_hca   <- Z_hca
-    z_labs_hca   <- NULL
-    cov_frac_hca <- NULL   # equal-width columns, as before
-  }
-
-  for (hca_k in c(11)) {
-
-    ## One directory per k: the figure names below carry no k suffix,
-    ## so the path alone identifies a plot.
-    dir_hca_k <- file.path(dir_hca, str_glue('k-{hca_k}'))
-    if (!dir.exists(dir_hca_k)) dir.create(dir_hca_k, recursive = TRUE)
-
-    ## Number clusters manually via cluster_relabels, so that ids, and hence
-    ## colors, are interpretable.
-    relabel_hca <- cluster_relabels[[hca_latent]][[as.character(hca_k)]]
-    if (is.null(relabel_hca)) relabel_hca <- seq_len(hca_k)
-    cl_hca   <- hca_relabel_manual(cutree(hc_hca, k = hca_k), relabel_hca)
-    cols_hca <- hcl.colors(hca_k, palette = 'Dark 3')
-
-    ## rect.hclust() fills `border` left-to-right along hc$order, not by cluster id,
-    ## so the palette has to be permuted to keep box colors consistent with every
-    ## other plot in this section.
-    hca_rect_cols <- function(hc, cl, cols) cols[unique(cl[hc$order])]
-
-    png(file.path(dir_hca_k, 'dendrogram.png'),
-        width = 1280, height = 720, pointsize = 14)
-    plot(hc_hca, labels = FALSE, hang = -1, xlab = '', sub = '',
-        main = str_glue("Ward linkage on {hca_rep_label} (k = {hca_k})"))
-    rect.hclust(hc_hca, k = hca_k,
-                border = hca_rect_cols(hc_hca, cl_hca, cols_hca))
-    dev.off()
-
-    print(table(cluster = cl_hca))
-
-
-    ## ---------- Clustered Heatmap ---------- ##
-
-    hca_plot_heatmap(
-      hc             = hc_hca,
-      Z              = Z_heat_hca,
-      covs           = df_cov[, c('male', 'age', 'pir', 'bmd_adj', 'hdl_adj')],
-      n_clusts       = hca_k,
-      cl             = cl_hca,
-      cl_cols        = cols_hca,
-      cluster_lines  = TRUE,
-      label_clusters = TRUE,
-      z_labs         = z_labs_hca,
-      cov_frac       = cov_frac_hca,
-      path           = file.path(dir_hca_k, 'heatmap.png')
-    )
-
-
-    ## ---------- Embedding space ---------- ##
-
-    ## Qi has no embedding coordinates to scatter, so this is the one figure
-    ## the Qi representation skips.
-    if (!hca_is_qi) {
-      k_from <- 1
-      k_to <- 3
-      png(file.path(dir_hca_k, 'embeddings.png'),
-          width = 960, height = 960, pointsize = 18)
-      plot_embeddings(
-        Z_hca[,k_from:k_to],
-        colors = adjustcolor(cols_hca[cl_hca], alpha.f = 0.3),
-        shapes = rep(19, N_hca),
-        sizes  = rep(0.5, N_hca),
-        color_shape_size_labels = data.frame(
-          color = cols_hca,
-          shape = 19,
-          size  = 1,
-          label = str_glue('cluster {seq_len(hca_k)}')
-        ),
-        stats = FALSE,
-        ## Small, and in two columns for a large k, so the legend stays in
-        ## the corner of the first Q-Q panel clear of its points
-        legend_cex  = 0.65,
-        legend_ncol = if (hca_k > 12) 2 else 1
-      )
-      dev.off()
-    }
-
-
-    ## ---------- Distribution space ---------- ##
-
-    ## Cluster QF := decode(mean of the cluster's embeddings) for a latent,
-    ## or the cluster's Wasserstein barycenter for Qi.
-    Qi_cluster <- lapply(
-      seq_len(hca_k),
-      function(g) hca_rep_mean(which(cl_hca == g))
-    )
-
-    png(file.path(dir_hca_k, 'cluster-qfs.png'),
-        width = 960, height = 960, pointsize = 18)
-    plot_funs(
-      fun_list  = Qi_cluster,
-      grid_list = rep(list(grid_hca), hca_k),
-      colors    = cols_hca,
-      widths    = rep(3, hca_k),
-      types     = rep(1, hca_k),
-      color_width_type_labels = data.frame(
-        color = cols_hca,
-        width = 3,
-        type  = 1,
-        label = str_glue('cluster {seq_len(hca_k)}')
-      ),
-      main = str_glue("Cluster QFs ({hca_rep_label}, k = {hca_k})")
-    )
-    dev.off()
-
-    ## Same curves against the root QF -- the representative of the whole
-    ## sample -- so each cluster reads as a departure from the overall
-    ## distribution.
-    Qi_root <- hca_rep_mean(seq_len(N_hca))
-
-    ## Sized as the top row of a LaTeX panel: 2:1 at full width, above the
-    ## three box-q*.png figures (2:3 each, a third of the width). All four
-    ## share pointsize and res so their text matches once placed.
-    Qi_contrast <- lapply(Qi_cluster, function(q) q - Qi_root)
-
-    png(file.path(dir_hca_k, 'cluster-qfs-contrast.png'),
-        width = 960 * hca_res / 72, height = 480 * hca_res / 72,
-        pointsize = hca_pointsize, res = hca_res)
-    par(mar = c(4, 4, 2.5, 3), mgp = c(2.4, 0.7, 0))
-    plot_funs(
-      fun_list  = Qi_contrast,
-      grid_list = rep(list(grid_hca), hca_k),
-      colors    = cols_hca,
-      widths    = rep(2, hca_k),
-      types     = rep(1, hca_k),
-      ylab = 'Q(p) Contrast',
-      main = str_glue("Cluster QF Contrasts")
-    )
-    abline(h = 0, lty = 2, col = 'gray50')
-    ## The quantile levels boxplotted in box-q*.png
-    abline(v = hca_q_levels, lty = 3, col = 'gray30')
-    mtext(hca_q_levels, side = 3, at = hca_q_levels, line = 0.1, cex = 0.7,
-          col = 'gray30')
-    ## Cluster numbers in the right margin in place of a legend, at the height
-    ## where each curve ends, spread apart where curves end close together.
-    usr   <- par('usr')
-    y_end <- vapply(Qi_contrast, function(q) q[length(q)], numeric(1))
-    y_lab <- hca_spread_labels(y_end, gap = 1.15 * strheight('0', cex = 0.8))
-    x_lab <- usr[2] + 0.02 * diff(usr[1:2])
-    segments(max(grid_hca), y_end, x_lab, y_lab, col = cols_hca, xpd = NA)
-    text(x_lab, y_lab, seq_len(hca_k), col = cols_hca, pos = 4, offset = 0.2,
-         cex = 0.8, font = 2, xpd = NA)
-    dev.off()
-
-
-
-
-    ## ---------- Covariate summaries ---------- ##
-
-    tbl_hca_male <- data.frame(cluster = cl_hca, male = df_cov$male) %>%
-      group_by(cluster) %>%
-      summarise(prop_male = mean(male, na.rm = TRUE)) %>%
-      as.data.frame()
-    print(tbl_hca_male)
-    write.csv(
-      tbl_hca_male,
-      file.path(dir_hca_k, 'cov-male.csv'),
-      row.names = FALSE
-    )
-
-    ## Each continuous covariate gets a density overlay and a stack of
-    ## cluster-wise boxplots. File stems match the previous explicit calls.
-    hca_cov_plots <- c('age', 'pir', 'bmd_adj', 'hdl_adj', 'ghb_adj')
-    for (cv in hca_cov_plots) {
-      slug <- gsub('_', '-', cv)
-      hca_plot_density(
-        df_cov[[cv]], cl_hca, cols_hca,
-        xlab = cv, main = str_glue("{cv} by cluster (k = {hca_k})"),
-        path = file.path(dir_hca_k, str_glue('cov-{slug}.png'))
-      )
-      hca_plot_boxes(
-        df_cov[[cv]], cl_hca, cols_hca,
-        xlab = cv, main = str_glue("{cv} by cluster (k = {hca_k})"),
-        path = file.path(dir_hca_k, str_glue('box-{slug}.png'))
-      )
-    }
-
-    ## All covariates in one figure
-    hca_plot_cov_summary(
-      df_cov[, c('male', 'age', 'pir', 'bmd_adj', 'hdl_adj')],
-      cl_hca, cols_hca,
-      path = file.path(dir_hca_k, 'cov-summary.png')
-    )
-
-    ## Same figure grouped on the manual phenotypes, where this
-    ## representation and k have any. Phenotypes keep their listed order and
-    ## are not color-coded, since the palette belongs to the clusters.
-    pheno_hca <- phenotypes_to_clusters[[hca_latent]][[as.character(hca_k)]]
-    if (!is.null(pheno_hca)) {
-      ## Every cluster must belong to exactly one phenotype
-      stopifnot(setequal(unlist(pheno_hca), seq_len(hca_k)),
-                !anyDuplicated(unlist(pheno_hca)))
-      ph_hca <- rep(seq_along(pheno_hca), lengths(pheno_hca))[
-        match(cl_hca, unlist(pheno_hca))
-      ]
-      print(table(phenotype = factor(ph_hca, labels = names(pheno_hca))))
-      hca_plot_cov_summary(
-        df_cov[, c('male', 'age', 'pir', 'bmd_adj', 'hdl_adj')],
-        ph_hca, rep('grey80', length(pheno_hca)),
-        path      = file.path(dir_hca_k, 'cov-summary-phenotype.png'),
-        labels    = names(pheno_hca),
-        group_lab = 'phenotype'
-      )
-    }
-
-    ## Activity quantiles on the original scale. Sized as the bottom row of
-    ## the LaTeX panel under cluster-qfs-contrast.png: 2:3, a third as wide.
-    for (j in seq_along(hca_q_levels)) {
-      q_pct <- round(100 * hca_q_levels[j])
-      hca_plot_boxes(
-        Q_lvl_hca[, j], cl_hca, cols_hca,
-        xlab = 'MIMS',
-        main = str_glue("Q({hca_q_levels[j]})"),
-        path = file.path(dir_hca_k, str_glue('box-q{q_pct}.png')),
-        width = 320, height = 480, pointsize = hca_pointsize, res = hca_res,
-        mar = c(4, 4, 2.5, 0.8),
-        faint_outliers = TRUE
-      )
-    }
-
-
-  }
-}
-

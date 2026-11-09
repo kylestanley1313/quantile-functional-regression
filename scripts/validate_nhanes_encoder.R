@@ -7,8 +7,8 @@ source('src/utils.R')
 
 
 ## Globals
-dir_art <- 'demo_nhanes_v5'
-epsilon <- 1.45  ## TODO: Change this!!!
+dir_art <- 'demo_nhanes_v11'
+epsilon <- 1.34  ## TODO: Change this!!!
 
 ## Canonical pipeline (the one demo_nhanes.R chose). K_star follows.
 path_pipe_star <- file.path('artifacts', dir_art, 'pipe_nhanes.rds')
@@ -18,6 +18,37 @@ K_star         <- pipeline_star$stages[[3]]$state$child_qg_pca$state$K
 ## Load datasets used by every section below.
 y_nhanes <- readRDS(file.path('data', 'processed', 'nhanes-fda-mims_v2.rds'))
 y_chop   <- readRDS(file.path('data', 'processed', 'chop-mims_v7.rds'))
+
+## Output directory
+dir_val <- file.path('artifacts', dir_art, 'validation')
+if (!dir.exists(dir_val)) dir.create(dir_val, recursive = TRUE)
+
+
+## ----- Paper figure spec (mirrors demo_nhanes.R)
+
+## Render every paper figure at its final printed size (inches) and include it
+## in LaTeX at that same width, so fig_pointsize is the printed text size in
+## every figure regardless of panel count. fig_cex = 1 undoes mfrow's
+## auto-shrink in multi-panel layouts. fig_cex_main / fig_cex_lab /
+## fig_cex_axis are the baseline title / axis-label / tick-label sizes, and
+## fig_cex_legend the legend text size.
+fig_res        <- 600
+fig_pointsize  <- 7
+fig_cex        <- 1
+fig_cex_lab    <- 1.0
+fig_cex_main   <- 1.2 * fig_cex_lab
+fig_cex_axis   <- 0.8 * fig_cex_lab
+fig_cex_legend <- fig_cex_lab
+fig_png <- function(path, width_in, height_in, pointsize = fig_pointsize) {
+  png(path, width = width_in, height = height_in, units = "in",
+      res = fig_res, pointsize = pointsize)
+}
+## Square size (inches) of a pairs-plot figure (plot_embeddings) of n_k
+## dimensions: fig_emb_panel_in per panel, so text, axes and points keep the
+## same proportions to the panels whatever the number of plotted dimensions
+## (5 dimensions -> 6.5in, full width).
+fig_emb_panel_in <- 1.3
+fig_emb_size <- function(n_k) fig_emb_panel_in * n_k
 
 
 
@@ -45,25 +76,30 @@ compute_recon_loss <- function(pipeline, y_list) {
 losses_nhanes  <- compute_recon_loss(pipeline_star, y_nhanes)
 losses_chop    <- compute_recon_loss(pipeline_star, y_chop)
 
+## Half-width paper figure
+set.seed(1234)   # reproducible jitter
+fig_png(file.path(dir_val, str_glue('chop-losses_K-{K_star}.png')),
+        3.25, 2.15)   # TODO: final printed size
+fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+        cex_axis = fig_cex_axis)
 plot_losslessness_groups(
   losses_list  = list(losses_nhanes, losses_chop),
   group_labels = c("NHANES", "CHOP"),
   epsilon      = c(epsilon),
   annotate_idx = c(1, 2),
   jitter_width = 0.1,
-  ylab         = "Wasserstein Error",
-  main         = str_glue("Reconstruction Error (K = {K_star})"),
-  path         = file.path('artifacts', dir_art, 'validation',
-                           str_glue('chop-losses_K-{K_star}.png'))
+  ylab         = "Wasserstein error",
+  main         = str_glue("Reconstruction error (K = {K_star})"),
+  legend_cex   = 0.8 * fig_cex_legend
 )
+dev.off()
 
 
 ## ---------- Embedding plots at K_star ---------- ##
 
-k_start   <- 1
-k_stop    <- 3
+ks_plot   <- 1:5   # components to plot (any subset, e.g. c(1, 3, 5))
+w_emb     <- fig_emb_size(length(ks_plot))
 col_train <- rgb(0, 0, 0, alpha = 0.25)
-col_flag <- rgb(1, 0, 0)
 
 y_ctx_chop <- new_context(
   payload = y_chop,
@@ -76,30 +112,33 @@ c_chop <- do.call(rbind,
 z_chop <- do.call(rbind,
   encode(pipeline_star, y_ctx_chop, from = 0, to = 4)$payload)
 
-png(file.path('artifacts', dir_art, 'validation', str_glue('chop-z_K-{K_star}.png')),
-    width = 960, height = 960, pointsize = 18)
-plot_embeddings(
-  z_chop[, k_start:k_stop],
-  stats  = FALSE,
-  colors = rep(col_train, length(y_chop))
-)
-dev.off()
-
-png(file.path('artifacts', dir_art, 'validation', str_glue('chop-c_K-{K_star}.png')),
-    width = 960, height = 960, pointsize = 18)
-plot_embeddings(
-  c_chop[, k_start:k_stop],
-  stats  = FALSE,
-  colors = rep(col_train, length(y_chop))
-)
-dev.off()
+emb_list <- list(z = z_chop, c = c_chop)
+for (space in names(emb_list)) {
+  E_plot <- emb_list[[space]][, ks_plot, drop = FALSE]
+  fig_png(file.path(dir_val, str_glue('chop-{space}_K-{K_star}.png')),
+          w_emb, w_emb)
+  plot_embeddings(
+    E_plot,
+    colors     = rep(col_train, nrow(E_plot)),
+    shapes     = rep(16, nrow(E_plot)),
+    sizes      = rep(0.5, nrow(E_plot)),
+    stats      = FALSE,
+    cex_main   = fig_cex_main,
+    cex_lab    = fig_cex_lab,
+    cex        = fig_cex,
+    cex_axis   = fig_cex_axis,
+    legend_cex = fig_cex_legend,
+    ks         = ks_plot
+  )
+  dev.off()
+}
 
 
 
 ## ---------- Generativity: NHANES vs CHOP ---------- ##
 
-S       <- 10
-R       <- 50
+S       <- 5
+R       <- 20
 n_cores <- min(5, R)
 
 ## NHANES gets subsampled to CHOP's size BEFORE each split so both arms see
@@ -111,7 +150,7 @@ gen_nhanes <- evaluate_unconditional_generativity(
   pool_subsample_n = length(y_chop),
   J_aug            = 500,
   ridge            = 0,
-  seed             = 12345,
+  seed             = 1234,
   n_cores          = n_cores
 )
 gen_chop <- evaluate_unconditional_generativity(
@@ -121,15 +160,19 @@ gen_chop <- evaluate_unconditional_generativity(
   pool_subsample_n = NULL,
   J_aug            = 500,
   ridge            = 0,
-  seed             = 12345,
+  seed             = 1234,
   n_cores          = n_cores
 )
 saveRDS(
   list(nhanes = gen_nhanes, chop = gen_chop),
-  file.path('artifacts', dir_art, 'validation',
-            str_glue('gen_nhanes_vs_chop_K-{K_star}.rds'))
+  file.path(dir_val, str_glue('gen_nhanes_vs_chop_K-{K_star}.rds'))
 )
 
+## Half-width paper figure
+fig_png(file.path(dir_val, str_glue('chop-gen_K-{K_star}.png')),
+        3.25, 2.15)   # TODO: final printed size
+fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+        cex_axis = fig_cex_axis)
 plot_generativity_boxes(
   groups      = c("NHANES", "CHOP"),
   scores      = list(
@@ -139,11 +182,11 @@ plot_generativity_boxes(
   Ks          = NULL,
   vline_group = NULL,
   hline       = 0,
-  ylab        = "log normalized generativity",
+  ylab        = "Log norm. generativity",
   main        = str_glue("Generativity (K = {K_star})"),
-  path        = file.path('artifacts', dir_art, 'validation',
-                          str_glue('chop-gen_K-{K_star}.png'))
+  collapse = TRUE
 )
+dev.off()
 
 
 
@@ -152,7 +195,7 @@ plot_generativity_boxes(
 ## fit mean-cov on train, draw |val| synthetic z's, decode to Qi, then
 ## overlay against the held-out real Qi. One plot per dataset.
 
-set.seed(12345)
+set.seed(1234)
 
 ## Stage 1: prepare per-dataset Qi (real-val + synth). NHANES is subsampled to
 ## CHOP's size BEFORE the split so both panels see matched-size train/val.
@@ -226,18 +269,22 @@ for (label in names(plot_data)) {
     type  = c(1, 1),
     label = c('real (val)', 'synth')
   )
-  png(file.path('artifacts', dir_art, 'validation',
-                str_glue('synth_qi_{label}_K-{K_star}.png')),
-      width = 960, height = 960, pointsize = 18)
+  fig_png(file.path(dir_val, str_glue('synth_qi_{label}_K-{K_star}.png')),
+          3.25, 3.25)   # TODO: final printed size
   plot_funs(
-    fun_list  = fun_list,
-    grid_list = grid_list,
-    ylim      = ylim_shared,
-    colors    = colors,
-    widths    = widths,
-    types     = types,
+    fun_list   = fun_list,
+    grid_list  = grid_list,
+    ylim       = ylim_shared,
+    colors     = colors,
+    widths     = widths,
+    types      = types,
     color_width_type_labels = cwt_lbl,
-    main      = str_glue("Synthetic vs Real Val Qi ({toupper(label)}, K = {K_star})")
+    main       = str_glue("{toupper(label)} (K = {K_star})"),
+    cex.lab    = fig_cex_lab,
+    cex_main   = fig_cex_main,
+    cex        = fig_cex,
+    cex_axis   = fig_cex_axis,
+    legend_cex = fig_cex_legend
   )
   dev.off()
 }

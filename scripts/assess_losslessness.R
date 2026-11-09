@@ -19,7 +19,7 @@ compute_cv_losses <- function(
     p_star = 0,
     y_star = NULL,
     y_min = NULL,
-    pipeline_seed = 12345,
+    pipeline_seed = 1234,
     K_from = 1,
     K_to = 50,
     K_by = 1,
@@ -108,12 +108,13 @@ plot_losslessness <- function(
     train_losses_by_K = NULL,
     jitter_width = 0.01,
     epsilon = 0.01,
+    epsilon_percentile = NULL,
     alpha = 0.05,
     plot_mean = TRUE,
     ylim = NULL,
     ylab = "Loss",
     xlab = "K",
-    main = "Loss by K",
+    main = "",
     K_star = NULL,
     pairwise_distances = NULL,
     pairwise_percentiles = c(50, 25, 10, 1),
@@ -138,12 +139,11 @@ plot_losslessness <- function(
     }
   }
 
-  ## Secondary y-axis: give the right margin the same room as the left
-  if (!is.null(pairwise_distances)) {
-    mar <- par("mar")
-    mar[4] <- max(mar[4], mar[2])
-    par(mar = mar)
-  }
+  ## Trim whitespace for an omitted title / axis label; then, for the secondary
+  ## y-axis, give the right margin the same room as the left
+  mar <- .trimmed_mar(par("mar"), main, xlab, ylab)
+  if (!is.null(pairwise_distances)) mar[4] <- max(mar[4], mar[2])
+  par(mar = mar)
 
   Ks <- as.numeric(names(valid_losses_by_K))
   xlim_pad <- 2 * jitter_width
@@ -201,7 +201,15 @@ plot_losslessness <- function(
   for (e in epsilon) {
     abline(h = e, lty = "dashed", col = "red")
   }
-  
+  ## Label epsilon's value in red on the left axis
+  axis(
+    side = 2,
+    at = epsilon,
+    labels = sprintf("%.2f", epsilon),
+    col.axis = "red",
+    tick = FALSE
+  )
+
   if (!is.null(K_star)) {
     abline(v = K_star, lty = "dashed", col = 'red')
   }
@@ -221,6 +229,17 @@ plot_losslessness <- function(
       labels = pairwise_percentiles[in_range],
       las = 1
     )
+    ## Label epsilon's pairwise-distance percentile in red on the right axis
+    if (!is.null(epsilon_percentile)) {
+      axis(
+        side = 4,
+        at = epsilon,
+        labels = epsilon_percentile,
+        las = 1,
+        col.axis = "red",
+        tick = FALSE
+      )
+    }
     ## Match the left axis title's position and size
     mtext(ylab2, side = 4, line = par("mgp")[1],
           cex = par("cex") * par("cex.lab"))
@@ -261,10 +280,10 @@ plot_losslessness <- function(
 ## Stage-list builders. Only the LAST stage in each list depends on K --
 ## compute_cv_losses() relies on this to split off a K-independent "prefix"
 ## it can fit once per CV fold and reuse across the whole K sweep.
-stages_qg_pca <- function(K, K_max = 20, p_grid = NULL, lambda = NULL, order_by = 'variance', loss = 'wasserstein') {
+stages_qg_pca <- function(K, K_max = 30, p_grid = NULL, lambda = NULL, order_by = 'importance', loss = 'wasserstein') {
   list(
     stage_eqf_sgrid(),
-    stage_eqf_cgrid(p_grid = p_grid),
+    stage_eqf_cgrid(p_grid = p_grid, extrap = 'ratio'),
     stage_wame(K = K, K_max = K_max, lambda = lambda, order_by = order_by, loss = loss)
   )
 }
@@ -273,7 +292,7 @@ stages_qg_pca <- function(K, K_max = 20, p_grid = NULL, lambda = NULL, order_by 
 stages_q_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
   list(
     stage_eqf_sgrid(),
-    stage_eqf_cgrid(p_grid = p_grid),
+    stage_eqf_cgrid(p_grid = p_grid, extrap = 'ratio'),
     stage_q_pca(K = K, loss = loss)
   )
 }
@@ -282,7 +301,7 @@ stages_q_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
 stages_g_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
   list(
     stage_eqf_sgrid(),
-    stage_eqf_cgrid(p_grid = p_grid),
+    stage_eqf_cgrid(p_grid = p_grid, extrap = 'ratio'),
     stage_lqd(),
     stage_g_pca(K = K, loss = loss)
   )
@@ -292,15 +311,15 @@ stages_g_pca <- function(K, p_grid = NULL, loss = 'wasserstein') {
 fit_pipeline_qg_pca <- function(
     y_list, K,
     p_grid = NULL,
-    K_max = 20,
+    K_max = 30,
     supp_Y = NULL,
     p_star = 0,
     y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
-    seed = 12345,
+    seed = 1234,
     lambda = NULL,
-    order_by = 'variance'
+    order_by = 'importance'
 ) {
 
   pipeline <- construct_pipeline(
@@ -324,7 +343,7 @@ fit_pipeline_q_pca <- function(
     y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
-    seed = 12345
+    seed = 1234
 ) {
 
   pipeline <- construct_pipeline(
@@ -347,7 +366,7 @@ fit_pipeline_g_pca <- function(
     y_star = NULL,
     y_min = NULL,
     loss = 'wasserstein',
-    seed = 12345
+    seed = 1234
 ) {
 
   pipeline <- construct_pipeline(
@@ -370,7 +389,7 @@ fit_pipeline_g_pca <- function(
 
 ## ----- Globals 
 
-dir_art <- file.path('artifacts', 'demo_nhanes_v5', 'losslessness')
+dir_art <- file.path('artifacts', 'demo_nhanes_v11', 'losslessness')
 
 
 ## ----- Create YAML configs
@@ -397,19 +416,19 @@ datasets <- list(
       breaks = c(1/(7350 + 1), 0.95, 7350/(7350 + 1)),
       interval_counts = c(51, 50)
     ),
-    K_max = 20,
+    K_max = 30,
     supp_Y = c(0, seq(0.006, 500, by = 0.001)),
     y_star = 0,
     y_min = 0,
     lambda = 0, # sqrt(10)^-1,
     order_by = 'importance',
-    pairwise_samp_rate = 0.1,
+    pairwise_samp_rate = 0.1
   )
 )
 
 
 ## Create configs
-models <- c('qg_pca')
+models <- c('qg_pca') #c('qg_pca')
 i <- 1
 for (dataset in names(datasets)) {
   for (model in models) {
@@ -431,7 +450,7 @@ n_configs <- i - 1
 
 ## ----- Process Configs
 
-set.seed(12345)
+set.seed(1234)
 for (i in 1:n_configs) {
   message(str_glue("========== CONFIG {i} of {n_configs} =========="))
   
@@ -500,7 +519,7 @@ for (i in 1:n_configs) {
     y_star = datasets[[config$dataset]]$y_star,
     y_min = datasets[[config$dataset]]$y_min,
     K_from = 1,
-    K_to = 10,
+    K_to = 15,
     K_by = 1,
     V = 5,
     seed = gen_seed(),
@@ -517,7 +536,7 @@ for (i in 1:n_configs) {
   p_grid_p   <- pipe$training$cache$p_grid
   supp_Y_p  <- pipe$training$cache$supp_Y
   samp_rate  <- datasets[[config$dataset]]$pairwise_samp_rate
-  set.seed(12345)
+  set.seed(1234)
   idx_samp   <- sample(seq_along(Qi_list_p), size = floor(samp_rate * length(Qi_list_p)))
   d <- compute_pwds(
     Qi_list      = Qi_list_p[idx_samp],
@@ -636,9 +655,10 @@ fig_png <- function(path, width_in, height_in, pointsize = fig_pointsize) {
 ## Set plotting parameters
 path <- file.path(dir_art, 'config-1_pairwise-dist-norm.rds')
 pairwise_dist_norm <- readRDS(path)
-epsilon <- quantile(pairwise_dist_norm, c(0.05))
+pwd_percentile <- 2
+epsilon <- quantile(pairwise_dist_norm, c(pwd_percentile/100))
 
-set.seed(12345)
+set.seed(1234)
 for (i in 1:n_configs) {
   print(i)
   path_config <- file.path(dir_art, str_glue('config-{i}.yml'))
@@ -654,13 +674,15 @@ for (i in 1:n_configs) {
   } else NULL
 
   ## Plot losslessness
-  fig_png(path_plot, 4.3, 3.25)   # TODO: final printed size
+  ## Half-width paper figure, side-by-side with the assess_generativity_for_K.R plot
+  fig_png(path_plot, 3.25, 2.6)
   fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
           cex_axis = fig_cex_axis)
   plot_losslessness(
     loss_valid, NULL,
     jitter_width = 0.2,
     epsilon = epsilon,
+    epsilon_percentile = NULL,
     alpha = 0.05,
     plot_mean = FALSE,
     ylim = c(0, 20),
@@ -672,7 +694,6 @@ for (i in 1:n_configs) {
     concordances = concordances,
     concordance_box_position = "topright",
     # main = str_glue('{config$dataset} | {config$model_type}'),
-    main = "NHANES Reconstructions",
     concordance_box_cex = fig_cex_axis
   )
   dev.off()

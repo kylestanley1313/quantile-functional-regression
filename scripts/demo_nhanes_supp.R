@@ -1,6 +1,8 @@
 ## Supplementary NHANES analyses that are not part of the main analyses in
-## demo_nhanes.R: a G-PCA representation of the quantile functions and
-## hierarchical clustering of the latent embeddings.
+## demo_nhanes.R: an inspection of the main pipeline's generativity
+## (unrealistic synthetic QFs and where they sit in the latent Gaussian), a
+## G-PCA representation of the quantile functions and hierarchical clustering
+## of the latent embeddings.
 
 library(dplyr)
 library(mgcv)
@@ -20,7 +22,7 @@ source('src/utils.R')
 ## determine the orientation of every latent coordinate plotted below.
 
 ## Globals
-dir_art <- 'demo_nhanes_v6'
+dir_art <- 'demo_nhanes_v11'
 
 ## Load data
 path <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
@@ -42,7 +44,7 @@ if (!file.exists(path)) {
 }
 pipeline <- readRDS(path)
 pipeline$latent <- 'z_rot'
-pipeline <- set_rotation_signs(pipeline, flip = c(1, 3))
+pipeline <- set_rotation_signs(pipeline, flip = c(1, 2, 3, 4, 5))
 pipeline <- set_c_signs(pipeline, flip = c(1))
 
 ## Encode
@@ -92,6 +94,170 @@ fig_png <- function(path, width_in, height_in, pointsize = fig_pointsize) {
   png(path, width = width_in, height = height_in, units = "in",
       res = fig_res, pointsize = pointsize)
 }
+fig_par_paper <- function() {
+  fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+          cex_axis = fig_cex_axis)
+}
+fig_half_w <- 3.25
+fig_half_h <- 2.6
+col_real    <- "gray40"
+col_outlier <- "#D95F02"   # unrealistic synthetic draws (as in demo_nhanes.R)
+
+
+
+
+## ========== Generativity Inspection ========== ##
+
+## Inspects the generativity run of demo_nhanes.R ("Check generativity"; S x R
+## replicates, stored with keep_draws = TRUE). Per replicate, every stored
+## synthetic latent is decoded and given
+##   - w2: W2 distance of its QF to the mean QF of that split's training half
+##     (unrealistic if w2 >= gen_outlier_w2, as in demo_nhanes.R), and
+##   - the percentile of its latent Mahalanobis radius under the split's
+##     fitted latent model (mean-cov of the training half), via chi^2_K;
+## and the generativity score is recomputed with the unrealistic draws
+## dropped: OT is re-solved between the remaining synthetic QFs and the
+## validation QFs (T_sv_trim; T_tv unchanged).
+## The stored draws live in the sign-flipped z_rot space of demo_nhanes.R, so
+## the sign flips in Setup must match demo_nhanes.R.
+
+gen_outlier_w2 <- 30      # as in demo_nhanes.R
+gen_n_cores    <- 3       # each worker holds a pipeline copy (~500 MB) + an OT solve
+
+dir_gen     <- file.path('artifacts', dir_art, 'plots', 'representation', 'generativity')
+path_gen    <- file.path(dir_gen, 'gen_res.rds')
+path_inspec <- file.path(dir_gen, 'gen_inspect.rds')
+if (!file.exists(path_gen)) stop(str_glue("{path_gen} not found; run demo_nhanes.R first."))
+gen_res <- readRDS(path_gen)
+stopifnot(isTRUE(gen_res$meta$keep_draws), .latent_of(pipeline) == gen_res$meta$latent)
+
+## One pass over all (split, replicate) pairs, cached (~10-15 min)
+inspect_generativity <- function(pipeline, gen_res, y_list, outlier_w2, n_cores) {
+  force(outlier_w2)   # evaluate before export: a promise would be resolved on the worker
+  p_grid     <- pipeline$training$cache$p_grid
+  p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(gen_res$meta$J_aug - length(p_grid)))))
+  w_aug      <- get_quadrature_weights(p_grid_aug)
+  cost_type  <- gen_res$meta$cost_type
+  .repo_root <- getwd()
+
+  if (n_cores > 1) {
+    old_plan <- future::plan(future::multisession, workers = n_cores)
+    on.exit(future::plan(old_plan), add = TRUE)
+  }
+
+  draws <- list(); reps <- list()
+  for (s in seq_along(gen_res$splits)) {
+    sp      <- gen_res$splits[[s]]
+    Z_tr    <- encode_y_to_latent(pipeline, y_list[sp$idx_tr_grp])
+    fit_lat <- fit_mean_cov(Z_tr)
+    Q_val   <- encode_y_to_Qi_aug(pipeline, y_list[sp$idx_val_grp], p_grid_aug)
+    Q_tr_mean <- colMeans(do.call(rbind, encode_y_to_Qi_aug(pipeline, y_list[sp$idx_tr_grp], p_grid_aug)))
+
+    one_rep <- function(r) {
+      if (!exists("py_pkg", envir = .GlobalEnv, inherits = FALSE)) {
+        setwd(.repo_root)
+        source(file.path(.repo_root, "src", "cot.R"))
+      }
+      z  <- sp$z_draws[[r]]
+      Qs <- decode_latent_to_Qi_aug(pipeline, lapply(seq_len(nrow(z)), function(i) z[i, ]),
+                                    p_grid_aug, p_grid)
+      w2 <- sqrt(as.numeric(sweep(do.call(rbind, Qs), 2, Q_tr_mean)^2 %*% w_aug))
+      w2[!is.finite(w2)] <- Inf
+      m2 <- mahalanobis(z, fit_lat$mu, fit_lat$Sigma)
+      keep <- w2 < outlier_w2
+      T_sv_trim <- compute_generativity_score(Qs[keep], Q_val, w_aug, cost_type)
+      ## Sanity check on the first replicate: recomputing the untrimmed score
+      ## reproduces the stored one
+      T_sv_full <- if (r == 1) compute_generativity_score(Qs, Q_val, w_aug, cost_type) else NA_real_
+      list(draws = data.frame(m2 = m2, tail = pchisq(m2, ncol(z), lower.tail = FALSE), w2 = w2),
+           T_sv_trim = T_sv_trim, T_sv_full = T_sv_full)
+    }
+
+    R <- length(sp$z_draws)
+    out <- if (n_cores > 1) {
+      future.apply::future_lapply(
+        seq_len(R), one_rep, future.seed = NULL,
+        future.globals = c("sp", "pipeline", "fit_lat", "Q_val", "Q_tr_mean", "w_aug",
+                           "p_grid_aug", "p_grid", "outlier_w2", "cost_type", ".repo_root")
+      )
+    } else {
+      lapply(seq_len(R), one_rep)
+    }
+
+    if (!isTRUE(all.equal(out[[1]]$T_sv_full, sp$T_sv[1], tolerance = 1e-6))) {
+      warning(sprintf('Split %d: recomputed T_sv (%.6f) differs from the stored one (%.6f).',
+                      s, out[[1]]$T_sv_full, sp$T_sv[1]))
+    }
+    for (r in seq_len(R)) {
+      draws[[length(draws) + 1]] <- cbind(split = s, rep = r, out[[r]]$draws)
+    }
+    reps[[s]] <- data.frame(
+      split     = s, rep = seq_len(R),
+      n_outlier = vapply(out, function(o) sum(o$draws$w2 >= outlier_w2), 0),
+      log_norm  = sp$log_norm,
+      log_norm_trim = log(vapply(out, `[[`, 0, 'T_sv_trim') / sp$T_tv)
+    )
+    message(sprintf('  generativity inspection: split %d of %d done', s, length(gen_res$splits)))
+  }
+  list(draws = do.call(rbind, draws), reps = do.call(rbind, reps), outlier_w2 = outlier_w2)
+}
+
+if (file.exists(path_inspec) && isTRUE(readRDS(path_inspec)$outlier_w2 == gen_outlier_w2)) {
+  gen_insp <- readRDS(path_inspec)
+} else {
+  start <- Sys.time()
+  gen_insp <- inspect_generativity(pipeline, gen_res, y_list, gen_outlier_w2, gen_n_cores)
+  print(Sys.time() - start)
+  saveRDS(gen_insp, path_inspec)
+}
+dd   <- gen_insp$draws
+reps <- gen_insp$reps
+dd$unreal <- dd$w2 >= gen_outlier_w2
+
+cat(sprintf('\n%d of %d synthetic draws (%.3f%%) are unrealistic (W2 >= %g): %.2f per replicate\n',
+            sum(dd$unreal), nrow(dd), 100 * mean(dd$unreal), gen_outlier_w2, mean(reps$n_outlier)))
+cat(sprintf('Unrealistic draws beyond the 90th / 99th / 99.9th percentile of the latent Gaussian: %.1f%% / %.1f%% / %.1f%%\n',
+            100 * mean(dd$tail[dd$unreal] < 0.1), 100 * mean(dd$tail[dd$unreal] < 0.01),
+            100 * mean(dd$tail[dd$unreal] < 0.001)))
+cat(sprintf('Log norm. generativity, all draws: median %.3f, 90th pct %.3f; unrealistic draws removed: median %.3f, 90th pct %.3f\n',
+            median(reps$log_norm), quantile(reps$log_norm, 0.9),
+            median(reps$log_norm_trim), quantile(reps$log_norm_trim, 0.9)))
+
+## Figure 1: generativity scores with and without the unrealistic draws
+## (same replicates; T_tv unchanged)
+fig_png(file.path(dir_gen, 'gen_scores_no_outliers.png'), fig_half_w, fig_half_h)
+fig_par_paper()
+plot_generativity_boxes(
+  groups   = c("All draws", "Unrealistic removed"),
+  scores   = list(split(reps$log_norm, reps$split), split(reps$log_norm_trim, reps$split)),
+  hline    = 0,
+  ylab     = "Log norm. generativity",
+  collapse = TRUE
+)
+dev.off()
+
+## Figure 2: W2 to the mean QF vs percentile of the latent Mahalanobis radius,
+## per draw (a random subsample of the realistic draws, all unrealistic draws
+## on top)
+set.seed(1234)
+idx_ok  <- which(!dd$unreal)
+idx_ok  <- idx_ok[sample.int(length(idx_ok), min(20000, length(idx_ok)))]
+idx_bad <- which(dd$unreal)
+tail_x  <- function(tail) -log10(pmax(tail, 1e-12))
+x_ticks <- c(0.5, 0.9, 0.99, 0.999, 0.9999)
+w2_cap  <- max(dd$w2[is.finite(dd$w2)])
+fig_png(file.path(dir_gen, 'wasserstein_vs_mahalanobis.png'), fig_half_w, fig_half_h)
+fig_par_paper()
+plot(tail_x(dd$tail[idx_ok]), pmin(dd$w2[idx_ok], w2_cap), log = 'y', pch = 16, cex = 0.25,
+     col = adjustcolor(col_real, 0.25),
+     xlim = c(0, max(tail_x(dd$tail), -log10(1 - max(x_ticks)))),
+     ylim = range(pmin(dd$w2, w2_cap)), xaxt = 'n',
+     xlab = "Percentile of latent Mahalanobis radius", ylab = "W2 to mean QF (log)")
+axis(1, at = -log10(1 - x_ticks), labels = 100 * x_ticks)
+points(tail_x(dd$tail[idx_bad]), pmin(dd$w2[idx_bad], w2_cap), pch = 16, cex = 0.4,
+       col = col_outlier)
+abline(h = gen_outlier_w2, col = "red", lty = 3, lwd = 1.2)
+dev.off()
 
 
 

@@ -726,6 +726,12 @@ plot_losslessness <- function(
 ## Group-wise jittered scatter of per-subject losses (one column per group),
 ## styled after plot_losslessness. Each entry in losses_list is a numeric
 ## vector; group_labels are the x-axis tick labels.
+## path = NULL draws to the caller's device (e.g. a fig_png() paper figure with
+## fig_par() set). With a path, opens a png at the paper figure spec of
+## demo_nhanes.R: width / height in inches at res dpi, pointsize the printed
+## text size, and fig_par()'s baseline title / label / tick sizes. The default
+## margins follow the current par, trimmed for an omitted title / axis label
+## (.trimmed_mar); mar overrides.
 plot_losslessness_groups <- function(losses_list,
                                       group_labels,
                                       epsilon      = NULL,
@@ -735,15 +741,30 @@ plot_losslessness_groups <- function(losses_list,
                                       xlab         = "",
                                       main         = "",
                                       path         = NULL,
-                                      width        = 960,
-                                      height       = 720,
-                                      pointsize    = 14) {
+                                      width        = 3.25,
+                                      height       = 2.15,
+                                      pointsize    = 7,
+                                      res          = 600,
+                                      mar          = NULL,
+                                      pt_col       = rgb(0, 0, 0, 0.25),
+                                      pt_cex       = 0.5,
+                                      legend_cex   = 1) {
   L <- length(losses_list)
   stopifnot(length(group_labels) == L)
 
-  if (!is.null(path)) png(path, width = width, height = height, pointsize = pointsize)
-  old_par <- par(mar = c(4.5, 4.5, 3, 2))
-  on.exit(par(old_par), add = TRUE)
+  if (!is.null(path)) {
+    png(path, width = width, height = height, units = "in", res = res,
+        pointsize = pointsize)
+    fig_par(cex_main = 1.2, cex_lab = 1, cex = 1, cex_axis = 0.8)
+  }
+  if (is.null(mar)) {
+    mar <- .trimmed_mar(par("mar"), main, xlab, ylab)
+    ## Without an x label only the group names sit below the axis: fit them
+    if (.is_blank(xlab)) mar[1] <- par("mgp")[2] + 1.2 * par("cex.axis") + 0.1
+  }
+  old_par <- par(mar = mar)
+  ## Restore only the caller's device; our own png is closed below
+  if (is.null(path)) on.exit(par(old_par), add = TRUE)
 
   y_all <- unlist(losses_list, use.names = FALSE)
   y_max <- max(c(y_all, epsilon), na.rm = TRUE)
@@ -758,11 +779,11 @@ plot_losslessness_groups <- function(losses_list,
   for (i in seq_len(L)) {
     v <- losses_list[[i]]
     xvals <- jitter(rep(i, length(v)), amount = jitter_width)
-    points(xvals, v, pch = 19, col = rgb(0, 0, 0, 0.4))
+    points(xvals, v, pch = 16, cex = pt_cex, col = pt_col)
   }
 
   if (!is.null(epsilon)) {
-    for (e in epsilon) abline(h = e, lty = "dashed", col = "red")
+    for (e in epsilon) abline(h = e, col = "red", lty = 3, lwd = 1.2)
   }
 
   if (!is.null(annotate_idx)) {
@@ -771,7 +792,7 @@ plot_losslessness_groups <- function(losses_list,
       pct <- 100 * mean(losses_list[[g]] < eps)
       sprintf("%.1f%% of %s < %.2f", pct, group_labels[g], eps)
     }, character(1))
-    legend("topleft", legend = txts, bty = "n")
+    legend("topleft", legend = txts, bty = "n", cex = legend_cex)
   }
 
   if (!is.null(path)) dev.off()
@@ -1051,6 +1072,13 @@ evaluate_pipeline_generativity <- function(
 ## from) is not threaded through here generically -- the caller closes over
 ## it when building fit_fun/sample_fun (see evaluate_unconditional_generativity
 ## for the simplest example).
+##
+## keep_draws = TRUE additionally stores, per split, the training/validation
+## indices (idx_tr_grp, idx_val_grp) and each replicate's synthetic latents
+## (z_draws: a length-R list of n_val x K matrices), so any scored replicate can
+## be rebuilt and plotted with generativity_replicate(). Memory is
+## S * R * n_val * K * 8 bytes (~16.5 MB for S = 5, R = 20, n_val ~ 4100,
+## K = 5); decoded QFs and transport plans are never kept.
 evaluate_generativity <- function(
   pipeline, y_list, X, y_mask,
   fit_fun, sample_fun,
@@ -1061,7 +1089,8 @@ evaluate_generativity <- function(
   val_subsample_n  = NULL,
   J_aug            = 500,
   seed             = 12345,
-  n_cores          = 1
+  n_cores          = 1,
+  keep_draws       = FALSE
 ) {
   stopifnot(
     is.logical(y_mask), length(y_mask) == length(y_list),
@@ -1140,7 +1169,8 @@ evaluate_generativity <- function(
       set.seed(rep_seeds[r])
       z_draws     <- sample_fun(length(idx_val_grp), fit, X_val_grp)
       Q_synth_aug <- decode_latent_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
-      compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
+      T_sv_r      <- compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
+      if (keep_draws) list(T_sv = T_sv_r, z = do.call(rbind, z_draws)) else T_sv_r
     }
 
     .repo_root <- getwd()
@@ -1157,15 +1187,22 @@ evaluate_generativity <- function(
         old_plan <- future::plan(future::multisession, workers = n_cores)
         on.exit(future::plan(old_plan), add = TRUE)
       }
-      T_sv <- unlist(future.apply::future_lapply(
+      rep_res <- future.apply::future_lapply(
         seq_len(R), gen_one_rep,
         future.seed    = NULL,
         future.globals = c("rep_seeds", "pipeline", "idx_val_grp", "fit",
                             "sample_fun", "X_val_grp", "Q_val_aug", "w_aug",
-                            "p_grid_aug", "p_grid", ".repo_root")
-      ))
+                            "p_grid_aug", "p_grid", ".repo_root", "keep_draws",
+                            "cost_type")
+      )
     } else {
-      T_sv <- unlist(lapply(seq_len(R), gen_one_rep))
+      rep_res <- lapply(seq_len(R), gen_one_rep)
+    }
+    if (keep_draws) {
+      T_sv    <- vapply(rep_res, `[[`, numeric(1), 'T_sv')
+      z_draws <- lapply(rep_res, `[[`, 'z')
+    } else {
+      T_sv <- unlist(rep_res)
     }
 
     splits[[s]] <- list(
@@ -1175,6 +1212,11 @@ evaluate_generativity <- function(
       n_tr_grp  = length(idx_tr_grp),
       n_val_grp = length(idx_val_grp)
     )
+    if (keep_draws) {
+      splits[[s]]$idx_tr_grp  <- idx_tr_grp
+      splits[[s]]$idx_val_grp <- idx_val_grp
+      splits[[s]]$z_draws     <- z_draws
+    }
   }
 
   K_used <- ncol(encode_y_to_latent(pipeline, y_list[1]))
@@ -1187,8 +1229,58 @@ evaluate_generativity <- function(
       val_subsample_n  = val_subsample_n,
       N_used           = if (is.null(pool_subsample_n)) length(y_list) else pool_subsample_n,
       K                = K_used,
-      latent           = .latent_of(pipeline)
+      latent           = .latent_of(pipeline),
+      cost_type        = cost_type,
+      J_aug            = J_aug,
+      keep_draws       = keep_draws
     )
+  )
+}
+
+
+## Rebuild replicate r of split s from an evaluate_generativity() result run
+## with keep_draws = TRUE: decodes that replicate's stored synthetic latents and
+## re-encodes that split's validation QFs on the same augmented grid. Returns
+## the same structure as generativity_example() (so plot_generativity_example()
+## applies), with T_tv / T_sv / log_norm taken from the stored result -- the
+## plotted dataset is exactly the one behind that score. w2_synth is each
+## synthetic QF's W2 distance to the mean QF of that split's training half.
+## pipeline and y_list must be the ones passed to evaluate_generativity().
+generativity_replicate <- function(res, pipeline, y_list, s, r) {
+  if (!isTRUE(res$meta$keep_draws)) {
+    stop("Result has no stored draws; rerun evaluate_generativity with keep_draws = TRUE.")
+  }
+  sp <- res$splits[[s]]
+  stopifnot(r >= 1, r <= length(sp$z_draws))
+
+  p_grid     <- pipeline$training$cache$p_grid
+  J_aug      <- res$meta$J_aug
+  p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(J_aug - length(p_grid)))))
+  w_aug      <- get_quadrature_weights(p_grid_aug)
+
+  z_mat       <- sp$z_draws[[r]]
+  z_list      <- lapply(seq_len(nrow(z_mat)), function(i) z_mat[i, ])
+  Q_synth_aug <- decode_latent_to_Qi_aug(pipeline, z_list, p_grid_aug, p_grid)
+  Q_val_aug   <- encode_y_to_Qi_aug(pipeline, y_list[sp$idx_val_grp], p_grid_aug)
+  Q_train_aug <- encode_y_to_Qi_aug(pipeline, y_list[sp$idx_tr_grp],  p_grid_aug)
+
+  Q_train_mean <- colMeans(do.call(rbind, Q_train_aug))
+  w2_synth <- sqrt(as.numeric(
+    sweep(do.call(rbind, Q_synth_aug), 2, Q_train_mean)^2 %*% w_aug
+  ))
+
+  list(
+    p_grid   = p_grid_aug,
+    Q_val    = Q_val_aug,
+    Q_synth  = Q_synth_aug,
+    T_tv     = sp$T_tv,
+    T_sv     = sp$T_sv[r],
+    log_norm = sp$log_norm[r],
+    idx_val  = sp$idx_val_grp,
+    z_draws  = z_mat,
+    w2_synth = w2_synth,
+    split    = s,
+    rep      = r
   )
 }
 
@@ -1200,7 +1292,10 @@ evaluate_generativity <- function(
 ## on the augmented p-grid. Same steps and scores as one (split, replicate) of
 ## evaluate_generativity; seed makes the example reproducible. Returns the grid,
 ## the real (val) and synthetic QF lists, T_tv, T_sv and
-## log_norm = log(T_sv / T_tv).
+## log_norm = log(T_sv / T_tv), plus idx_val (indices into y_list of the
+## validation QFs), z_draws (n x K matrix of the synthetic latents, in the
+## space decode_latent_to_Qi_aug consumes) and w2_synth (each synthetic QF's
+## W2 distance to the mean training-half QF, for flagging outlying draws).
 generativity_example <- function(
   pipeline, y_list, X, y_mask,
   fit_fun, sample_fun,
@@ -1244,13 +1339,22 @@ generativity_example <- function(
   Q_synth_aug <- decode_latent_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
   T_sv        <- compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
 
+  ## W2 distance of each synthetic QF to the mean training-half QF
+  Q_train_mean <- colMeans(do.call(rbind, Q_train_aug))
+  w2_synth <- sqrt(as.numeric(
+    sweep(do.call(rbind, Q_synth_aug), 2, Q_train_mean)^2 %*% w_aug
+  ))
+
   list(
     p_grid   = p_grid_aug,
     Q_val    = Q_val_aug,
     Q_synth  = Q_synth_aug,
     T_tv     = T_tv,
     T_sv     = T_sv,
-    log_norm = log(T_sv / T_tv)
+    log_norm = log(T_sv / T_tv),
+    idx_val  = idx_val_grp,
+    z_draws  = do.call(rbind, z_draws),
+    w2_synth = w2_synth
   )
 }
 
@@ -1259,7 +1363,16 @@ generativity_example <- function(
 ## with a legend placed inside the axes clear of the curves (.legend_layout).
 ## Draws to the active device; main may be an expression (e.g. built with
 ## bquote for a tilde(G) title).
+##
+## outlier_w2: if non-NULL, synthetic QFs whose W2 distance to the mean
+## training QF (ex$w2_synth) is >= outlier_w2 are drawn in col_outlier, opaque
+## and on top of everything else, and the legend gains an entry with their
+## count.
+##
+## show_legend = FALSE omits the legend (and the y headroom made for it), e.g.
+## for small panels of a combined figure whose caption explains the colors.
 plot_generativity_example <- function(ex, main = "",
+                                      show_legend = TRUE,
                                       col_real  = "black",
                                       col_synth = "#1B9E77",
                                       alpha     = 0.25,
@@ -1267,25 +1380,44 @@ plot_generativity_example <- function(ex, main = "",
                                       lwd_leg   = 1.5,
                                       legend_cex = 1,
                                       legend_loc = "topleft",
-                                      labels = c("real (val)", "synthetic")) {
+                                      labels = c("real (val)", "synthetic"),
+                                      outlier_w2    = NULL,
+                                      col_outlier   = "#D95F02",
+                                      lwd_outlier   = 0.75,
+                                      label_outlier = "synthetic outlier") {
   x     <- ex$p_grid
   funs  <- c(ex$Q_val, ex$Q_synth)
+  is_out <- c(rep(FALSE, length(ex$Q_val)),
+              if (is.null(outlier_w2)) rep(FALSE, length(ex$Q_synth))
+              else ex$w2_synth >= outlier_w2)
   cols  <- c(rep(adjustcolor(col_real,  alpha), length(ex$Q_val)),
              rep(adjustcolor(col_synth, alpha), length(ex$Q_synth)))
   ord   <- sample(length(funs))
+  ord   <- ord[!is_out[ord]]
   xlim  <- range(x)
   ylim  <- range(unlist(funs), finite = TRUE)
   leg_args <- list(legend = labels, col = c(col_real, col_synth),
                    lwd = lwd_leg, lty = 1, cex = legend_cex, bty = "n")
+  if (!is.null(outlier_w2)) {
+    leg_args$legend <- c(leg_args$legend,
+                         sprintf("%s (n = %d)", label_outlier, sum(is_out)))
+    leg_args$col    <- c(leg_args$col, col_outlier)
+  }
   objs <- lapply(funs, function(y) list(x = x, lo = y, hi = y))
 
   old_mar <- par(mar = .trimmed_mar(par("mar"), main, "p", "Q(p)"))
   on.exit(par(old_mar), add = TRUE)
-  lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc)
+  if (show_legend) {
+    lay <- .legend_layout(leg_args, xlim, ylim, objs, pref = legend_loc)
+  } else {
+    plot.new()
+    lay <- list(ylim = ylim)
+  }
   .draw_frame(xlim, lay$ylim, main = main, xlab = "p", ylab = "Q(p)",
               ylim_data = ylim)
   for (i in ord) lines(x, funs[[i]], col = cols[i], lwd = lwd)
-  do.call(legend, c(list(lay$pos), leg_args))
+  for (i in which(is_out)) lines(x, funs[[i]], col = col_outlier, lwd = lwd_outlier)
+  if (show_legend) do.call(legend, c(list(lay$pos), leg_args))
   invisible(NULL)
 }
 
@@ -1309,7 +1441,8 @@ evaluate_unconditional_generativity <- function(
   J_aug            = 500,
   ridge            = 0,
   seed             = 12345,
-  n_cores          = 1
+  n_cores          = 1,
+  keep_draws       = FALSE
 ) {
   evaluate_generativity(
     pipeline, y_list,
@@ -1319,7 +1452,7 @@ evaluate_unconditional_generativity <- function(
     S = S, R = R,
     cost_type = cost_type, frac_train = frac_train,
     pool_subsample_n = pool_subsample_n, val_subsample_n = val_subsample_n,
-    J_aug = J_aug, seed = seed, n_cores = n_cores
+    J_aug = J_aug, seed = seed, n_cores = n_cores, keep_draws = keep_draws
   )
 }
 
@@ -1526,17 +1659,22 @@ plot_embeddings <- function(
     cex_main = NULL,
     cex_lab = NULL,
     cex = NULL,
-    cex_axis = NULL
+    cex_axis = NULL,
+    ks = NULL
 ) {
   ## cex_main / cex_lab / cex / cex_axis: if any is set, text and margins
   ## follow fig_par().
+  ## ks: component numbers of emb's columns, used in the panel titles and axis
+  ## labels (e.g. c(1, 3, 5) when plotting a subset); default 1:ncol(emb).
   if (!is.null(path)) {
     png(path, width = 800, height = 600)
   }
 
   K <- ncol(emb)
   N <- nrow(emb)
-  
+  ks <- ks %||% seq_len(K)
+  stopifnot(length(ks) == K)
+
   use_legend <- !is.null(color_shape_size_labels)
   
   ## ---- Color handling ---- ##
@@ -1595,9 +1733,9 @@ plot_embeddings <- function(
         ## ---- QQ plot ---- ##
         if (stats) {
           pval <- round(shapiro.test(emb[, k1])$p.value, 3)
-          main_txt <- paste("k =", k1, "| p =", pval)
+          main_txt <- paste("k =", ks[k1], "| p =", pval)
         } else {
-          main_txt <- paste("k =", k1)
+          main_txt <- paste("k =", ks[k1])
         }
         
         qqnorm(
@@ -1621,8 +1759,8 @@ plot_embeddings <- function(
         plot(
           emb[, k1], emb[, k2],
           main = main_txt,
-          xlab = paste("k =", k1),
-          ylab = paste("k =", k2),
+          xlab = paste("k =", ks[k1]),
+          ylab = paste("k =", ks[k2]),
           col  = point_cols,
           pch  = point_shapes,
           cex  = point_sizes
@@ -1671,6 +1809,9 @@ plot_embeddings <- function(
 ##   cex_lab        magnification of x/y axis labels (margins scale to fit)
 ##   cex            base text size; NULL keeps mfrow's automatic shrink
 ##   cex_axis       magnification of tick labels; NULL keeps the default
+##   share_ylim     TRUE: one y-range (incl. 0) across all panels, from the
+##                  subjects shown; numeric length-2: use as ylim for every
+##                  panel; FALSE: per-panel ylim
 plot_qi_recon_grid <- function(Qi_orig_list, Qi_recon_list, recon_losses,
                                 lower_mat, upper_mat,
                                 log_x_plus_1 = FALSE,
@@ -1679,7 +1820,8 @@ plot_qi_recon_grid <- function(Qi_orig_list, Qi_recon_list, recon_losses,
                                 cex_main = 1,
                                 cex_lab = 1,
                                 cex = NULL,
-                                cex_axis = NULL) {
+                                cex_axis = NULL,
+                                share_ylim = FALSE) {
   stopifnot(identical(dim(lower_mat), dim(upper_mat)))
   stopifnot(all(lower_mat <  upper_mat),
             all(lower_mat >= 0), all(upper_mat <= 1))
@@ -1693,30 +1835,43 @@ plot_qi_recon_grid <- function(Qi_orig_list, Qi_recon_list, recon_losses,
   old_par <- c(par(mfrow = c(n_row, n_col)), fig_par(cex_main, cex_lab, cex, cex_axis))
   on.exit(par(old_par), add = TRUE)
 
+  ## First pass: draw each panel's loss quantile and subject (same RNG order
+  ## as before), so a shared y-range can be computed over the shown subjects.
+  disp <- if (log_x_plus_1) function(q) log(q + 1) else identity
+  ylab <- if (log_x_plus_1) "log(Q(p) + 1)" else "Q(p)"
+  p_mat   <- matrix(NA_real_,    n_row, n_col)
+  idx_mat <- matrix(NA_integer_, n_row, n_col)
   for (i in seq_len(n_row)) {
     for (j in seq_len(n_col)) {
       p           <- runif(1, lower_mat[i, j], upper_mat[i, j])
       idx_sort    <- round(1 + (N_ - 1) * p)
       q_value     <- recon_losses_sort[idx_sort]
-      idx_payload <- which(recon_losses == q_value)[1]   # break ties safely
+      p_mat[i, j]   <- p
+      idx_mat[i, j] <- which(recon_losses == q_value)[1]   # break ties safely
+    }
+  }
 
-      Qi       <- Qi_orig_list[[idx_payload]]
-      Qi_recon <- Qi_recon_list[[idx_payload]]
-      pg       <- pi_grid_fun(length(Qi))
+  ylim_shared <- if (is.numeric(share_ylim)) share_ylim else if (isTRUE(share_ylim)) {
+    range(c(0, unlist(lapply(idx_mat, function(k)
+      c(disp(Qi_orig_list[[k]]), disp(Qi_recon_list[[k]]))))), finite = TRUE)
+  } else NULL
 
-      if (log_x_plus_1) {
-        Qi_disp       <- log(Qi + 1)
-        Qi_recon_disp <- log(Qi_recon + 1)
-        ylab          <- "log(Q(p) + 1)"
-      } else {
-        Qi_disp       <- Qi
-        Qi_recon_disp <- Qi_recon
-        ylab          <- "Q(p)"
-      }
+  for (i in seq_len(n_row)) {
+    for (j in seq_len(n_col)) {
+      p           <- p_mat[i, j]
+      idx_payload <- idx_mat[i, j]
+
+      Qi_disp       <- disp(Qi_orig_list[[idx_payload]])
+      Qi_recon_disp <- disp(Qi_recon_list[[idx_payload]])
+      pg            <- pi_grid_fun(length(Qi_disp))
+
+      ylim <- if (is.null(ylim_shared)) {
+        range(c(0, Qi_disp, Qi_recon_disp), finite = TRUE)
+      } else ylim_shared
 
       plot(pg, Qi_disp, type = "l",
            xlab = "p", ylab = ylab,
-           ylim = range(c(0, Qi_disp, Qi_recon_disp), finite = TRUE),
+           ylim = ylim,
            main = bquote(tau == .(sprintf("%.4f", p))),   # loss quantile
            # main = str_glue("{lower_mat[i, j]*100}%-{upper_mat[i, j]*100}%tile, p={round(p,3)}"),
            cex.main = cex_main
@@ -1749,8 +1904,18 @@ plot_generativity_boxes <- function(groups,
                                      collapse    = FALSE,
                                      mar         = NULL,
                                      medlwd      = 1.5,
-                                     whisklty    = 1) {
+                                     whisklty    = 1,
+                                     outcex      = 0.4,
+                                     outlwd      = 0.5,
+                                     highlight     = NULL,
+                                     highlight_col = "#7570B3") {
   ## medlwd / whisklty: median line width and whisker line type.
+  ## outcex / outlwd: outlier point size and line width (small so the many
+  ## outliers of a large R don't dominate the boxes).
+  ## highlight: optional data frame of individual scores to mark on the boxes,
+  ## with columns group (name in groups, or index), value, and optionally label
+  ## (drawn to the right of the box, nudged apart so labels don't overlap) and
+  ## split (box within the group when collapse = FALSE).
   ## path = NULL draws to the caller's device (e.g. a fig_png() paper figure
   ## with fig_par() set). With a path, opens a png at the paper figure spec of
   ## demo_nhanes.R: width / height in inches at res dpi, pointsize the printed
@@ -1823,8 +1988,33 @@ plot_generativity_boxes <- function(groups,
               col     = "gray85",
               border  = "black",
               medlwd  = medlwd,
-              whisklty = whisklty)
+              whisklty = whisklty,
+              outcex  = outcex,
+              outlwd  = outlwd)
     }
+  }
+
+  if (!is.null(highlight)) {
+    hl <- as.data.frame(highlight)
+    gi <- if (is.character(hl$group)) match(hl$group, groups) else hl$group
+    si <- if (!is.null(hl$split) && S > 1) hl$split else rep(1, nrow(hl))
+    x  <- gi + offsets[si]
+    if (!is.null(hl$label)) {
+      x_lab   <- x + box_w / 2 + 0.05
+      y_lab   <- hl$value
+      min_gap <- 1.2 * strheight("0", cex = par("cex.axis"))
+      for (xx in unique(x)) {
+        o <- which(x == xx)
+        o <- o[order(y_lab[o])]
+        for (k in seq_along(o)[-1]) {
+          y_lab[o[k]] <- max(y_lab[o[k]], y_lab[o[k - 1]] + min_gap)
+        }
+      }
+      segments(x, hl$value, x_lab, y_lab, col = highlight_col, lwd = 0.5)
+      text(x_lab, y_lab, hl$label, pos = 4, offset = 0.2,
+           cex = par("cex.axis"), col = highlight_col, xpd = NA)
+    }
+    points(x, hl$value, pch = 21, bg = highlight_col, col = "black", cex = 1)
   }
 
   if (!is.null(Ks)) {

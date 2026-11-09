@@ -1357,6 +1357,13 @@ fit_fun_qg_pca <- function(context, state, ...) {
   loss_fun <- loss_to_fun[[state$loss]]
 
   ## Choose qualifying dimension K
+  ## order_lambda: penalty used only to rank quantlets by importance (NULL:
+  ## same as lambda, which always penalizes the per-subject encoding). K
+  ## selection ranks with lambda, so a different order_lambda needs explicit K.
+  order_lambda <- state$order_lambda %||% state$lambda
+  if (is.null(state$K) && order_lambda != state$lambda) {
+    stop("order_lambda != lambda requires an explicit K (automatic K selection ranks quantlets with lambda).")
+  }
   if (is.null(state$K)) {
     out <- choose_near_lossless_K_qg_pca(
       epsilon = state$epsilon, alpha = state$alpha,
@@ -1384,7 +1391,7 @@ fit_fun_qg_pca <- function(context, state, ...) {
     ord <- order_quantlets_by_importance(
       Q_list = Q_list, E = out$E, G_center = out$G_center,
       p_grid = p_grid, p_star = p_star, Q_star = Q_star,
-      sqrt_w = sqrt_w, lambda = state$lambda
+      sqrt_w = sqrt_w, lambda = order_lambda
     )
     state$order_idx <- ord$order_idx
     state$G_center <- out$G_center
@@ -1455,8 +1462,11 @@ stage_qg_pca <- function(
     order_by = c("variance", "importance"),
     min_dQ = 1e-8,
     loss = "wasserstein",
+    order_lambda = NULL,
     seed = gen_seed()
 ) {
+  ## order_lambda: penalty for the importance ordering only (NULL: lambda);
+  ## lambda itself penalizes the per-subject encoding.
   order_by <- match.arg(order_by)
   new_stage(
     name = "qg_pca",
@@ -1470,6 +1480,7 @@ stage_qg_pca <- function(
       alpha = alpha,
       V = V,
       lambda = lambda,
+      order_lambda = order_lambda,
       order_by = order_by,
       min_dQ = min_dQ,
       loss = loss,
@@ -1518,6 +1529,7 @@ stage_wame <- function(
     lambda = 0,
     order_by = c("variance", "importance"),
     loss = "wasserstein",
+    order_lambda = NULL,
     seed = gen_seed()
 ) {
   order_by <- match.arg(order_by)
@@ -1526,6 +1538,7 @@ stage_wame <- function(
     K = K, K_max = K_max,
     epsilon = epsilon, alpha = alpha, V = V,
     lambda = lambda,
+    order_lambda = order_lambda,
     order_by = order_by,
     min_dQ = min_dQ,
     loss = loss,
