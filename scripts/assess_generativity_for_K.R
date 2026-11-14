@@ -77,7 +77,8 @@ for (K in Ks) {
 ## All generativity helpers live in src/utils.R:
 ##   decode_z_to_Qi, encode_y_to_Qi_aug, decode_z_to_Qi_aug, compute_generativity,
 ##   generativity_score, encode_y_to_z, fit_mean_cov, sample_mean_cov,
-##   evaluate_unconditional_generativity, plot_generativity_boxes.
+##   evaluate_generativity (covariate-blind, unconditional here),
+##   plot_generativity_boxes.
 
 
 
@@ -94,7 +95,7 @@ n_cores <- min(4, R)
 path_y <- file.path('data', 'processed', 'nhanes-fda-mims_v2.rds')
 y_list <- readRDS(path_y)
 
-## Compute split-normalized generativity per K
+## Compute relative generativity per K
 gen_list <- list()
 for (K in Ks) {
   print(str_glue("===== Assessing Generativity for K = {K} ====="))
@@ -103,7 +104,7 @@ for (K in Ks) {
   pipeline <- readRDS(path_pipe)
 
   start <- Sys.time()
-  gen_list[[as.character(K)]] <- evaluate_unconditional_generativity(
+  gen_list[[as.character(K)]] <- evaluate_generativity(
     pipeline, y_list,
     S = S, R = R,
     frac_train       = 0.5,
@@ -143,7 +144,7 @@ plot_generativity_boxes(
   scores      = scores_by_K[plot_idx],
   hline       = 0,
   xlab        = "K",
-  ylab        = "Log norm. generativity",
+  ylab        = "Relative generativity",
   main        = "",
   path        = path_plot,
   width       = 3.25,

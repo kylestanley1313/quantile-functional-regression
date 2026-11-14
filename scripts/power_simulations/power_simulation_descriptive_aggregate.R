@@ -1,13 +1,13 @@
 # Power simulation (Setting 4), descriptive arm -- aggregate stage ---------
 # Scans every <ART_DIR>/replicates/b-*/ row directory written by
 # power_simulation_descriptive_compute.R, combines their per-row Hotelling
-# p-value and S*R-vector log-normalized conditional generativity scores
+# p-value and S*R-vector conditional relative generativity scores
 # (manuscript Section 2.1.2; the directed statistic is whichever of
 # skewness/mean matches this run's REGIME -- compute.R only ever fills in one
 # of them) into one long table, and produces three figures vs. the relabeled
 # fraction psi:
 #   - hotelling_power.png      Hotelling rejection rate (ribbon: Wilson band).
-#   - generativity_omnibus.png Omnibus log-normalized generativity score: ONE
+#   - generativity_omnibus.png Omnibus relative generativity score: ONE
 #                               boxplot per psi, pooling all
 #                               S * R * NSIM_PER_SETTING scores at that psi
 #                               (this deliberately deviates from the
@@ -118,7 +118,7 @@ box_plot <- function(dt, y_col, title_str) {
     geom_boxplot(outlier.size = 0.6) +
     facet_grid(regime ~ effect, labeller = label_both) +
     labs(x = expression(psi ~ "(relabeled fraction)"),
-         y = "Log-normalized score",
+         y = "Relative generativity",
          title = title_str,
          subtitle = "One box per psi, pooling all splits x replicates x sims; dashed red: 0") +
     house_theme

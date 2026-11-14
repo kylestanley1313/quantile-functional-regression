@@ -4,7 +4,7 @@
 ## power_simulation_descriptive_*.R): the discrepancy primitive, the
 ## conditional latent fit / decoder sampler, the inferential arm's
 ## frozen-reference null test (Section 5.1 of generativity_framing.md), the
-## descriptive arm's log-normalized score (manuscript Section 2.1.2), and
+## descriptive arm's relative generativity score (manuscript Section 2.1.2), and
 ## wilson_interval for the rejection-rate curves. Assumes src/cot.R (which
 ## sources src/utils.R and src/model.R) is already sourced -- reuses
 ## q_moments, compute_generativity_score, fit_mean_cov, sample_mean_cov, and
@@ -182,12 +182,12 @@ generativity_frozen_ref_test <- function(
 }
 
 
-## ---- Descriptive arm: log-normalized conditional generativity score ---- ##
+## ---- Descriptive arm: conditional relative generativity score ---- ##
 
-## S-split log-normalized conditional generativity score (manuscript Section
+## S-split conditional relative generativity score (manuscript Section
 ## 2.1.2, applied to the conditional/per-group model rather than the
-## unconditional one -- see evaluate_pipeline_generativity in src/utils.R for
-## the unconditional sibling whose structure this mirrors). Descriptive only,
+## unconditional one -- see evaluate_generativity in src/utils.R, whose
+## covariate-blind unconditional case has the structure this mirrors). Descriptive only,
 ## no null distribution or p-value.
 ##
 ## For each of S independent train/val splits of the full N = length(y_list)

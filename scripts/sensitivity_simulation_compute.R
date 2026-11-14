@@ -146,7 +146,7 @@ gen_uncond_by_k <- p_vals_by_k
 gen_cond1_by_k  <- p_vals_by_k
 gen_cond2_by_k  <- p_vals_by_k
 
-# S/R kept small: evaluate_unconditional_generativity() runs once
+# S/R kept small: evaluate_generativity() runs once
 # unconditionally and once per group for every K below, so this stays cheap
 # per row.
 S_gen <- 2
@@ -154,10 +154,16 @@ R_gen <- 5
 
 # n_cores hardcoded to 1: each row is a single LSF core, so generativity
 # evaluation is plain sequential -- no future::plan() pool needed.
+# Taxonomy note: gen_uncond is unconditional covariate-blind generativity.
+# gen_cond1 / gen_cond2 pass ONE group's data as y_list, so the blind
+# mean-cov model is fit within that group only and scored against it; this
+# is outside the blind/aware x unconditional/conditional taxonomy of
+# evaluate_generativity (whose conditional types fit on the full training
+# half and restrict only the reference set via ref_mask).
 mean_log_norm_generativity <- function(pipeline, y_list_g, context) {
   tryCatch(
     {
-      gen <- evaluate_unconditional_generativity(
+      gen <- evaluate_generativity(
         pipeline, y_list_g,
         S = S_gen, R = R_gen, 
         cost_type = 'mean',

@@ -143,7 +143,7 @@ n_cores <- min(5, R)
 
 ## NHANES gets subsampled to CHOP's size BEFORE each split so both arms see
 ## matched-size splits and the comparison is apples-to-apples.
-gen_nhanes <- evaluate_unconditional_generativity(
+gen_nhanes <- evaluate_generativity(
   pipeline_star, y_nhanes,
   S = S, R = R,
   frac_train       = 0.5,
@@ -153,7 +153,7 @@ gen_nhanes <- evaluate_unconditional_generativity(
   seed             = 1234,
   n_cores          = n_cores
 )
-gen_chop <- evaluate_unconditional_generativity(
+gen_chop <- evaluate_generativity(
   pipeline_star, y_chop,
   S = S, R = R,
   frac_train       = 0.5,
@@ -182,7 +182,7 @@ plot_generativity_boxes(
   Ks          = NULL,
   vline_group = NULL,
   hline       = 0,
-  ylab        = "Log norm. generativity",
+  ylab        = "Relative generativity",
   main        = str_glue("Generativity (K = {K_star})"),
   collapse = TRUE
 )

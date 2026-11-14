@@ -723,6 +723,127 @@ plot_losslessness <- function(
 }
 
 
+## Joint dimension-selection figure: two stacked frames sharing the K axis.
+##   - bottom (heights[2] share): per-subject cross-validated reconstruction
+##     errors by K (jittered points), the (1 - alpha) quantile curve, the
+##     epsilon threshold, and a right axis of pairwise-distance percentiles.
+##   - top (heights[1] share): median relative generativity by K, with a
+##     reference line at 0.
+## The frames abut (the top frame's x axis is the bottom frame's top edge), and
+## a vertical line at K_star runs through both.
+## valid_losses_by_K: named list (names = K) of per-subject losses.
+## gen_scores_by_K:   named list (names = K) of relative generativity
+##                    scores (pooled over splits; nested lists are unlisted).
+## epsilon: threshold for the dashed line; defaults to the epsilon_percentile
+##          percentile of pairwise_distances.
+## path = NULL draws to the caller's device (e.g. a fig_png() paper figure with
+## fig_par() set); with a path, opens a png at the paper figure spec.
+plot_dimension_selection <- function(valid_losses_by_K,
+                                     gen_scores_by_K,
+                                     pairwise_distances,
+                                     K_star             = NULL,
+                                     epsilon            = NULL,
+                                     epsilon_percentile = 2,
+                                     alpha              = 0.05,
+                                     pairwise_percentiles = c(50, 25, 10, 1),
+                                     heights            = c(1, 3),
+                                     jitter_width       = 0.2,
+                                     ylim_loss          = NULL,
+                                     xlab               = "K",
+                                     ylab_loss          = "Cross-Validated Wasserstein Error",
+                                     ylab_loss2         = "Pairwise Wasserstein Distance Percentile",
+                                     ylab_gen           = "Median rel.\ngenerativity",
+                                     col_quant          = rgb(0, 0.75, 0),
+                                     col_gen            = "black",
+                                     col_ref            = "red",
+                                     pt_col             = rgb(0, 0, 0, 0.25),
+                                     pt_cex             = 0.5,
+                                     path               = NULL,
+                                     width              = 3.25,
+                                     height             = 3.6,
+                                     pointsize          = 7,
+                                     res                = 600) {
+  Ks <- as.numeric(names(valid_losses_by_K))
+  stopifnot(setequal(as.character(Ks), names(gen_scores_by_K)))
+  gen_med <- vapply(as.character(Ks), function(k) {
+    median(unlist(gen_scores_by_K[[k]], use.names = FALSE), na.rm = TRUE)
+  }, numeric(1))
+  v_quants <- vapply(valid_losses_by_K, quantile, numeric(1),
+                     probs = 1 - alpha, names = FALSE)
+  if (is.null(epsilon)) {
+    epsilon <- quantile(pairwise_distances, epsilon_percentile / 100,
+                        names = FALSE)
+  }
+
+  if (!is.null(path)) {
+    png(path, width = width, height = height, units = "in", res = res,
+        pointsize = pointsize)
+    fig_par(cex_main = 1.2, cex_lab = 1, cex = 1, cex_axis = 0.8)
+  }
+  old_par <- par(no.readonly = TRUE)
+  on.exit(if (is.null(path)) par(old_par) else dev.off(), add = TRUE)
+
+  ## Shared horizontal geometry: same xlim and left / right margins in both
+  ## frames so the K positions line up. The right margin fits the percentile
+  ## tick labels (horizontal) plus the secondary axis label.
+  xlim  <- range(Ks) + c(-2, 2) * jitter_width
+  mar   <- par("mar")
+  mgp   <- par("mgp")
+  ## Left margin also fits a multi-line generativity label
+  n_lines <- length(strsplit(ylab_gen, "\n", fixed = TRUE)[[1]])
+  mar_l <- max(mar[2], mgp[1] + n_lines + 0.4)
+  mar_r <- mgp[1] + 1.6
+  layout(matrix(1:2, ncol = 1), heights = heights)
+
+  ## ----- Top frame: median generativity
+  par(mar = c(0, mar_l, 0.5, mar_r))
+  y_rng <- range(c(gen_med, 0), finite = TRUE)
+  ylim_gen <- y_rng + c(-0.12, 0.12) * diff(y_rng)
+  plot(NULL, xlim = xlim, ylim = ylim_gen, xaxt = "n", yaxt = "n",
+       xlab = "", ylab = "")
+  axis(2, at = pretty(y_rng, n = 3))
+  ## Multi-line label: keep the innermost line on the usual label line so it
+  ## clears the tick labels, stacking further lines outward
+  mtext(ylab_gen, side = 2, line = mgp[1] + 0.5 * (n_lines - 1),
+        cex = par("cex.lab"))
+  abline(h = 0, lty = "dashed", col = "gray50")
+  if (!is.null(K_star)) abline(v = K_star, lty = 3, lwd = 1.5, col = col_ref)
+  lines(Ks, gen_med, col = col_gen)
+  points(Ks, gen_med, pch = 19, col = col_gen, cex = 0.9)
+
+  ## ----- Bottom frame: cross-validated reconstruction errors
+  par(mar = c(mar[1], mar_l, 0, mar_r))
+  y_all <- unlist(valid_losses_by_K, use.names = FALSE)
+  plot(NULL, xlim = xlim, ylim = ylim_loss %||% c(0, max(y_all)),
+       xaxt = "n", xlab = xlab, ylab = ylab_loss)
+  ## Small gap.axis so no K label is dropped at narrow widths
+  axis(1, at = Ks, labels = Ks, gap.axis = 0.1)
+  for (i in seq_along(Ks)) {
+    v <- valid_losses_by_K[[i]]
+    points(jitter(rep(Ks[i], length(v)), amount = jitter_width), v,
+           pch = 19, col = pt_col, cex = pt_cex)
+  }
+  abline(h = epsilon, lty = "dashed", col = col_ref)
+  ## Label epsilon on the left axis, in the reference colour
+  axis(2, at = epsilon, labels = sprintf("%.2f", epsilon), col.axis = col_ref,
+       tick = FALSE)
+  if (!is.null(K_star)) abline(v = K_star, lty = 3, lwd = 1.5, col = col_ref)
+  lines(Ks, v_quants, col = col_quant, lwd = 1.2)
+  points(Ks, v_quants, col = col_quant, pch = 17)
+
+  ## Secondary y-axis: pairwise-distance percentiles
+  ticks_y <- quantile(pairwise_distances, pairwise_percentiles / 100,
+                      names = FALSE)
+  yr <- par("usr")[3:4]
+  ok <- ticks_y >= yr[1] & ticks_y <= yr[2]
+  axis(4, at = ticks_y[ok], labels = pairwise_percentiles[ok], las = 1)
+  mtext(ylab_loss2, side = 4, line = mar_r - 1, cex = par("cex.lab"))
+
+  invisible(list(gen_median = gen_med, loss_quantile = v_quants,
+                 epsilon = epsilon))
+}
+
+
 ## Group-wise jittered scatter of per-subject losses (one column per group),
 ## styled after plot_losslessness. Each entry in losses_list is a numeric
 ## vector; group_labels are the x-axis tick labels.
@@ -761,6 +882,7 @@ plot_losslessness_groups <- function(losses_list,
     mar <- .trimmed_mar(par("mar"), main, xlab, ylab)
     ## Without an x label only the group names sit below the axis: fit them
     if (.is_blank(xlab)) mar[1] <- par("mgp")[2] + 1.2 * par("cex.axis") + 0.1
+    if (!is.null(group_sublabels)) mar[1] <- mar[1] + 1.2 * par("cex.axis")
   }
   old_par <- par(mar = mar)
   ## Restore only the caller's device; our own png is closed below
@@ -903,200 +1025,102 @@ compute_generativity_score <- function(Q_a, Q_b, w, cost_type) {
 }
 
 
-## TODO: Remove once new evaluate_generativity function is validated and integrated
-## Data-split normalized generativity assessment.
+## Data-split relative generativity assessment.
+##
+## Generativity is a property of both the encoder-decoder and the latent
+## model, so it is classified along two axes:
+##
+##   latent model    covariate-blind: P_theta(.) ignores covariates
+##                   covariate-aware: P_theta(. | x); synthetic data are drawn
+##                     at the observed covariates of the reference subjects
+##   reference data  unconditional: the full held-out data D
+##                   conditional:   the stratum D_S = {Q_i in D : x_i in S}
+##
+## The arguments select the type:
+##
+##                    | ref_mask = NULL        | ref_mask = stratum mask
+##   -----------------+------------------------+--------------------------
+##   fit_fun = NULL   | unconditional, blind   | conditional, blind
+##   fit_fun, X given | unconditional, aware   | conditional, aware
 ##
 ## For each of S splits: partition y_list into train/val (optionally
-## subsampling to size subsample_n first), compute the baseline real-vs-val
-## score T_tv from the held-out real training data, fit a mean-covariance
-## latent model on the training half, then for each of R replicates draw
-## synthetic z's of size matching the validation set, decode, and score
-## synth-vs-val (T_sv). The reported quantity per replicate is
-## log_norm = log(T_sv / T_tv).
+## subsampling the pool to pool_subsample_n first), fit the latent model on
+## the FULL training half, restrict both halves to the reference set
+## (ref_mask), compute the baseline real-vs-val score T_tv from the reference
+## training subjects, then for each of R replicates draw synthetic latents of
+## size matching the reference validation set, decode, and score
+## synth-vs-val (T_sv). The reported quantity per replicate is the relative
+## generativity, stored as log_norm = log(T_sv / T_tv) (field name kept so
+## saved results still load).
+##
+## The split is drawn before (and independently of) ref_mask, so calls that
+## differ only in ref_mask use the same splits and the same fitted models per
+## split: their scores are directly comparable (e.g. unconditional vs each
+## stratum). The model is always fit on the full training half (not the
+## stratum), so a covariate-aware model sees every stratum.
+##
+## fit_fun / sample_fun contract (covariate-aware scoring):
+##   fit_fun(Z, X)    -> a fitted latent-model object ("fit"). Z is the split's
+##                       entire training-half latent matrix and X the
+##                       corresponding rows of X. Model configuration
+##                       (hyperparameters, which column of X is what) is closed
+##                       over by the caller.
+##   sample_fun(n, fit, X) -> a length-n list of numeric K-vectors, the i-th
+##                       drawn from p(Z | X_i). X is the n-row covariate subset
+##                       of the reference validation subjects being scored (same
+##                       rows, same order as idx_val_grp).
+## With fit_fun = sample_fun = NULL (covariate-blind), the latent model is the
+## unconditional mean-covariance model (fit_mean_cov with ridge,
+## sample_mean_cov) and X is never passed to it.
+##
+## val_subsample_n subsamples the reference validation set only (scoring cost /
+## cross-stratum comparability); pool_subsample_n also shrinks the fit.
+##
+## keep_draws = TRUE additionally stores, per split, the reference training /
+## validation indices (idx_tr_grp, idx_val_grp) and each replicate's synthetic
+## latents (z_draws: a length-R list of n_val x K matrices), so any scored
+## replicate can be rebuilt and plotted with generativity_replicate(). Memory
+## is S * R * n_val * K * 8 bytes (~16.5 MB for S = 5, R = 20, n_val ~ 4100,
+## K = 5); decoded QFs and transport plans are never kept.
 ##
 ## Cost note: for NHANES-sized splits (~4000x4000) each transport solve
-## allocates a ~128 MB cost matrix and mc.cores multiplies that footprint.
+## allocates a ~128 MB cost matrix and n_cores multiplies that footprint.
 ## Keep S, R modest for tuning runs.
-evaluate_pipeline_generativity <- function(
-  pipeline, y_list,
-  S, R,
-  cost_type   = 'wasserstein',
-  frac_train  = 0.5,
-  subsample_n = NULL,
-  J_aug       = 500,
-  ridge       = 0,
-  seed        = 12345,
-  n_cores     = 1
-) {
-  set.seed(seed)
-
-  ## Build augmented grid + weights once
-  p_grid     <- pipeline$training$cache$p_grid
-  p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(J_aug - length(p_grid)))))
-  w_aug      <- get_quadrature_weights(p_grid_aug)
-
-  split_seeds <- sample.int(.Machine$integer.max, S)
-
-  splits <- vector('list', S)
-  for (s in seq_len(S)) {
-    set.seed(split_seeds[s])
-
-    ## Optional subsample, then split
-    n_pool <- length(y_list)
-    if (!is.null(subsample_n)) {
-      stopifnot(subsample_n <= n_pool)
-      idx_pool <- sample.int(n_pool, subsample_n)
-    } else {
-      idx_pool <- seq_len(n_pool)
-    }
-    n_used   <- length(idx_pool)
-    n_train  <- floor(frac_train * n_used)
-    perm     <- sample(idx_pool)
-    idx_tr   <- perm[seq_len(n_train)]
-    idx_val  <- perm[(n_train + 1):n_used]
-
-    y_tr  <- y_list[idx_tr]
-    y_val <- y_list[idx_val]
-
-    Q_val_aug   <- encode_y_to_Qi_aug(pipeline, y_val, p_grid_aug)
-    Q_train_aug <- encode_y_to_Qi_aug(pipeline, y_tr,  p_grid_aug)
-
-    T_tv <- compute_generativity_score(Q_train_aug, Q_val_aug, w_aug, cost_type)
-
-    Z_tr <- encode_y_to_z(pipeline, y_tr)
-    fit  <- fit_mean_cov(Z_tr, ridge = ridge)
-
-    rep_seeds <- sample.int(.Machine$integer.max, R)
-
-    gen_one_rep <- function(r) {
-      # A fresh multisession worker has no py_pkg (src/cot.R:13 creates it
-      # only in the launching session). stage_flow pipelines need a
-      # worker-local py_pkg tied to that worker's own Python interpreter
-      # (decode_fun_flow, src/cot.R). Guarded on existence so a reused
-      # worker only pays the re-init cost once, not once per task.
-      if (!exists("py_pkg", envir = .GlobalEnv, inherits = FALSE)) {
-        setwd(.repo_root)
-        source(file.path(.repo_root, "src", "cot.R"))
-      }
-      set.seed(rep_seeds[r])
-      z_draws     <- sample_mean_cov(length(idx_val), fit)
-      Q_synth_aug <- decode_z_to_Qi_aug(pipeline, z_draws, p_grid_aug, p_grid)
-      compute_generativity_score(Q_synth_aug, Q_val_aug, w_aug, cost_type)
-    }
-
-    .repo_root <- getwd()
-
-    if (n_cores > 1) {
-      # Reuse a caller-established worker pool if one is already active
-      # (a script can call future::plan(multisession, ...) once up front
-      # to avoid repeated pool teardown/Python re-init across many calls);
-      # otherwise self-manage a scoped pool for just this call.
-      caller_has_pool <- !inherits(future::plan(), "sequential")
-      if (!caller_has_pool) {
-        old_plan <- future::plan(future::multisession, workers = n_cores)
-        on.exit(future::plan(old_plan), add = TRUE)
-      }
-      # future.globals is explicit (not TRUE) so future's auto-detection
-      # doesn't walk into decode_z_to_Qi_aug -> decode -> decode_fun_flow
-      # and try to export the parent's live py_pkg reticulate handle.
-      # future.seed = NULL: each task already seeds itself deterministically
-      # via rep_seeds[r], so future's own RNG-stream management is neither
-      # needed nor safe to enable here -- future.seed = TRUE switches
-      # workers to the L'Ecuyer-CMRG RNG kind, which makes
-      # set.seed(rep_seeds[r]) draw a *different* stream than the plain
-      # Mersenne-Twister default used by the n_cores <= 1 path below,
-      # breaking numeric reproducibility across n_cores values. NULL (vs.
-      # the FALSE default) also silences future.apply's "UNRELIABLE VALUE"
-      # warning, which is a false positive given the manual per-task seed.
-      T_sv <- unlist(future.apply::future_lapply(
-        seq_len(R), gen_one_rep,
-        future.seed    = NULL,
-        future.globals = c("rep_seeds", "pipeline", "idx_val", "fit",
-                            "Q_val_aug", "w_aug", "p_grid_aug", "p_grid", ".repo_root")
-      ))
-    } else {
-      T_sv <- unlist(lapply(seq_len(R), gen_one_rep))
-    }
-
-    splits[[s]] <- list(
-      T_tv     = T_tv,
-      T_sv     = T_sv,
-      log_norm = log(T_sv / T_tv)
-    )
-  }
-
-  K_used <- ncol(encode_y_to_z(pipeline, y_list[1]))
-  list(
-    splits = splits,
-    meta = list(
-      S = S, R = R,
-      frac_train  = frac_train,
-      subsample_n = subsample_n,
-      N_used      = if (is.null(subsample_n)) length(y_list) else subsample_n,
-      K           = K_used
-    )
-  )
-}
-
-
-## Generalization of evaluate_pipeline_generativity to a covariate-aware
-## (conditional) setting. y_mask selects the group under study; X carries
-## whatever covariates fit_fun needs to fit a (possibly joint, cross-group)
-## latent model. See evaluate_unconditional_generativity below for the
-## covariate-agnostic special case, which reduces to
-## evaluate_pipeline_generativity's exact behavior.
-##
-## fit_fun / sample_fun contract (fixed, minimal signature -- see design
-## notes in the generativity-conditional plan):
-##   fit_fun(Z, X)    -> a fitted latent-model object ("fit"). Z is that
-##                       split's ENTIRE training-half latent matrix (not
-##                       restricted to the y_mask group) and X is the
-##                       corresponding training-half covariate subset (or
-##                       NULL). Passing the full training half (not just the
-##                       masked group) lets fit_fun be a joint/pooled model
-##                       across groups (e.g. a future fit_binary-based
-##                       closure), which needs to see every group to fit at
-##                       all. y_mask is NOT passed to fit_fun; a caller whose
-##                       model needs an explicit group column adds it to X
-##                       itself (e.g. X = data.frame(group = y_mask)).
-##   sample_fun(n, fit, X = NULL) -> a length-n list of numeric K-vectors drawn
-##                       from fit, matching sample_mean_cov's shape. X, when
-##                       not NULL, is the n-row covariate subset for the
-##                       validation-group observations being scored (same rows,
-##                       same order as idx_val_grp), letting a conditional
-##                       sample_fun draw z_i ~ p(Z | X_i) row-by-row instead of
-##                       n iid unconditional draws. An unconditional sample_fun
-##                       (e.g. sample_mean_cov) ignores it.
-## Any other configuration a real fit/sample pair needs (hyperparameters,
-## which column of X encodes group membership, which group level to sample
-## from) is not threaded through here generically -- the caller closes over
-## it when building fit_fun/sample_fun (see evaluate_unconditional_generativity
-## for the simplest example).
-##
-## keep_draws = TRUE additionally stores, per split, the training/validation
-## indices (idx_tr_grp, idx_val_grp) and each replicate's synthetic latents
-## (z_draws: a length-R list of n_val x K matrices), so any scored replicate can
-## be rebuilt and plotted with generativity_replicate(). Memory is
-## S * R * n_val * K * 8 bytes (~16.5 MB for S = 5, R = 20, n_val ~ 4100,
-## K = 5); decoded QFs and transport plans are never kept.
 evaluate_generativity <- function(
-  pipeline, y_list, X, y_mask,
-  fit_fun, sample_fun,
+  pipeline, y_list,
+  X                = NULL,
+  fit_fun          = NULL,
+  sample_fun       = NULL,
+  ref_mask         = NULL,
   S, R,
   cost_type        = 'wasserstein',
   frac_train       = 0.5,
   pool_subsample_n = NULL,
   val_subsample_n  = NULL,
   J_aug            = 500,
+  ridge            = 0,
   seed             = 12345,
   n_cores          = 1,
   keep_draws       = FALSE
 ) {
-  stopifnot(
-    is.logical(y_mask), length(y_mask) == length(y_list),
-    is.null(X) || NROW(X) == length(y_list),
-    is.function(fit_fun), is.function(sample_fun)
-  )
+  ## Model axis
+  aware <- !is.null(fit_fun) || !is.null(sample_fun)
+  if (aware) {
+    stopifnot(
+      is.function(fit_fun), is.function(sample_fun),
+      !is.null(X), NROW(X) == length(y_list)
+    )
+  } else {
+    fit_fun    <- function(Z, X) fit_mean_cov(Z, ridge = ridge)
+    sample_fun <- sample_mean_cov
+    X          <- NULL   # covariate-blind: the model never sees X
+  }
+
+  ## Reference axis
+  conditional <- !is.null(ref_mask)
+  if (!conditional) ref_mask <- rep(TRUE, length(y_list))
+  stopifnot(is.logical(ref_mask), length(ref_mask) == length(y_list),
+            !anyNA(ref_mask))
 
   set.seed(seed)
 
@@ -1111,11 +1135,8 @@ evaluate_generativity <- function(
   for (s in seq_len(S)) {
     set.seed(split_seeds[s])
 
-    ## Optional pool-level subsample, then split -- identical to
-    ## evaluate_pipeline_generativity, unmasked, so the RNG draw sequence is
-    ## independent of y_mask. This shrinks what the model is fit AND scored
-    ## on (both idx_tr and idx_val derive from idx_pool); see val_subsample_n
-    ## below for scoring-only subsampling that leaves the fit untouched.
+    ## Optional pool-level subsample, then split -- unmasked, so the RNG draw
+    ## sequence is independent of ref_mask.
     n_pool <- length(y_list)
     if (!is.null(pool_subsample_n)) {
       stopifnot(pool_subsample_n <= n_pool)
@@ -1129,21 +1150,17 @@ evaluate_generativity <- function(
     idx_tr   <- perm[seq_len(n_train)]
     idx_val  <- perm[(n_train + 1):n_used]
 
-    ## Fit on the FULL training half (not y_mask-restricted) so a joint,
-    ## cross-group model has both groups available to it.
+    ## Fit on the FULL training half (not ref_mask-restricted)
     Z_tr <- encode_y_to_latent(pipeline, y_list[idx_tr])
     X_tr <- if (is.null(X)) NULL else X[idx_tr, , drop = FALSE]
     fit  <- fit_fun(Z_tr, X_tr)
 
-    ## Restrict to the masked group for scoring. Logical subsetting is not a
-    ## random draw, so when y_mask is all-TRUE, idx_tr_grp == idx_tr and
+    ## Restrict to the reference set for scoring. Logical subsetting is not a
+    ## random draw, so for an unconditional reference idx_tr_grp == idx_tr and
     ## idx_val_grp == idx_val exactly.
-    idx_tr_grp  <- idx_tr[y_mask[idx_tr]]
-    idx_val_grp <- idx_val[y_mask[idx_val]]
+    idx_tr_grp  <- idx_tr[ref_mask[idx_tr]]
+    idx_val_grp <- idx_val[ref_mask[idx_val]]
 
-    ## Optional validation-only subsample: fit above already used the FULL
-    ## training half, so this only controls scoring cost / cross-group
-    ## comparability, unlike pool_subsample_n which also shrinks the fit.
     if (!is.null(val_subsample_n)) {
       stopifnot(val_subsample_n <= length(idx_val_grp))
       idx_val_grp <- sample(idx_val_grp, val_subsample_n)
@@ -1160,8 +1177,11 @@ evaluate_generativity <- function(
     rep_seeds <- sample.int(.Machine$integer.max, R)
 
     gen_one_rep <- function(r) {
-      # See evaluate_pipeline_generativity's identical guard: a fresh
-      # multisession worker has no py_pkg until src/cot.R is re-sourced.
+      # A fresh multisession worker has no py_pkg (src/cot.R:13 creates it
+      # only in the launching session). stage_flow pipelines need a
+      # worker-local py_pkg tied to that worker's own Python interpreter
+      # (decode_fun_flow, src/cot.R). Guarded on existence so a reused
+      # worker only pays the re-init cost once, not once per task.
       if (!exists("py_pkg", envir = .GlobalEnv, inherits = FALSE)) {
         setwd(.repo_root)
         source(file.path(.repo_root, "src", "cot.R"))
@@ -1176,17 +1196,27 @@ evaluate_generativity <- function(
     .repo_root <- getwd()
 
     if (n_cores > 1) {
-      # See evaluate_pipeline_generativity for the rationale behind
-      # caller_has_pool reuse, future.globals being explicit, and
-      # future.seed = NULL. sample_fun is added to future.globals (unlike
-      # evaluate_pipeline_generativity's hardcoded sample_mean_cov) because
-      # it's a caller-supplied closure, not a function guaranteed to already
-      # exist on the worker via the source(cot.R) guard above.
+      # Reuse a caller-established worker pool if one is already active
+      # (a script can call future::plan(multisession, ...) once up front
+      # to avoid repeated pool teardown/Python re-init across many calls);
+      # otherwise self-manage a scoped pool for just this call.
       caller_has_pool <- !inherits(future::plan(), "sequential")
       if (!caller_has_pool) {
         old_plan <- future::plan(future::multisession, workers = n_cores)
         on.exit(future::plan(old_plan), add = TRUE)
       }
+      # future.globals is explicit (not TRUE) so future's auto-detection
+      # doesn't walk into decode_latent_to_Qi_aug -> decode -> decode_fun_flow
+      # and try to export the parent's live py_pkg reticulate handle.
+      # future.seed = NULL: each task already seeds itself deterministically
+      # via rep_seeds[r], so future's own RNG-stream management is neither
+      # needed nor safe to enable here -- future.seed = TRUE switches
+      # workers to the L'Ecuyer-CMRG RNG kind, which makes
+      # set.seed(rep_seeds[r]) draw a *different* stream than the plain
+      # Mersenne-Twister default used by the n_cores <= 1 path below,
+      # breaking numeric reproducibility across n_cores values. NULL (vs.
+      # the FALSE default) also silences future.apply's "UNRELIABLE VALUE"
+      # warning, which is a false positive given the manual per-task seed.
       rep_res <- future.apply::future_lapply(
         seq_len(R), gen_one_rep,
         future.seed    = NULL,
@@ -1224,6 +1254,9 @@ evaluate_generativity <- function(
     splits = splits,
     meta = list(
       S = S, R = R,
+      model            = if (aware) 'covariate-aware' else 'covariate-blind',
+      reference        = if (conditional) 'conditional' else 'unconditional',
+      n_ref            = sum(ref_mask),
       frac_train       = frac_train,
       pool_subsample_n = pool_subsample_n,
       val_subsample_n  = val_subsample_n,
@@ -1287,25 +1320,42 @@ generativity_replicate <- function(res, pipeline, y_list, s, r) {
 
 ## One worked example of evaluate_generativity's procedure, keeping the data:
 ## a single random train/val split (frac_train), latent model fit on the full
-## training half, the y_mask group's validation QFs (optionally subsampled to
-## val_subsample_n) vs one synthetic draw of the same size for that group, both
-## on the augmented p-grid. Same steps and scores as one (split, replicate) of
-## evaluate_generativity; seed makes the example reproducible. Returns the grid,
+## training half, the reference set's validation QFs (ref_mask; NULL = all;
+## optionally subsampled to val_subsample_n) vs one synthetic draw of the same
+## size, both on the augmented p-grid. Same steps, scores and generativity type
+## (fit_fun / sample_fun NULL = covariate-blind, ref_mask NULL = unconditional)
+## as one (split, replicate) of evaluate_generativity; seed makes the example
+## reproducible. Returns the grid,
 ## the real (val) and synthetic QF lists, T_tv, T_sv and
 ## log_norm = log(T_sv / T_tv), plus idx_val (indices into y_list of the
 ## validation QFs), z_draws (n x K matrix of the synthetic latents, in the
 ## space decode_latent_to_Qi_aug consumes) and w2_synth (each synthetic QF's
 ## W2 distance to the mean training-half QF, for flagging outlying draws).
 generativity_example <- function(
-  pipeline, y_list, X, y_mask,
-  fit_fun, sample_fun,
+  pipeline, y_list,
+  X               = NULL,
+  fit_fun         = NULL,
+  sample_fun      = NULL,
+  ref_mask        = NULL,
   cost_type       = 'wasserstein',
   frac_train      = 0.5,
   val_subsample_n = NULL,
   J_aug           = 500,
+  ridge           = 0,
   seed            = 12345
 ) {
-  stopifnot(is.logical(y_mask), length(y_mask) == length(y_list))
+  ## Generativity type, as in evaluate_generativity
+  if (!is.null(fit_fun) || !is.null(sample_fun)) {
+    stopifnot(is.function(fit_fun), is.function(sample_fun),
+              !is.null(X), NROW(X) == length(y_list))
+  } else {
+    fit_fun    <- function(Z, X) fit_mean_cov(Z, ridge = ridge)
+    sample_fun <- sample_mean_cov
+    X          <- NULL
+  }
+  if (is.null(ref_mask)) ref_mask <- rep(TRUE, length(y_list))
+  stopifnot(is.logical(ref_mask), length(ref_mask) == length(y_list),
+            !anyNA(ref_mask))
   set.seed(seed)
 
   p_grid     <- pipeline$training$cache$p_grid
@@ -1322,9 +1372,9 @@ generativity_example <- function(
   X_tr <- if (is.null(X)) NULL else X[idx_tr, , drop = FALSE]
   fit  <- fit_fun(Z_tr, X_tr)
 
-  ## Restrict to the group; optional validation subsample
-  idx_tr_grp  <- idx_tr[y_mask[idx_tr]]
-  idx_val_grp <- idx_val[y_mask[idx_val]]
+  ## Restrict to the reference set; optional validation subsample
+  idx_tr_grp  <- idx_tr[ref_mask[idx_tr]]
+  idx_val_grp <- idx_val[ref_mask[idx_val]]
   if (!is.null(val_subsample_n)) {
     stopifnot(val_subsample_n <= length(idx_val_grp))
     idx_val_grp <- sample(idx_val_grp, val_subsample_n)
@@ -1422,37 +1472,79 @@ plot_generativity_example <- function(ex, main = "",
 }
 
 
-## Covariate-agnostic special case of evaluate_generativity: no covariates,
-## the group under study is everyone, and the latent model is the
-## unconditional mean-covariance model. Reduces to
-## evaluate_pipeline_generativity's exact behavior (same splits, same RNG
-## draws, same scores) when val_subsample_n is NULL -- see the
-## generativity-conditional plan for the argument. Public signature otherwise
-## matches evaluate_pipeline_generativity's (pool_subsample_n was renamed from
-## subsample_n to disambiguate it from val_subsample_n), so this is a drop-in
-## replacement at call sites modulo that rename.
-evaluate_unconditional_generativity <- function(
-  pipeline, y_list,
-  S, R,
-  cost_type        = 'wasserstein',
-  frac_train       = 0.5,
-  pool_subsample_n = NULL,
-  val_subsample_n  = NULL,
-  J_aug            = 500,
-  ridge            = 0,
-  seed             = 12345,
-  n_cores          = 1,
-  keep_draws       = FALSE
-) {
-  evaluate_generativity(
-    pipeline, y_list,
-    X = NULL, y_mask = rep(TRUE, length(y_list)),
-    fit_fun    = function(Z, X) fit_mean_cov(Z, ridge = ridge),
-    sample_fun = sample_mean_cov,
-    S = S, R = R,
-    cost_type = cost_type, frac_train = frac_train,
-    pool_subsample_n = pool_subsample_n, val_subsample_n = val_subsample_n,
-    J_aug = J_aug, seed = seed, n_cores = n_cores, keep_draws = keep_draws
+## Generativity of one latent model (fit_fun / sample_fun with covariates X;
+## all NULL = covariate-blind) against several reference sets: unconditional
+## (all subjects) and conditional on each level of strata. strata is a vector
+## or factor with one entry per element of y_list and any number of levels
+## (factor levels set the order, otherwise sorted unique values). Every call
+## uses the same seed, so all reference sets share splits and per-split model
+## fits. Returns
+##   gen:    evaluate_generativity results, named "All" and by level
+##   n:      sample sizes in the data passed in, same names
+##   levels: the levels in order, and is_factor (for plot labels)
+## Draw with plot_generativity_strata().
+evaluate_generativity_strata <- function(pipeline, y_list, strata,
+                                         X = NULL, fit_fun = NULL,
+                                         sample_fun = NULL, S, R,
+                                         val_subsample_n = NULL,
+                                         seed = 12345, n_cores = 1, ...) {
+  stopifnot(length(strata) == length(y_list), !anyNA(strata))
+  lv <- if (is.factor(strata)) levels(droplevels(strata)) else sort(unique(strata))
+  lv_chr <- as.character(lv)
+
+  run <- function(ref_mask, what) {
+    start <- Sys.time()
+    res <- evaluate_generativity(
+      pipeline, y_list,
+      X = X, fit_fun = fit_fun, sample_fun = sample_fun,
+      ref_mask = ref_mask,
+      S = S, R = R,
+      val_subsample_n = val_subsample_n,
+      seed = seed, n_cores = n_cores, ...
+    )
+    message(sprintf('  generativity (%s): %.1f min', what,
+                    as.numeric(difftime(Sys.time(), start, units = 'mins'))))
+    res
+  }
+  gen <- c(
+    list(All = run(NULL, 'unconditional')),
+    setNames(lapply(lv, function(l) run(strata == l, paste('stratum', l))),
+             lv_chr)
+  )
+  n <- c(length(strata), vapply(lv, function(l) sum(strata == l), integer(1)))
+
+  list(gen = gen, n = setNames(n, c("All", lv_chr)),
+       levels = lv_chr, is_factor = is.factor(strata))
+}
+
+## Box plot of an evaluate_generativity_strata() result on the active device:
+## "All" (unconditional), a dotted separator, then one box per stratum
+## (conditional), each labeled with its sample size on a second line. labels
+## maps each level (as character) to its display name. The subscript of a
+## stratum's N is its value (e.g. N[0], N[1] for a binary covariate), or its
+## level index for a factor. ... goes to plot_generativity_boxes.
+plot_generativity_strata <- function(res, labels,
+                                     ylab = "Relative generativity",
+                                     main = "", ...) {
+  lv <- res$levels
+  stopifnot(all(lv %in% names(labels)))
+  n <- res$n
+  sub_code <- if (res$is_factor) seq_along(lv) else lv
+  sublabels <- c(
+    list(bquote("(" * N == .(n[[1]]) * ")")),
+    lapply(seq_along(lv), function(j)
+      bquote("(" * N[.(sub_code[j])] == .(n[[j + 1]]) * ")"))
+  )
+  plot_generativity_boxes(
+    groups          = c("All", unname(labels[lv])),
+    scores          = lapply(res$gen, function(g) lapply(g$splits, `[[`, "log_norm")),
+    group_sublabels = sublabels,
+    vsep            = 1.5,
+    hline           = 0,
+    ylab            = ylab,
+    main            = main,
+    collapse        = TRUE,
+    ...
   )
 }
 
@@ -1888,13 +1980,18 @@ plot_qi_recon_grid <- function(Qi_orig_list, Qi_recon_list, recon_losses,
 ## Designed for two display modes:
 ##   - lambda-sweep:   groups = as.character(lambdas), Ks supplied, vline at lambda_star
 ##   - dataset compare: groups = c("NHANES", "CHOP"), Ks = NULL, vline_group = NULL
+##   - taxonomy compare: groups = c("All", stratum names), vsep = 1.5 and
+##                       group_sublabels with the sample sizes
 plot_generativity_boxes <- function(groups,
                                      scores,
                                      Ks          = NULL,
                                      hline       = 0,
                                      vline_group = NULL,
+                                     vsep        = NULL,
+                                     group_sublabels = NULL,
+                                     align_columns = FALSE,
                                      xlab        = "",
-                                     ylab        = "log normalized generativity",
+                                     ylab        = "relative generativity",
                                      main        = "",
                                      path        = NULL,
                                      width       = 3.25,
@@ -1923,9 +2020,18 @@ plot_generativity_boxes <- function(groups,
   ## The default margins follow the current par: trimmed for an omitted title /
   ## axis label (.trimmed_mar), with room for the K axis when Ks is given. mar
   ## overrides.
+  ## vsep: x positions of dotted gray separator lines between groups (e.g. 1.5
+  ## to set the first box apart); unlike vline_group, not tied to a group.
+  ## group_sublabels: optional second line of x tick labels under groups
+  ## (character or expression vector / list of length L, e.g. sample sizes
+  ## with plotmath subscripts); the bottom margin grows to fit it.
+  ## align_columns: center group g at the center of the g-th of L equal-width
+  ## columns of the whole figure (margins included), so panels 1 / L of the
+  ## figure width placed below it in LaTeX line up with the boxes.
   L <- length(groups)
   stopifnot(length(scores) == L)
   if (!is.null(Ks)) stopifnot(length(Ks) == L)
+  if (!is.null(group_sublabels)) stopifnot(length(group_sublabels) == L)
 
   ## Flatten per-group values to set y-limits and per-split box positions.
   S <- length(scores[[1]])
@@ -1959,20 +2065,39 @@ plot_generativity_boxes <- function(groups,
     mar <- .trimmed_mar(par("mar"), main, xlab, ylab)
     ## Without an x label only the group names sit below the axis: fit them
     if (.is_blank(xlab)) mar[1] <- par("mgp")[2] + 1.2 * par("cex.axis") + 0.1
+    if (!is.null(group_sublabels)) mar[1] <- mar[1] + 1.2 * par("cex.axis")
     if (!is.null(Ks)) mar[4] <- max(mar[4], par("mgp")[1] + 1)
   }
   old_par <- par(mar = mar)
   ## Restore only the caller's device; our own png is closed below
   if (is.null(path)) on.exit(par(old_par), add = TRUE)
 
+  ## Column alignment: one x unit per figure column (fin / L inches), with
+  ## x = 0.5 at the figure's left edge, so the plot region (inside the
+  ## margins) spans the x range below exactly (xaxs = "i").
+  if (align_columns) {
+    in_per_x <- par("fin")[1] / L
+    xlim <- c(0.5 + par("mai")[2] / in_per_x, L + 0.5 - par("mai")[4] / in_per_x)
+    xaxs <- "i"
+  } else {
+    xlim <- c(0.5, L + 0.5)
+    xaxs <- "r"
+  }
   plot(NULL,
-       xlim = c(0.5, L + 0.5),
+       xlim = xlim,
        ylim = y_lim,
-       xaxt = "n",
+       xaxt = "n", xaxs = xaxs,
        xlab = xlab, ylab = ylab, main = main)
   axis(1, at = seq_len(L), labels = groups)
+  if (!is.null(group_sublabels)) {
+    ## Second label line: an axis shifted down one tick-label height, with no
+    ## line or ticks of its own
+    axis(1, at = seq_len(L), labels = as.expression(group_sublabels),
+         line = 1.2 * par("cex.axis"), tick = FALSE, lwd = 0)
+  }
 
   abline(h = hline, col = "red", lty = 3, lwd = 1.2)
+  if (!is.null(vsep)) abline(v = vsep, col = "gray40", lty = 3, lwd = 1)
   if (!is.null(vline_group)) {
     vx <- match(vline_group, groups)
     if (!is.na(vx)) abline(v = vx, col = "red", lty = 3, lwd = 1.2)

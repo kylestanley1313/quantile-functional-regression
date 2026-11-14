@@ -225,7 +225,7 @@ for (j in seq_along(lambdas)) {
 
   ## Same seed as the demo -> same splits and replicate seeds
   t0 <- Sys.time()
-  g  <- evaluate_unconditional_generativity(
+  g  <- evaluate_generativity(
     pipe, y_list, S = gen_S, R = gen_R, frac_train = 0.5, pool_subsample_n = NULL,
     J_aug = 500, ridge = 0, seed = gen_eval_seed, n_cores = gen_n_cores, keep_draws = TRUE
   )
@@ -263,7 +263,7 @@ plot_generativity_boxes(
   Ks       = Ks_a,
   hline    = 0,
   xlab     = expression(lambda),
-  ylab     = "Log norm. generativity",
+  ylab     = "Relative generativity",
   collapse = TRUE
 )
 dev.off()

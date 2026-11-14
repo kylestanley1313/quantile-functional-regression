@@ -4,7 +4,7 @@
 # simulate a single group-structured dataset of size N_0 + N_1, fit a fresh
 # SGM encoder, destroy a proportion psi of the group structure by relabeling,
 # then record (a) the two-sample Hotelling p-value on the full relabeled
-# embeddings and (b) S*R log-normalized conditional generativity scores
+# embeddings and (b) S*R conditional relative generativity scores
 # (manuscript Section 2.1.2, log(T_syn-val / T_train-val)) for test group
 # V_TEST under the omnibus (Wasserstein) statistic and the directed statistic
 # matching REGIME (skewness or mean) -- the other directed statistic is not
@@ -66,9 +66,9 @@ stopifnot(regime %in% c("mean", "skewness"), v_test %in% c(0L, 1L))
 
 # Fixed internals (not swept -- kept out of the env surface, as with S_gen/R_gen
 # in scripts/sensitivity_simulation_compute.R). j_aug matches the default in
-# evaluate_pipeline_generativity(); with nobs >= j_aug the augmented grid is
+# evaluate_generativity(); with nobs >= j_aug the augmented grid is
 # p_grid plus its {0, 1} endpoints, same as that function produces. frac_train
-# also mirrors evaluate_pipeline_generativity's default.
+# also mirrors evaluate_generativity's default.
 sim_seed_base <- 12345
 j_aug         <- 500L
 frac_train    <- 0.5

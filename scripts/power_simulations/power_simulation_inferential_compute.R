@@ -59,7 +59,7 @@ stopifnot(regime %in% c("mean", "skewness"), v_test %in% c(0L, 1L))
 
 # Fixed internals (not swept -- kept out of the env surface, as with S_gen/R_gen
 # in scripts/sensitivity_simulation_compute.R). j_aug matches the default in
-# evaluate_pipeline_generativity(); with nobs >= j_aug the augmented grid is
+# evaluate_generativity(); with nobs >= j_aug the augmented grid is
 # p_grid plus its {0, 1} endpoints, same as that function produces.
 sim_seed_base <- 12345
 j_aug         <- 500L

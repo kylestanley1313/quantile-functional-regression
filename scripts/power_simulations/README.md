@@ -88,4 +88,4 @@ by relative path) -- the batch scripts already `cd` there before invoking
 | `power_simulation_inferential_aggregate.R` | inferential plots |
 | `power_simulation_descriptive_compute.R` | one row of the descriptive sweep |
 | `power_simulation_descriptive_aggregate.R` | descriptive plots |
-| `utils.R` | shared generativity primitives (both arms) -- discrepancy statistic, conditional latent fit, decoder sampler, the frozen-reference test, the log-normalized score, `wilson_interval` |
+| `utils.R` | shared generativity primitives (both arms) -- discrepancy statistic, conditional latent fit, decoder sampler, the frozen-reference test, the relative generativity score, `wilson_interval` |

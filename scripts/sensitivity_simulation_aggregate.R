@@ -85,9 +85,9 @@ save_metric_plot("p_vals_pca", "Power", "Power using standard PCA on quantile fu
                   "power_pca.png", is_sig)
 save_metric_plot("p_vals_pca", "P-Value", "P-Value using standard PCA on quantile functions",
                   "pvalue_pca.png")
-save_metric_plot("gen_uncond", "Log normalized generativity", "Unconditional generativity vs K",
+save_metric_plot("gen_uncond", "Relative generativity", "Unconditional generativity vs K",
                   "generativity_unconditional.png")
-save_metric_plot("gen_cond1", "Log normalized generativity", "Conditional generativity (group 1) vs K",
+save_metric_plot("gen_cond1", "Relative generativity", "Conditional generativity (group 1) vs K",
                   "generativity_cond_group1.png")
-save_metric_plot("gen_cond2", "Log normalized generativity", "Conditional generativity (group 2) vs K",
+save_metric_plot("gen_cond2", "Relative generativity", "Conditional generativity (group 2) vs K",
                   "generativity_cond_group2.png")
