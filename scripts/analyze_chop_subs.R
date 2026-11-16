@@ -8,7 +8,7 @@ source('src/utils.R')
 
 ## ========== Setup ========== ##
 
-dir_art <- file.path('artifacts', 'analyze_chop-mims-subs_v2')
+dir_art <- file.path('artifacts', 'analyze_chop-mims-subs_v3')
 
 ## Latent dimensions
 K <- 4
@@ -28,13 +28,20 @@ p_grid <- p_grid_fun(
   interval_counts = c(51, 50)
 )
 
+## Define augmented p-grid
+J_aug <- 500
+p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(J_aug - length(p_grid)))))
+
+## Set p-grid to augmented p-grid
+p_grid <- p_grid_aug
+
 ## ========== Representation Learning (WAME) ========== ##
 
 ## Construct pipeline
 pipeline <- construct_pipeline(
   stages = list(
     stage_eqf_sgrid(),
-    stage_eqf_cgrid(p_grid = p_grid),
+    stage_eqf_cgrid(p_grid = p_grid, extrap = 'ratio'),
     stage_wame(
       K = K,
       K_max = 20,
@@ -59,7 +66,7 @@ pipeline <- construct_pipeline(
 ## Fitting
 pipeline <- fit(pipeline, y_list)
 path_pipe <- file.path(dir_art, 'pipe.pth')
-pipeline <- set_c_signs(pipeline, flip = c(3))
+# pipeline <- set_c_signs(pipeline, flip = c(3))
 saveRDS(pipeline, path_pipe)
 
 ## New context
@@ -80,7 +87,31 @@ Qi_ctx_ <- decode(pipeline, Q_ctx_, from = 2, to = 1)
 y_ctx_ <- decode(pipeline, Qi_ctx_, from = 1, to = 0)
 
 
+## ----- Paper figure spec (matches scripts/demo_nhanes.R)
+
+## Render every paper figure at its final printed size (inches) and include it
+## in LaTeX at that same width, so fig_pointsize is the printed text size in
+## every figure regardless of panel count. fig_cex = 1 undoes mfrow's
+## auto-shrink in multi-panel layouts. fig_cex_main / fig_cex_lab /
+## fig_cex_axis are the baseline title / axis-label / tick-label sizes.
+fig_res        <- 600
+fig_pointsize  <- 7
+fig_cex        <- 1
+fig_cex_lab    <- 1.0
+fig_cex_main   <- 1.2 * fig_cex_lab
+fig_cex_axis   <- 0.8 * fig_cex_lab
+fig_cex_legend <- fig_cex_lab
+fig_png <- function(path, width_in, height_in, pointsize = fig_pointsize) {
+  png(path, width = width_in, height = height_in, units = "in",
+      res = fig_res, pointsize = pointsize)
+}
+
+
 ## ----- Visualize reconstructions
+
+## Create directory
+dir_rep_plots <- file.path(dir_art, 'plots', 'representation')
+if (!dir.exists(dir_rep_plots)) dir.create(dir_rep_plots, recursive = TRUE)
 
 ## Compute reconstruction losses
 recon_losses <- numeric(N)
@@ -108,6 +139,10 @@ upper_mat_3x5 <- matrix(
 
 log_scale <- FALSE   # toggle: TRUE => plot on log(Q(p) + 1) scale
 
+path_plot <- file.path(dir_rep_plots,
+                       sprintf('Qi-recon_grid_3x5%s.png',
+                               if (log_scale) '_log' else ''))
+fig_png(path_plot, 6.5, 4)   # TODO: final printed size
 plot_qi_recon_grid(
   Qi_orig_list  = Qi_ctx$payload,
   Qi_recon_list = Qi_ctx_$payload,
@@ -115,17 +150,20 @@ plot_qi_recon_grid(
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
   log_x_plus_1  = log_scale,
-  path          = file.path(dir_art, 'plots', 'representation',
-                            sprintf('Qi-recon_grid_3x5%s.png',
-                                    if (log_scale) '_log' else ''))
+  share_ylim    = TRUE,
+  cex_main      = fig_cex_main,
+  cex_lab       = fig_cex_lab,
+  cex           = fig_cex,
+  cex_axis      = fig_cex_axis
 )
+dev.off()
 
 
 ## ----- Visualize data in different spaces
 
 ## Plotting globals
-mark_outliers <- TRUE
-include_legend <- TRUE
+mark_outliers <- FALSE
+include_legend <- FALSE
 k_from <- 1
 k_to <- 4
 idx_outliers <- pipeline$training$meta$idx_outliers
@@ -240,7 +278,7 @@ saveRDS(p_grid, path_p_grid)
 pipeline_qpca <- construct_pipeline(
   stages = list(
     stage_eqf_sgrid(),
-    stage_eqf_cgrid(p_grid = p_grid),
+    stage_eqf_cgrid(p_grid = p_grid, extrap = 'ratio'),
     stage_q_pca(K = K_qpca)
   ),
   supp_Y = c(0, 0.6, seq(0.601, 500, by = 0.001)),
@@ -299,17 +337,24 @@ upper_mat_3x5 <- matrix(
 
 log_scale <- FALSE   # toggle: TRUE => plot on log(Q(p) + 1) scale
 
+path_plot <- file.path(dir_rep_plots,
+                       sprintf('Qi-qpca-recon_grid_3x5%s.png',
+                               if (log_scale) '_log' else ''))
+fig_png(path_plot, 6.5, 4)   # TODO: final printed size
 plot_qi_recon_grid(
-  Qi_orig_list  = Qi_ctx$payload,
-  Qi_recon_list = Qi_ctx_$payload,
+  Qi_orig_list  = Qi_qpca_ctx$payload,
+  Qi_recon_list = Qi_qpca_ctx_$payload,
   recon_losses  = recon_losses,
   lower_mat     = lower_mat_3x5,
   upper_mat     = upper_mat_3x5,
   log_x_plus_1  = log_scale,
-  path          = file.path(dir_art, 'plots', 'representation',
-                            sprintf('Qi-qpca-recon_grid_3x5%s.png',
-                                    if (log_scale) '_log' else ''))
+  share_ylim    = TRUE,
+  cex_main      = fig_cex_main,
+  cex_lab       = fig_cex_lab,
+  cex           = fig_cex,
+  cex_axis      = fig_cex_axis
 )
+dev.off()
 
 
 ## ----- Visualize data in different spaces
@@ -383,6 +428,7 @@ path_y <- file.path('data', 'processed', 'chop-mims_v1.rds')
 path_sleep <- file.path('data', 'processed', 'chop-sleep_v1.rds')
 path_nonwear <- file.path('data', 'processed', 'chop-nonwear_v1.rds')
 path_mvpa <- file.path('data', 'processed', 'chop-mvpa_v1.rds')
+path_wear <- file.path('data', 'processed', 'chop-wear_v1.rds')
 path_misc <- file.path('data', 'processed', 'chop_misc-preds.rds')
 
 ## Paths (from pipelines)
@@ -398,6 +444,7 @@ y_list <- readRDS(path_y)
 df_sleep <- readRDS(path_sleep)
 df_nonwear <- readRDS(path_nonwear)
 df_mvpa <- readRDS(path_mvpa)
+df_wear <- readRDS(path_wear)
 df_misc <- readRDS(path_misc)
 Q <- readRDS(path_Q)
 C <- readRDS(path_C)
@@ -446,12 +493,6 @@ df_nonwear$t_nonwear <- log((df_nonwear$nonwear + 1e-3) / (1 - df_nonwear$nonwea
 ## Sleep
 df_sleep$good_sleep <- df_sleep$sleep_dur >= 8
 
-## Misc
-## NOTE: Dichotomized impact variable leads to models with better predictive 
-## performance then trichotomized impact models and continuous impact variables.
-imp_high_50 <- median(df_misc$impact23_hr_day)
-df_misc$imp <- as.integer(df_misc$impact23_hr_day >= imp_high_50)
-
 
 
 ## ----- Dataframe Assembly
@@ -473,8 +514,17 @@ df <- df %>%
   inner_join(df_sleep, by = 'sub_id') %>%
   inner_join(df_nonwear, by = 'sub_id') %>%
   inner_join(df_mvpa, by = 'sub_id') %>%
+  inner_join(df_wear, by = 'sub_id') %>%
   inner_join(df_misc, by = 'sub_id')
 df <- na.omit(df)
+
+## High-impact indicator: at or above the analysis-sample median of
+## self-reported high-impact time (computed after na.omit so "above median"
+## refers to the children actually modeled)
+## NOTE: Dichotomized impact variable leads to models with better predictive
+## performance then trichotomized impact models and continuous impact variables.
+imp_high_50 <- median(df$impact23_hr_day)
+df$imp <- as.integer(df$impact23_hr_day >= imp_high_50)
 
 ## Save dataframe
 path_df <- file.path(dir_art, 'df.rds')
@@ -1363,34 +1413,25 @@ for (plim_id in names(plims)) {
 ## The reference Q for each impact group is the pointwise mean of the group's
 ## QFs (the QF of their Wasserstein barycenter). Delta is linear in the q_k
 ## coefficients, so joint bands come from qpca_joint_band (conditional on the
-## Q-PCA basis and the reference QF). Integrals are computed on an augmented
-## p-grid (p_grid plus evenly spaced points), onto which the Q-PCA basis E is
-## linearly interpolated, so that small delta spans many grid points.
+## Q-PCA basis and the reference QF). Integrals are computed on the augmented
+## p-grid that the pipelines are fit on, so that small delta spans many grid
+## points.
 
 ## NOTE: (WAME Analogue)
-## The WAME model is also linear in its embeddings c, even though the WAME
-## encoder c(.) is nonlinear. For a fixed fitted pipeline,
-##   Delta_WAME(p0) = sum_k beta_k^(g) {c_k(Q~_{p0}) - c_k(Q_ref)},
-## where beta^(g) are the c_k coefficients at impact level g (main effects plus
-## c_k:imp interactions when g = 1). Encoding each Q~_{p0} once and stacking
-## the differences c(Q~_{p0}) - c(Q_ref) as rows gives a matrix that plays the
-## role of L_sub below, so the same vcov-based max-t bands apply (conditional
-## on the fitted encoder). To also reflect encoder (and reference) estimation
-## uncertainty, use a nonparametric bootstrap: resample children with
-## replacement B times (B ~ 200-500); in each replicate refit the WAME stage
-## (the flow stage is not needed), re-encode, refit the lm, recompute the
-## reference QFs and Delta*(p0); then form pointwise percentile bands or
-## max-t bands from the 95th percentile of max_{p0} |Delta* - Delta| / sd*(p0).
-## Delta is a difference of predictions, so it is invariant to rotations or
-## sign flips of the embeddings across refits and no alignment is needed.
+## The fixed-encoder version is implemented in the WAME section below. To also
+## reflect encoder (and reference) estimation uncertainty, use a nonparametric
+## bootstrap (not implemented): resample children with replacement B times
+## (B ~ 200-500); in each replicate refit the WAME stage (the flow stage is not
+## needed), re-encode, refit the lm, recompute the reference QFs and
+## Delta*(p0); then form pointwise percentile bands or max-t bands from the
+## 95th percentile of max_{p0} |Delta* - Delta| / sd*(p0). Delta is a difference
+## of predictions, so it is invariant to rotations or sign flips of the
+## embeddings across refits and no alignment is needed.
 
-## Augmented grid, quadrature weights and Q-PCA basis on it
-J_aug <- 500
-p_grid_aug <- sort(unique(c(p_grid, pi_grid_fun(J_aug - length(p_grid)))))
+## The pipelines are fit on the augmented grid, so no interpolation is needed
+p_grid_aug <- p_grid
 w_aug <- get_quadrature_weights(p_grid_aug)
-E_aug <- apply(qpca_state$E, 2, function(e) {
-  approx(p_grid, e, xout = p_grid_aug, rule = 2)$y
-})
+E_aug <- qpca_state$E
 
 ## Reference QFs: pointwise mean, on the augmented grid, of the QFs of the
 ## children in each impact group (children in df, matched to y_list by sub_id)
@@ -1401,26 +1442,31 @@ Q_ref_sub <- lapply(c(`0` = 0, `1` = 1), function(g) {
   colMeans(Qi_aug[idx, , drop = FALSE])
 })
 
+## substitution_diffs: p0 (>= delta), Q_ref(p0), and D, whose row j is Q~ - Q_ref
+## for p0 = p0[j] on p_grid_aug
+substitution_diffs <- function(p_grid_aug, Q_ref, delta) {
+  p0 <- p_grid_aug[p_grid_aug >= delta]
+  Q_shift <- approx(p_grid_aug, Q_ref, xout = p_grid_aug + delta, rule = 2)$y
+  Q_p0 <- approx(p_grid_aug, Q_ref, xout = p0, rule = 2)$y
+  D <- t(vapply(seq_along(p0), function(j) {
+    ifelse(p_grid_aug <= p0[j] - delta, Q_shift - Q_ref,
+           ifelse(p_grid_aug <= p0[j], Q_p0[j] - Q_ref, 0))
+  }, numeric(length(p_grid_aug))))
+  list(p0 = p0, Q_p0 = Q_p0, D = D)
+}
+
 ## compute_substitution_band: Delta(p0, delta) for each p0 in p_grid_aug with
 ## p0 >= delta, with joint (max-t) 95% bands. Returns the qpca_joint_band list
 ## plus p0 and Q_ref(p0), or NULL if no q_k terms are retained.
 compute_substitution_band <- function(model, E_aug, w_aug, p_grid_aug, Q_ref,
                                       imp, delta, ...) {
-  p0 <- p_grid_aug[p_grid_aug >= delta]
-  Q_shift <- approx(p_grid_aug, Q_ref, xout = p_grid_aug + delta, rule = 2)$y
-  Q_p0 <- approx(p_grid_aug, Q_ref, xout = p0, rule = 2)$y
-
-  ## Row j: Q~ - Q_ref for p0 = p0[j], on p_grid_aug
-  D <- t(vapply(seq_along(p0), function(j) {
-    ifelse(p_grid_aug <= p0[j] - delta, Q_shift - Q_ref,
-           ifelse(p_grid_aug <= p0[j], Q_p0[j] - Q_ref, 0))
-  }, numeric(length(p_grid_aug))))
+  sub <- substitution_diffs(p_grid_aug, Q_ref, delta)
 
   ## Row j of L_sub maps the q_k coefficients to sum_i w_i D_ji alpha(p_i)
-  L_sub <- sweep(D, 2, w_aug, '*') %*% E_aug
+  L_sub <- sweep(sub$D, 2, w_aug, '*') %*% E_aug
   band <- qpca_joint_band(model, L_sub, imp, ...)
   if (is.null(band)) return(NULL)
-  c(band, list(p0 = p0, Q_p0 = Q_p0))
+  c(band, list(p0 = sub$p0, Q_p0 = sub$Q_p0))
 }
 
 ## draw_substitution_panel: plots a substitution band over the p0 (>= delta)
@@ -1500,6 +1546,66 @@ for (imp in c(0, 1)) {
   }
   for (qlim_id in names(qlims_sub)) {
     png(str_glue('{dir_art}/plots/q-pca/substitution_qlim-{qlim_id}_imp-{imp}.png'),
+        width = 960, height = 960, pointsize = 18)
+    par(mar = c(4.5, 4.5, 3, 1))
+    draw_substitution_panel(
+      band_sub, delta = delta_sub, qlim = qlims_sub[[qlim_id]],
+      main = str_glue('Activity substitution (imp = {imp}, delta = {delta_sub})')
+    )
+    dev.off()
+  }
+}
+
+
+## ----- Interpretation: activity substitution curves (WAME)
+
+## The WAME model is also linear in its embeddings c, even though the WAME
+## encoder c(.) is nonlinear. For a fixed fitted pipeline,
+##   Delta_WAME(p0) = sum_k beta_k^(g) {c_k(Q~_{p0}) - c_k(Q_ref)},
+## where beta^(g) are the c_k coefficients at impact level g (main effects plus
+## c_k:imp interactions when g = 1). Encoding each Q~_{p0} once and stacking
+## the differences c(Q~_{p0}) - c(Q_ref) as rows gives a matrix that plays the
+## role of L_sub, so the same vcov-based max-t bands apply (conditional on the
+## fitted encoder and the reference QF).
+
+## encode_Q_to_c: fitted WAME encoder applied to a list of QFs on p_grid, in the
+## pipeline's sign convention
+encode_Q_to_c <- function(Q_list) {
+  Q_ctx <- new_context(
+    payload = Q_list,
+    cache = pipeline$training$cache,
+    meta = list(Q_list = Q_list)
+  )
+  c_ctx_to_matrix(pipeline, encode(pipeline, Q_ctx, from = 2, to = 3))
+}
+
+## compute_substitution_band_wame: as compute_substitution_band, with rows of
+## L_sub given by c(Q~) - c(Q_ref). Returns NULL if no c_k terms are retained.
+compute_substitution_band_wame <- function(model, p_grid_aug, Q_ref, imp, delta,
+                                           ...) {
+  sub <- substitution_diffs(p_grid_aug, Q_ref, delta)
+  C_sub <- encode_Q_to_c(c(
+    list(Q_ref),
+    lapply(seq_along(sub$p0), function(j) Q_ref + sub$D[j, ])
+  ))
+  L_sub <- sweep(C_sub[-1, , drop = FALSE], 2, C_sub[1, ], '-')
+  band <- qpca_joint_band(model, L_sub, imp, col_prefix = 'c', ...)
+  if (is.null(band)) return(NULL)
+  c(band, list(p0 = sub$p0, Q_p0 = sub$Q_p0))
+}
+
+## Generate activity substitution plots
+for (imp in c(0, 1)) {
+  band_sub <- compute_substitution_band_wame(
+    model = models[['dist_C_imp']]$model_full, p_grid_aug = p_grid_aug,
+    Q_ref = Q_ref_sub[[as.character(imp)]], imp = imp, delta = delta_sub
+  )
+  if (is.null(band_sub)) {
+    warning('No c_k terms retained in model; skipping substitution plots (imp = ', imp, ')')
+    next
+  }
+  for (qlim_id in names(qlims_sub)) {
+    png(str_glue('{dir_art}/plots/wame/substitution_qlim-{qlim_id}_imp-{imp}.png'),
         width = 960, height = 960, pointsize = 18)
     par(mar = c(4.5, 4.5, 3, 1))
     draw_substitution_panel(
@@ -1743,6 +1849,177 @@ for (plim_id in names(plims)) {
     }
   }
 }
+
+## ========== Paper Figures/Tables ========== ##
+
+dir_paper <- file.path(dir_art, 'plots', 'paper')
+dir.create(dir_paper, recursive = TRUE, showWarnings = FALSE)
+
+## Paper resolution: plot sizes below are given in px at 72 dpi (which sets
+## the layout); paper_png renders them at paper_scale x the pixel density
+## (res = 72 * paper_scale), so text, lines and layout keep their proportions
+paper_scale <- 4
+paper_png <- function(path, width, height, pointsize = 12) {
+  png(path, width = round(width * paper_scale), height = round(height * paper_scale),
+      res = 72 * paper_scale, pointsize = pointsize)
+}
+
+
+## ----- Table 1: Participant characteristics (CSV for Word)
+
+## Descriptive statistics for the analysis sample (rows of df), overall and by
+## sex x age group (the male/old model covariates). Edit tab1_rows to change
+## rows; types are 'header' (section label), 'msd' (mean (SD)), 'mediqr'
+## (median (IQR)) and 'npct' (n (%) of a logical expression); expressions are
+## evaluated in df. The CSV has two header rows (merge the sex cells in Word)
+## and a suggested footnote below the table; it is written as UTF-8 with a BOM
+## so the ≤ sign survives opening in Excel.
+tab1_groups <- list(
+  all = rep(TRUE, nrow(df)),
+  f_young = df$male == 0 & df$old == 0,
+  f_old = df$male == 0 & df$old == 1,
+  m_young = df$male == 1 & df$old == 0,
+  m_old = df$male == 1 & df$old == 1
+)
+tab1_n <- vapply(tab1_groups, sum, integer(1))
+
+tab1_rows <- data.frame(rbind(
+  c('Anthropometry',                    'header', NA, NA),
+  c('BMI, kg/m²',                  'msd',    'bmi', 1),
+  c('BMI Z-score',                      'msd',    'bmiz', 2),
+  c('Bone',                             'header', NA, NA),
+  c('aBMD Z-score',                     'msd',    'subtot_bmd_age_z_all', 2),
+  c('Self-reported high-impact PA',     'header', NA, NA),
+  c('Time, h/day, median (IQR)',        'mediqr', 'impact23_hr_day', 2),
+  c('Above median, n (%)',              'npct',   'imp == 1', 1),
+  c('Accelerometry',                    'header', NA, NA),
+  c('Valid days',                       'msd',    'n_days', 1),
+  c('Waking wear time, h/day',          'msd',    'wear_hr_day', 1),
+  c('Mean intensity, MIMS/min',         'msd',    'a_mean', 1),
+  c('MVPA, % of waking wear time',      'msd',    'mvpa_rate * 100', 1),
+  c('99th percentile, MIMS/min',        'msd',    'a_99', 1)
+), stringsAsFactors = FALSE)
+names(tab1_rows) <- c('label', 'type', 'expr', 'digits')
+tab1_rows$digits <- as.integer(tab1_rows$digits)
+
+tab1_stat <- function(x, type, d) {
+  switch(type,
+    msd = sprintf('%.*f (%.*f)', d, mean(x), d, sd(x)),
+    mediqr = {
+      q <- quantile(x, c(0.5, 0.25, 0.75), names = FALSE)
+      sprintf('%.*f (%.*f, %.*f)', d, q[1], d, q[2], d, q[3])
+    },
+    npct = sprintf('%d (%.*f)', sum(x), d, 100 * mean(x))
+  )
+}
+tab1_cells <- t(vapply(seq_len(nrow(tab1_rows)), function(r) {
+  if (tab1_rows$type[r] == 'header') return(rep('', length(tab1_groups)))
+  x <- eval(parse(text = tab1_rows$expr[r]), df)
+  stopifnot(!anyNA(x))
+  vapply(tab1_groups, function(g) {
+    tab1_stat(x[g], tab1_rows$type[r], tab1_rows$digits[r])
+  }, character(1))
+}, character(length(tab1_groups))))
+
+## Header rows, body (indented labels under section headers), footnote
+le12 <- '≤12 y'
+tab1_head <- rbind(
+  c('', '', str_glue('Female (n = {tab1_n["f_young"] + tab1_n["f_old"]})'), '',
+    str_glue('Male (n = {tab1_n["m_young"] + tab1_n["m_old"]})'), ''),
+  c('Characteristic', str_glue('Overall (n = {tab1_n["all"]})'),
+    str_glue('{le12} (n = {tab1_n["f_young"]})'), str_glue('>12 y (n = {tab1_n["f_old"]})'),
+    str_glue('{le12} (n = {tab1_n["m_young"]})'), str_glue('>12 y (n = {tab1_n["m_old"]})'))
+)
+tab1_body <- cbind(
+  ifelse(tab1_rows$type == 'header', tab1_rows$label, paste0('  ', tab1_rows$label)),
+  tab1_cells
+)
+imp_thresh <- median(df$impact23_hr_day)  # the cutoff defining imp
+stopifnot(identical(df$imp, as.integer(df$impact23_hr_day >= imp_thresh)))
+tab1_note <- paste0(
+  'Values are mean (SD) unless otherwise indicated. Age is in completed years ',
+  'at the study visit. aBMD Z-scores use race-neutral BMDCS reference ranges. ',
+  'Above median: ≥', sprintf('%.2f', imp_thresh), ' h/day of self-reported ',
+  'high-impact PA. A valid day has ≥8 h of waking wear time; all children ',
+  'had ≥7 valid days. MVPA: share of waking wear minutes with ENMO > 100 mg. ',
+  'aBMD, areal bone mineral density; MIMS, Monitor-Independent Movement ',
+  'Summary units; MVPA, moderate-to-vigorous physical activity.'
+)
+tab1_out <- rbind(tab1_head, tab1_body, rep('', 6), c(tab1_note, rep('', 5)))
+
+path_tab1 <- file.path(dir_paper, 'table1_descriptives.csv')
+con <- file(path_tab1, open = 'w', encoding = 'UTF-8')
+writeChar('﻿', con, eos = NULL)
+write.table(tab1_out, con, sep = ',', row.names = FALSE, col.names = FALSE,
+            qmethod = 'double')
+close(con)
+print(tab1_out[-nrow(tab1_out), ], quote = FALSE)
+
+
+## ----- Table 2: Predictive Performance (CSV for Word)
+
+## Same content as the poster's out-of-sample error table (oos_table.tex),
+## without the Q-PCA row or variable names: for each pruned model
+## (prune_pval_all rerun inside each LOO training fold), the mean paired
+## change in absolute error vs. the pruned baseline, with 95% CI; the baseline
+## row shows its MAE. Requires models/results from the Modeling section.
+## Edit tab2_spec to change rows. The suggested footnote below the table
+## reports, for the scalar PA models, the share of LOO fits whose pruned model
+## kept a PA term (explains deltas of exactly 0 or unexpectedly positive).
+tab2_spec <- data.frame(
+  model = c('ref_common_preds_imp', 'scale_imp_0', 'scale_imp_1',
+            'dist_C_imp', 'scale_imp_8'),
+  label = c('None (Baseline)', 'Mean', 'MVPA', 'WAME', '99th pct.'),
+  type = c('–', 'Scalar (conventional)', 'Scalar (conventional)',
+           'Distributional', 'Scalar (targeted)')
+)
+stopifnot(all(tab2_spec$model %in% names(models)), fit_reduced)
+
+tab2_res <- do.call(rbind, lapply(tab2_spec$model, function(m) {
+  pr <- results[results$preds == models[[m]]$f_str_abbr & results$reduced, ]
+  stopifnot(nrow(pr) == 1)
+  pr
+}))
+tab2_num <- function(x) sub('^-', '−', sprintf('%.3f', x))  # true minus sign
+is_base <- tab2_spec$model == baseline_model
+tab2_cells <- ifelse(
+  is_base,
+  paste0('Baseline (MAE = ', sprintf('%.3f', tab2_res$oos_err_mean), ')'),
+  paste0(tab2_num(tab2_res$delta_mean), ' (', tab2_num(tab2_res$delta_low),
+         ', ', tab2_num(tab2_res$delta_high), ')')
+)
+
+## Footnote: PA-term retention across LOO fits for the scalar models
+is_scalar <- !is_base & tab2_spec$type != 'Distributional'
+tab2_keep <- setNames(tab2_res$pa_keep_share[is_scalar], tab2_spec$label[is_scalar])
+tab2_note <- paste0(
+  'Change in leave-one-out (LOO) mean absolute error (MAE) for aBMD Z-score ',
+  'prediction relative to the baseline model (age group, sex, BMI Z-score and ',
+  'high-impact PA). Each PA model adds one PA summary and its interaction ',
+  'with high-impact PA. All models, including the baseline, were pruned by ',
+  'backward elimination (p < 0.05) repeated within each LOO fit. Values are ',
+  'mean paired differences in absolute error (95% CI); negative values indicate ',
+  'lower error than the baseline. Share of LOO fits retaining the PA summary: ',
+  paste0(names(tab2_keep), ', ', sprintf('%.0f%%', 100 * tab2_keep),
+         collapse = '; '),
+  '. MVPA, moderate-to-vigorous physical activity; WAME, Wasserstein-Aware ',
+  'Monotone Embedding (4-dimensional quantile function embedding); 99th pct., ',
+  '99th percentile of the intensity distribution.'
+)
+
+tab2_out <- rbind(
+  c('PA summary', 'Type', 'Δ MAE vs. baseline (95% CI)'),
+  cbind(tab2_spec$label, tab2_spec$type, tab2_cells),
+  rep('', 3),
+  c(tab2_note, '', '')
+)
+path_tab2 <- file.path(dir_paper, 'table2_performance.csv')
+con <- file(path_tab2, open = 'w', encoding = 'UTF-8')
+writeChar('﻿', con, eos = NULL)
+write.table(tab2_out, con, sep = ',', row.names = FALSE, col.names = FALSE,
+            qmethod = 'double')
+close(con)
+print(tab2_out[seq_len(nrow(tab2_spec) + 1), ], quote = FALSE)
 
 
 ## ========== Poster Plots ========== ##
@@ -2261,7 +2538,7 @@ plot_effect_contrasts <- function(model, embeddings, decode_fn, col_prefix,
   dev.off()
 }
 
-k_stars_c <- c(1, 3)
+k_stars_c <- c(2, 4)
 plot_effect_contrasts(
   model = model_c, embeddings = C, decode_fn = decode_c, col_prefix = 'c',
   k_stars = k_stars_c, comp_label = 'c',
@@ -2316,49 +2593,66 @@ for (pan in tail_panels) {
 dev.off()
 
 
-## ----- Activity substitution curves (Q-PCA, by impact)
+## ----- Activity substitution curves (Q-PCA and WAME, by impact)
 
 delta_sub_poster <- 0.01   ## proportion of least active time substituted
-qlim_sub_poster <- c(0, 90)    ## intensity Q(p0) range shown (MIMS)
+#qlim_sub_poster <- c(0, 100)    ## intensity Q(p0) range shown (MIMS)
 x_intensity_poster <- TRUE      ## FALSE: p0 on the bottom axis, Q* on top
-sub_panels <- list(
-  list(imp = 0, main = 'Low impact'),
-  list(imp = 1, main = 'High impact')
-)
-for (i in seq_along(sub_panels)) {
-  sub_panels[[i]]$band <- compute_substitution_band(
+
+## plot_substitution_poster: low impact | high impact panels; compute_band maps
+## an impact level to its substitution band
+plot_substitution_poster <- function(compute_band, path) {
+  sub_panels <- list(
+    list(imp = 0, main = 'Low impact'),
+    list(imp = 1, main = 'High impact')
+  )
+  for (i in seq_along(sub_panels)) {
+    sub_panels[[i]]$band <- compute_band(sub_panels[[i]]$imp)
+  }
+  stopifnot(!any(sapply(sub_panels, function(pan) is.null(pan$band))))
+
+  ## Shared y-limits across panels (over the plotted intensity range); with
+  ## intensity on the x-axis, both panels span qlim_sub_poster
+  sub_idx <- lapply(sub_panels, function(pan) {
+    sub_panel_idx(pan$band, delta_sub_poster)#, qlim = qlim_sub_poster)
+  })
+  ylim_sub <- range(unlist(Map(function(pan, idx) {
+    c(pan$band$low[idx], pan$band$high[idx])
+  }, sub_panels, sub_idx)))
+
+  ## Same canvas size and pointsize as tail_shift.png (taller top margin only
+  ## when p0 is on the x-axis, for the Q* top axis)
+  poster_png(path, width = 600, height = 300, pointsize = 12)
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, if (x_intensity_poster) 3 else 5, 1))
+  for (pan in sub_panels) {
+    draw_substitution_panel(
+      pan$band, delta = delta_sub_poster,#, qlim = qlim_sub_poster,
+      ylim = ylim_sub, main = pan$main,
+      ylab = 'Change in BMD Z-score',
+      x_intensity = x_intensity_poster
+    )
+    ## delta as a small in-panel annotation
+    legend('topleft', legend = as.expression(bquote(delta == .(delta_sub_poster))),
+           bty = 'n', cex = 0.8)
+  }
+  dev.off()
+}
+
+plot_substitution_poster(
+  function(imp) compute_substitution_band(
     model = models[['dist_Qpc_imp']]$model_full, E_aug = E_aug, w_aug = w_aug,
-    p_grid_aug = p_grid_aug, Q_ref = Q_ref_sub[[as.character(sub_panels[[i]]$imp)]],
-    imp = sub_panels[[i]]$imp, delta = delta_sub_poster
-  )
-}
-stopifnot(!any(sapply(sub_panels, function(pan) is.null(pan$band))))
-
-## Shared y-limits across panels (over the plotted intensity range); with
-## intensity on the x-axis, both panels span qlim_sub_poster
-sub_idx <- lapply(sub_panels, function(pan) {
-  sub_panel_idx(pan$band, delta_sub_poster, qlim = qlim_sub_poster)
-})
-ylim_sub <- range(unlist(Map(function(pan, idx) {
-  c(pan$band$low[idx], pan$band$high[idx])
-}, sub_panels, sub_idx)))
-
-## Same canvas size and pointsize as tail_shift.png (taller top margin only
-## when p0 is on the x-axis, for the Q* top axis)
-poster_png(file.path(dir_poster, 'activity_substitution.png'), width = 600, height = 300, pointsize = 12)
-par(mfrow = c(1, 2), mar = c(4.5, 4.5, if (x_intensity_poster) 3 else 5, 1))
-for (pan in sub_panels) {
-  draw_substitution_panel(
-    pan$band, delta = delta_sub_poster, qlim = qlim_sub_poster,
-    ylim = ylim_sub, main = pan$main,
-    ylab = 'Change in BMD Z-score',
-    x_intensity = x_intensity_poster
-  )
-  ## delta as a small in-panel annotation
-  legend('topleft', legend = as.expression(bquote(delta == .(delta_sub_poster))),
-         bty = 'n', cex = 0.8)
-}
-dev.off()
+    p_grid_aug = p_grid_aug, Q_ref = Q_ref_sub[[as.character(imp)]],
+    imp = imp, delta = delta_sub_poster
+  ),
+  path = file.path(dir_poster, 'activity_substitution.png')
+)
+plot_substitution_poster(
+  function(imp) compute_substitution_band_wame(
+    model = models[['dist_C_imp']]$model_full, p_grid_aug = p_grid_aug,
+    Q_ref = Q_ref_sub[[as.character(imp)]], imp = imp, delta = delta_sub_poster
+  ),
+  path = file.path(dir_poster, 'activity_substitution_wame.png')
+)
 
 
 ##########################################################################
