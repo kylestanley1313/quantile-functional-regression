@@ -319,15 +319,12 @@ fit_amm <- function(Z, covariates,
 ## n-row data frame with columns male, age, pir -- the sample_fun contract's
 ## covariate argument (see evaluate_generativity in src/utils.R). Mirrors
 ## sample_binary's contract in src/model/binary.R, generalized to the AMM's
-## full covariate set instead of a single binary split.
+## full covariate set instead of a single binary split. The conditional means
+## of all n rows are computed at once (amm_compute_conditional_mean_rows).
 sample_amm <- function(n, fit, X) {
   K <- ncol(fit$beta_hat)
-  mu_hat <- t(sapply(seq_len(n), function(i) {
-    amm_compute_conditional_mean(
-      fit,
-      list(male = X$male[i], age = X$age[i], pir = X$pir[i])
-    )
-  }))
+  stopifnot(NROW(X) == n)
+  mu_hat <- amm_compute_conditional_mean_rows(fit, X)
   eps <- MASS::mvrnorm(n, mu = rep(0, K), Sigma = fit$Sigma_E)
   if (n == 1) eps <- matrix(eps, nrow = 1)
   draws <- mu_hat + eps
@@ -872,6 +869,31 @@ amm_compute_conditional_mean <- function(fit_result, covariate_values) {
     out <- out + covariate_values$pir * beta["pir", , drop = TRUE]
   }
   out
+}
+
+## Row-wise amm_compute_conditional_mean: X is a data frame with columns male,
+## age and pir (a missing column drops that term, as a NULL value does there).
+## Returns the nrow(X) x K matrix of conditional means, same terms and
+## branching as amm_compute_conditional_mean, but each smooth's basis is
+## evaluated once for all rows.
+amm_compute_conditional_mean_rows <- function(fit_result, X) {
+  beta <- fit_result$beta_hat
+  n    <- NROW(X)
+  out  <- matrix(beta["(Intercept)", ], nrow = n, ncol = ncol(beta),
+                 byrow = TRUE)
+  if ("male" %in% rownames(beta) && !is.null(X$male)) {
+    out <- out + outer(X$male, beta["male", ])
+  }
+  for (cov in c("age", "pir")) {
+    x <- X[[cov]]
+    if (is.null(x)) next
+    if (cov %in% fit_result$smooth_covariates) {
+      out <- out + amm_evaluate_smooth(fit_result, cov, x, include_linear = TRUE)
+    } else if (cov %in% rownames(beta)) {
+      out <- out + outer(x, beta[cov, ])
+    }
+  }
+  unname(out)
 }
 
 ## ----- Parametric bootstrap (interpretation) -----

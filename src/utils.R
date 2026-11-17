@@ -1101,8 +1101,17 @@ evaluate_generativity <- function(
   ridge            = 0,
   seed             = 12345,
   n_cores          = 1,
-  keep_draws       = FALSE
+  keep_draws       = FALSE,
+  fit_cache        = NULL
 ) {
+  ## fit_cache: optional environment shared by calls that use the same y_list,
+  ## X, fit_fun, seed, S, frac_train and pool_subsample_n (e.g. the reference
+  ## sets of evaluate_generativity_strata). Split s's model fit is stored on
+  ## first use and reused afterwards, together with the RNG state right after
+  ## the fit, which is restored on reuse -- so results are bit-identical to
+  ## refitting. Fits are never part of the returned object.
+  stopifnot(is.null(fit_cache) || is.environment(fit_cache))
+
   ## Model axis
   aware <- !is.null(fit_fun) || !is.null(sample_fun)
   if (aware) {
@@ -1150,10 +1159,23 @@ evaluate_generativity <- function(
     idx_tr   <- perm[seq_len(n_train)]
     idx_val  <- perm[(n_train + 1):n_used]
 
-    ## Fit on the FULL training half (not ref_mask-restricted)
-    Z_tr <- encode_y_to_latent(pipeline, y_list[idx_tr])
-    X_tr <- if (is.null(X)) NULL else X[idx_tr, , drop = FALSE]
-    fit  <- fit_fun(Z_tr, X_tr)
+    ## Fit on the FULL training half (not ref_mask-restricted); reused from
+    ## fit_cache when this split was already fit
+    key   <- as.character(s)
+    entry <- if (is.null(fit_cache)) NULL else fit_cache[[key]]
+    if (is.null(entry)) {
+      Z_tr <- encode_y_to_latent(pipeline, y_list[idx_tr])
+      X_tr <- if (is.null(X)) NULL else X[idx_tr, , drop = FALSE]
+      fit  <- fit_fun(Z_tr, X_tr)
+      if (!is.null(fit_cache)) {
+        fit_cache[[key]] <- list(idx_tr = idx_tr, fit = fit,
+                                 rng = get(".Random.seed", envir = .GlobalEnv))
+      }
+    } else {
+      stopifnot(identical(entry$idx_tr, idx_tr))
+      fit <- entry$fit
+      assign(".Random.seed", entry$rng, envir = .GlobalEnv)
+    }
 
     ## Restrict to the reference set for scoring. Logical subsetting is not a
     ## random draw, so for an unconditional reference idx_tr_grp == idx_tr and
@@ -1478,7 +1500,11 @@ plot_generativity_example <- function(ex, main = "",
 ## or factor with one entry per element of y_list and any number of levels
 ## (factor levels set the order, otherwise sorted unique values). Every call
 ## uses the same seed, so all reference sets share splits and per-split model
-## fits. Returns
+## fits -- each split's model is fit once and shared through fit_cache (an
+## environment; created here if NULL, or pass one to share fits across calls
+## with the same y_list, X, fit_fun, seed and settings). res_all: optional
+## precomputed unconditional result (evaluate_generativity with ref_mask = NULL
+## and the same settings) used as "All" instead of recomputing it. Returns
 ##   gen:    evaluate_generativity results, named "All" and by level
 ##   n:      sample sizes in the data passed in, same names
 ##   levels: the levels in order, and is_factor (for plot labels)
@@ -1487,10 +1513,13 @@ evaluate_generativity_strata <- function(pipeline, y_list, strata,
                                          X = NULL, fit_fun = NULL,
                                          sample_fun = NULL, S, R,
                                          val_subsample_n = NULL,
-                                         seed = 12345, n_cores = 1, ...) {
+                                         seed = 12345, n_cores = 1,
+                                         fit_cache = NULL, res_all = NULL,
+                                         ...) {
   stopifnot(length(strata) == length(y_list), !anyNA(strata))
   lv <- if (is.factor(strata)) levels(droplevels(strata)) else sort(unique(strata))
   lv_chr <- as.character(lv)
+  if (is.null(fit_cache)) fit_cache <- new.env()
 
   run <- function(ref_mask, what) {
     start <- Sys.time()
@@ -1500,14 +1529,18 @@ evaluate_generativity_strata <- function(pipeline, y_list, strata,
       ref_mask = ref_mask,
       S = S, R = R,
       val_subsample_n = val_subsample_n,
-      seed = seed, n_cores = n_cores, ...
+      seed = seed, n_cores = n_cores, fit_cache = fit_cache, ...
     )
     message(sprintf('  generativity (%s): %.1f min', what,
                     as.numeric(difftime(Sys.time(), start, units = 'mins'))))
     res
   }
+  if (!is.null(res_all)) {
+    stopifnot(res_all$meta$reference == 'unconditional',
+              res_all$meta$S == S, res_all$meta$R == R)
+  }
   gen <- c(
-    list(All = run(NULL, 'unconditional')),
+    list(All = res_all %||% run(NULL, 'unconditional')),
     setNames(lapply(lv, function(l) run(strata == l, paste('stratum', l))),
              lv_chr)
   )
@@ -1517,35 +1550,77 @@ evaluate_generativity_strata <- function(pipeline, y_list, strata,
        levels = lv_chr, is_factor = is.factor(strata))
 }
 
+## Disk cache for an expensive result: returns readRDS(path) when the file
+## exists and was saved with settings identical() to settings; otherwise runs
+## compute(), stores settings as its "settings" attribute, saves it to path and
+## returns it. settings should list everything the result depends on (e.g. S,
+## R, seed, model hyperparameters, sample size), so a changed setting triggers
+## a recompute instead of silently loading a stale result.
+cached_rds <- function(path, settings, compute) {
+  if (file.exists(path)) {
+    res <- readRDS(path)
+    if (identical(attr(res, "settings"), settings)) return(res)
+    message(str_glue("Cache settings changed; recomputing {path}"))
+  }
+  res <- compute()
+  attr(res, "settings") <- settings
+  saveRDS(res, path)
+  res
+}
+
 ## Box plot of an evaluate_generativity_strata() result on the active device:
 ## "All" (unconditional), a dotted separator, then one box per stratum
 ## (conditional), each labeled with its sample size on a second line. labels
 ## maps each level (as character) to its display name. The subscript of a
 ## stratum's N is its value (e.g. N[0], N[1] for a binary covariate), or its
-## level index for a factor. ... goes to plot_generativity_boxes.
+## level index for a factor.
+## include_all = FALSE draws the strata only (conditional check; the
+## unconditional one shown in its own figure). ... goes to
+## plot_generativity_boxes (e.g. ylim, highlight -- whose group indices then
+## count strata only).
 plot_generativity_strata <- function(res, labels,
                                      ylab = "Relative generativity",
-                                     main = "", ...) {
+                                     main = "", include_all = TRUE, ...) {
   lv <- res$levels
   stopifnot(all(lv %in% names(labels)))
   n <- res$n
   sub_code <- if (res$is_factor) seq_along(lv) else lv
-  sublabels <- c(
-    list(bquote("(" * N == .(n[[1]]) * ")")),
-    lapply(seq_along(lv), function(j)
-      bquote("(" * N[.(sub_code[j])] == .(n[[j + 1]]) * ")"))
-  )
+  sub_strata <- lapply(seq_along(lv), function(j)
+    bquote("(" * N[.(sub_code[j])] == .(n[[lv[j]]]) * ")"))
+  scores <- lapply(res$gen, function(g) lapply(g$splits, `[[`, "log_norm"))
+  if (include_all) {
+    groups    <- c("All", unname(labels[lv]))
+    sublabels <- c(list(bquote("(" * N == .(n[["All"]]) * ")")), sub_strata)
+    vsep      <- 1.5
+  } else {
+    groups    <- unname(labels[lv])
+    sublabels <- sub_strata
+    scores    <- scores[lv]
+    vsep      <- NULL
+  }
   plot_generativity_boxes(
-    groups          = c("All", unname(labels[lv])),
-    scores          = lapply(res$gen, function(g) lapply(g$splits, `[[`, "log_norm")),
+    groups          = groups,
+    scores          = scores,
     group_sublabels = sublabels,
-    vsep            = 1.5,
+    vsep            = vsep,
     hline           = 0,
     ylab            = ylab,
     main            = main,
     collapse        = TRUE,
     ...
   )
+}
+
+## Shared y range for generativity boxplots: all scores of one or more
+## evaluate_generativity / evaluate_generativity_strata results (and 0), with
+## the 5% padding plot_generativity_boxes uses, so figures can share one axis.
+generativity_ylim <- function(...) {
+  scores_of <- function(r) {
+    if (!is.null(r$gen)) unlist(lapply(r$gen, scores_of))
+    else unlist(lapply(r$splits, `[[`, "log_norm"))
+  }
+  rng <- range(c(unlist(lapply(list(...), scores_of)), 0), finite = TRUE)
+  rng + c(-1, 1) * 0.05 * diff(rng)
 }
 
 
@@ -1592,18 +1667,25 @@ fig_par <- function(cex_main = 1.2, cex_lab = 1, cex = NULL, cex_axis = NULL) {
 ## in pal span lims left to right, with tick labels at ticks below the bar and
 ## an optional title above it. Sizes and insets are in inches, so the bar looks
 ## the same regardless of the axis scales.
+## vals: optional covariate values; if given, a histogram of vals (n_bins
+## equal-width bins spanning lims, heights scaled to the tallest bin, each bar
+## filled with the palette color at its bin midpoint) is drawn directly above
+## the bar, aligned with it, so the legend also shows the marginal distribution.
 draw_colorbar <- function(pal, lims, ticks, title = NULL, cex = 1,
                           width_in = 1.2, height_in = 0.1,
-                          inset_in = c(0.15, 0.12)) {
+                          inset_in = c(0.15, 0.12),
+                          vals = NULL, n_bins = 20, hist_height_in = 0.25,
+                          hist_gap_in = 0.02) {
   usr      <- par("usr")
   x_per_in <- diff(usr[1:2]) / par("pin")[1]
   y_per_in <- diff(usr[3:4]) / par("pin")[2]
   title_in <- if (is.null(title)) 0 else
     strheight(title, units = "inches", cex = cex) + 0.05
+  hist_in  <- if (is.null(vals)) 0 else hist_height_in + hist_gap_in
 
   x0 <- usr[1] + inset_in[1] * x_per_in
   x1 <- x0 + width_in * x_per_in
-  y1 <- usr[4] - (inset_in[2] + title_in) * y_per_in
+  y1 <- usr[4] - (inset_in[2] + title_in + hist_in) * y_per_in
   y0 <- y1 - height_in * y_per_in
 
   n  <- length(pal)
@@ -1614,8 +1696,25 @@ draw_colorbar <- function(pal, lims, ticks, title = NULL, cex = 1,
   tx <- x0 + (ticks - lims[1]) / diff(lims) * (x1 - x0)
   segments(tx, y0, tx, y0 - 0.04 * y_per_in, lwd = 0.5)
   text(tx, y0 - 0.06 * y_per_in, labels = ticks, adj = c(0.5, 1), cex = cex)
+
+  y_top <- y1   # top of the stack drawn so far; the title sits above it
+  if (!is.null(vals)) {
+    vals   <- vals[is.finite(vals)]
+    br     <- seq(lims[1], lims[2], length.out = n_bins + 1)
+    counts <- hist(pmin(pmax(vals, lims[1]), lims[2]), breaks = br,
+                   plot = FALSE)$counts
+    bx     <- x0 + (br - lims[1]) / diff(lims) * (x1 - x0)
+    mid    <- (br[-1] + br[-length(br)]) / 2
+    cols   <- pal[round((mid - lims[1]) / diff(lims) * (n - 1)) + 1]
+    yb     <- y1 + hist_gap_in * y_per_in
+    yt     <- yb + counts / max(counts) * hist_height_in * y_per_in
+    rect(bx[-length(bx)], yb, bx[-1], yt, col = cols, border = "white",
+         lwd = 0.3)
+    y_top  <- yb + hist_height_in * y_per_in
+  }
+
   if (!is.null(title)) {
-    text(x0, y1 + 0.05 * y_per_in, labels = title, adj = c(0, 0), cex = cex)
+    text(x0, y_top + 0.05 * y_per_in, labels = title, adj = c(0, 0), cex = cex)
   }
   invisible(NULL)
 }
@@ -2005,7 +2104,10 @@ plot_generativity_boxes <- function(groups,
                                      outcex      = 0.4,
                                      outlwd      = 0.5,
                                      highlight     = NULL,
-                                     highlight_col = "#7570B3") {
+                                     highlight_col = "#7570B3",
+                                     ylim          = NULL) {
+  ## ylim: optional fixed y range (e.g. shared across figures); default fits
+  ## the scores and hline with 5% padding.
   ## medlwd / whisklty: median line width and whisker line type.
   ## outcex / outlwd: outlier point size and line width (small so the many
   ## outliers of a large R don't dominate the boxes).
@@ -2049,7 +2151,7 @@ plot_generativity_boxes <- function(groups,
   y_all  <- unlist(scores, use.names = FALSE)
   y_rng  <- range(c(y_all, hline), finite = TRUE)
   y_pad  <- 0.05 * diff(y_rng)
-  y_lim  <- c(y_rng[1] - y_pad, y_rng[2] + y_pad)
+  y_lim  <- ylim %||% c(y_rng[1] - y_pad, y_rng[2] + y_pad)
 
   ## Within-group offsets so the S boxes per group sit side-by-side.
   half_span <- 0.25

@@ -152,6 +152,40 @@ fig_emb_panel_in <- 1.3
 fig_emb_size <- function(n_k) fig_emb_panel_in * n_k
 
 
+## ----- Dimension selection plot
+
+## Joint K-selection figure: cross-validated reconstruction errors (bottom,
+## from assess_losslessness.R) and median relative generativity
+## (top, from assess_generativity_for_K.R), with the chosen K marked.
+dir_loss <- file.path('artifacts', dir_art, 'losslessness')
+dir_genK <- file.path('artifacts', dir_art, 'generativity_by_K')
+dir_dim_plots <- file.path('artifacts', dir_art, 'plots', 'representation')
+if (!dir.exists(dir_dim_plots)) dir.create(dir_dim_plots, recursive = TRUE)
+
+loss_valid_by_K    <- readRDS(file.path(dir_loss, 'config-1_loss-valid.rds'))
+pairwise_dist_norm <- readRDS(file.path(dir_loss, 'config-1_pairwise-dist-norm.rds'))
+gen_res_by_K       <- readRDS(file.path(dir_genK, 'gen_res.rds'))
+gen_scores_by_K <- lapply(gen_res_by_K, function(g) {
+  unlist(lapply(g$splits, `[[`, "log_norm"), use.names = FALSE)
+})
+
+set.seed(1234)  # point jitter
+fig_png(file.path(dir_dim_plots, 'K_selection.png'), 4.5, 3.6)
+fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+        cex_axis = fig_cex_axis)
+plot_dimension_selection(
+  valid_losses_by_K  = loss_valid_by_K,
+  gen_scores_by_K    = gen_scores_by_K,
+  pairwise_distances = pairwise_dist_norm,
+  K_star             = 5,
+  epsilon_percentile = 2,  # epsilon = 1.34
+  alpha              = 0.05,
+  pt_col             = rgb(0, 0, 0, 0.1),
+  pt_cex             = 0.1
+)
+dev.off()
+
+
 ## ----- Visualize reconstructions
 
 ## Create directory
@@ -215,8 +249,8 @@ w_emb   <- fig_emb_size(length(ks_plot))
 idx_outliers <- pipeline$training$meta$idx_outliers
 N_outlier <- length(idx_outliers)
 idx_train <- if (N_outlier > 0) -idx_outliers else seq_len(N)
-col_train <- rgb(0, 0, 0, alpha = 0.25)
-col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.25), col_train)
+col_train <- rgb(0, 0, 0, alpha = 0.05)
+col_outlier <- ifelse(mark_outliers, rgb(1, 0.8, 0.5, alpha = 0.05), col_train)
 
 ## Plot z-rot-embeddings
 path_plot <- file.path(
@@ -565,7 +599,8 @@ dev.off()
 
 ## ----- Check generativity
 
-## Unconditional generativity of the fitted pipeline, with the same procedure
+## Unconditional covariate-blind generativity of the fitted pipeline (reference:
+## all held-out subjects; latent model ignores covariates), with the same procedure
 ## and settings as assess_generativity_for_K.R (S splits x R replicates; per
 ## replicate: fit the latent mean-cov model on a random train half, draw |val|
 ## synthetic latents, decode, score G~ = log(T_sv / T_tv)). keep_draws = TRUE
@@ -577,7 +612,7 @@ dev.off()
 ## holds its own copy of the pipeline (~500 MB) plus ~150 MB per OT solve.
 gen_S       <- 5
 gen_R       <- 20
-gen_seed    <- 1234
+gen_seed_    <- 1234
 gen_n_cores <- 3
 dir_gen <- file.path('artifacts', dir_art, 'plots', 'representation', 'generativity')
 if (!dir.exists(dir_gen)) dir.create(dir_gen, recursive = TRUE)
@@ -586,14 +621,14 @@ if (file.exists(path_gen)) {
   gen_res <- readRDS(path_gen)
 } else {
   start <- Sys.time()
-  gen_res <- evaluate_unconditional_generativity(
+  gen_res <- evaluate_generativity(
     pipeline, y_list,
     S = gen_S, R = gen_R,
     frac_train       = 0.5,
     pool_subsample_n = NULL,
     J_aug            = 500,
     ridge            = 0,
-    seed             = gen_seed,
+    seed             = gen_seed_,
     n_cores          = gen_n_cores,
     keep_draws       = TRUE
   )
@@ -618,7 +653,7 @@ n_gen_scores   <- nrow(gen_scores)
 stopifnot(n_gen_examples <= n_gen_scores)
 gen_strata <- split(seq_len(n_gen_scores),
                     ceiling(seq_len(n_gen_scores) * n_gen_examples / n_gen_scores))
-set.seed(gen_seed)
+set.seed(gen_seed_)
 ranks  <- vapply(gen_strata, function(k) k[sample.int(length(k), 1)], integer(1))
 gen_ex <- gen_scores[order(gen_scores$log_norm)[ranks], ]
 gen_ex$label <- seq_len(nrow(gen_ex))
@@ -642,7 +677,7 @@ plot_generativity_boxes(
   groups    = str_glue("K = {K_fit}"),
   scores    = list(lapply(gen_res$splits, `[[`, "log_norm")),
   hline     = 0,
-  ylab      = "Log norm. generativity",
+  ylab      = "Relative generativity",
   main      = "",
   collapse  = TRUE,
   highlight = data.frame(group = 1, value = gen_ex$log_norm, label = gen_ex$label)
@@ -717,39 +752,95 @@ plot_gen_ex_embeddings <- function(path, A_real, A_synth, is_out, main,
   dev.off()
 }
 
-for (j in seq_len(nrow(gen_ex))) {
-  s_ex <- gen_ex$split[j]
-  r_ex <- gen_ex$rep[j]
-  i    <- str_glue("{j}")   # file tag
-  ex   <- generativity_replicate(gen_res, pipeline, y_list, s = s_ex, r = r_ex)
-  main_gen <- bquote(.(paste0("(", j, ")")) ~~ tilde(G) == .(sprintf("%.2f", ex$log_norm)))
+## Marginal check of one rebuilt replicate (generativity_replicate()): for each
+## quantile level p in p_show, side-by-side boxplots of Q_i(p) across the
+## replicate's held-out real subjects (gray, left) and its synthetic draws
+## (green, right). Each QF is linearly interpolated to p from the replicate's
+## augmented p-grid. Compact panels for narrow figure columns: solid whiskers,
+## y tick labels only (about 3, at the row-2 tick size; no axis labels, no x
+## axis), "p = ..." as a small title over the plot region, and tight margins.
+## Each panel has its own scale, so the caption should explain the colors and
+## that panels are not on a common scale. outliers = FALSE omits outlier
+## points (the axis then spans the whiskers). Files are gen-ex_{tag}_p-{p}.png
+## in dir_out (created if needed).
+plot_gen_replicate_quantiles <- function(ex, dir_out, tag,
+                                         p_show = c(0.5, 0.75, 0.99),
+                                         w, h, outliers = TRUE) {
+  if (!dir.exists(dir_out)) dir.create(dir_out, recursive = TRUE)
+  at_p <- function(Q_list) {
+    do.call(rbind, lapply(Q_list, function(q) approx(ex$p_grid, q, xout = p_show, rule = 2)$y))
+  }
+  Q_real  <- at_p(ex$Q_val)
+  Q_synth <- at_p(ex$Q_synth)
+  for (j in seq_along(p_show)) {
+    p <- p_show[j]
+    fig_png(file.path(dir_out, str_glue('gen-ex_{tag}_p-{p}.png')), w, h)
+    ## Tight margins: left only for the tick labels (parallel to the axis),
+    ## almost none on the right; x range trimmed so the boxes sit close to the
+    ## frame
+    par(mar = c(0.4, 1.3, 1.2, 0.1), mgp = c(0, 0.2, 0), tcl = -0.15,
+        cex = fig_cex, cex.axis = 0.8 * fig_cex_axis, las = 0)
+    boxplot(list(Q_real[, j], Q_synth[, j]),
+            col      = c(adjustcolor("black", 0.15), adjustcolor("#1B9E77", 0.4)),
+            border   = c("black", "#1B9E77"),
+            outline  = outliers, whisklty = 1,
+            medlwd   = 1.5,   # as in the score boxplots (plot_generativity_boxes)
+            outpch = 16, outcex = 0.3, boxwex = 0.7,
+            xlim = c(0.55, 2.45), xaxt = 'n', yaxt = 'n')
+    tk <- pretty(par('usr')[3:4], n = 3)   # about 3 ticks
+    axis(2, at = tk[tk >= par('usr')[3] & tk <= par('usr')[4]])
+    mtext(bquote(p == .(p)), side = 3, line = 0.25, cex = 0.8)
+    dev.off()
+  }
+}
+
+## All figures for one rebuilt replicate (generativity_replicate()): QF space,
+## z-rot space and c space, each plain and (unless gen_outlier_w2 is NULL) with
+## outliers highlighted. Files are gen-ex_{tag}{_z-rot,_c}{,_outliers}.png in
+## dir_out. idx_full: rows of the full data (z_rot_ctx / c_ctx) of the
+## replicate's held-out real subjects (ex$idx_val indexes the y_list passed to
+## the evaluation, which may be a subset of the full data).
+## highlight_outliers: which versions to draw -- FALSE (plain), TRUE (outliers
+## highlighted, *_outliers.png) or c(FALSE, TRUE) (both; the default). Ignored
+## (plain only) when gen_outlier_w2 is NULL.
+## qf_w / qf_h: size (inches) of the QF-space panel. qf_text_scale multiplies
+## the QF panel's title, axis-label and tick-label sizes (e.g. 0.8 for narrow
+## figure columns). embeddings = FALSE skips the z-rot and c views.
+plot_gen_replicate <- function(ex, main_gen, dir_out, tag,
+                               idx_full = ex$idx_val,
+                               highlight_outliers = c(FALSE, TRUE),
+                               qf_w = gen_fig_ex_w, qf_h = gen_fig_ex_h,
+                               qf_text_scale = 1, embeddings = TRUE) {
   is_out_w2 <- if (is.null(gen_outlier_w2)) rep(FALSE, length(ex$w2_synth)) else
     ex$w2_synth >= gen_outlier_w2
 
-  ## z-rot space. With latent 'z_rot' or 'z', the synthetic draws live in the
-  ## flow output (stage 4), so rotate them with the PCA stage; real held-out
-  ## subjects come from the already-encoded z_rot.
-  Z_rot_synth <- do.call(rbind, encode(
-    pipeline,
-    new_context(asplit(ex$z_draws, 1), pipeline$training$cache, list()),
-    from = 4, to = 5
-  )$payload)
-  Z_rot_real <- Z_rot_all[ex$idx_val, , drop = FALSE]
+  if (embeddings) {
+    ## z-rot space. With latent 'z_rot' or 'z', the synthetic draws live in the
+    ## flow output (stage 4), so rotate them with the PCA stage; real held-out
+    ## subjects come from the already-encoded z_rot.
+    Z_rot_synth <- do.call(rbind, encode(
+      pipeline,
+      new_context(asplit(ex$z_draws, 1), pipeline$training$cache, list()),
+      from = 4, to = 5
+    )$payload)
+    Z_rot_real <- Z_rot_all[idx_full, , drop = FALSE]
 
-  ## c space (WAME output, stage 3): decode the synthetic flow-output draws back
-  ## through the flow; real held-out subjects come from the already-encoded c.
-  ## Both in the pipeline's c sign convention (c_ctx_to_matrix).
-  C_synth <- c_ctx_to_matrix(pipeline, decode(
-    pipeline,
-    new_context(asplit(ex$z_draws, 1), pipeline$training$cache, list()),
-    from = 4, to = 3
-  ))
-  C_real <- C_all[ex$idx_val, , drop = FALSE]
+    ## c space (WAME output, stage 3): decode the synthetic flow-output draws
+    ## back through the flow; real held-out subjects come from the
+    ## already-encoded c. Both in the pipeline's c sign convention
+    ## (c_ctx_to_matrix).
+    C_synth <- c_ctx_to_matrix(pipeline, decode(
+      pipeline,
+      new_context(asplit(ex$z_draws, 1), pipeline$training$cache, list()),
+      from = 4, to = 3
+    ))
+    C_real <- C_all[idx_full, , drop = FALSE]
+  }
 
-  ## Each example is drawn twice: plain, every synthetic draw in the same color
-  ## (gen-ex_{i}*.png), and with outliers highlighted (gen-ex_{i}*_outliers.png).
+  ## Versions: plain, every synthetic draw in the same color (gen-ex_{tag}*.png),
+  ## and/or with outliers highlighted (*_outliers.png), per highlight_outliers.
   ## Only the plain version when outlier flagging is disabled.
-  hl_modes <- if (is.null(gen_outlier_w2)) FALSE else c(FALSE, TRUE)
+  hl_modes <- if (is.null(gen_outlier_w2)) FALSE else unique(highlight_outliers)
   for (hl in hl_modes) {
     is_out <- if (hl) is_out_w2 else rep(FALSE, length(is_out_w2))
     sfx    <- if (hl) "_outliers" else ""
@@ -760,10 +851,10 @@ for (j in seq_len(nrow(gen_ex))) {
       n_out <- sum(is_out)
       bquote(.(main_gen) * "," ~~ .(sprintf("%d %s", n_out, if (n_out == 1) "outlier" else "outliers")))
     }
-    fig_png(file.path(dir_gen_ex, str_glue('gen-ex_{i}{sfx}.png')),
-            gen_fig_ex_w, gen_fig_ex_h)
-    fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
-            cex_axis = fig_cex_axis)
+    fig_png(file.path(dir_out, str_glue('gen-ex_{tag}{sfx}.png')), qf_w, qf_h)
+    fig_par(cex_main = qf_text_scale * fig_cex_main,
+            cex_lab  = qf_text_scale * fig_cex_lab, cex = fig_cex,
+            cex_axis = qf_text_scale * fig_cex_axis)
     plot_generativity_example(
       ex,
       main = main_gen_qf,
@@ -774,6 +865,7 @@ for (j in seq_len(nrow(gen_ex))) {
     dev.off()
 
     ## z-rot and c spaces
+    if (!embeddings) next
     leg_labels <- c("real (val)", "synthetic")
     leg_cols   <- c("black", "#1B9E77")
     if (hl) {
@@ -781,14 +873,183 @@ for (j in seq_len(nrow(gen_ex))) {
       leg_cols   <- c(leg_cols, col_gen_outlier)
     }
     plot_gen_ex_embeddings(
-      file.path(dir_gen_ex, str_glue('gen-ex_{i}_z-rot{sfx}.png')),
+      file.path(dir_out, str_glue('gen-ex_{tag}_z-rot{sfx}.png')),
       Z_rot_real, Z_rot_synth, is_out, main_gen, leg_labels, leg_cols
     )
     plot_gen_ex_embeddings(
-      file.path(dir_gen_ex, str_glue('gen-ex_{i}_c{sfx}.png')),
+      file.path(dir_out, str_glue('gen-ex_{tag}_c{sfx}.png')),
       C_real, C_synth, is_out, main_gen, leg_labels, leg_cols
     )
   }
+}
+
+## ----- Strata generativity figures (group comparison and AMM)
+##
+## The covariate-aware checks of an evaluate_generativity_strata() result are
+## shown in two kinds of figure, assembled from separate pngs in LaTeX:
+##
+## Unconditional ("All"; plot_gen_unconditional): one full-width row --
+##   the "All" boxplot (gen_unc_box_w), the QF panel of its median replicate
+##   (gen_unc_qf_w) and its real vs synthetic quantile panels at gen_q_p
+##   (gen_unc_q_w each), all gen_unc_h tall.
+##
+## Conditional (one per stratifying variable): three rows --
+##   1. boxplot of the scores by stratum, full width, the median score of each
+##      box marked (plot_generativity_strata(include_all = FALSE));
+##   2. per box, directly below it, the QF panel of that median replicate,
+##      titled G~ = ... (box identity left to the caption);
+##   3. per box, below its QF panel, real vs synthetic boxplots of Q_i(p) at
+##      gen_q_p (plot_gen_replicate_quantiles).
+##   Each stratum gets a gen_cond_col_w-wide column (the figure is
+##   n_strata * gen_cond_col_w wide, so a 2-stratum figure is not stretched
+##   relative to a 5-stratum one): its row-2 panel fills the column, its row-3
+##   panels a third of it each.
+## Boxplots that belong together (a section's unconditional and conditional
+## figures) share one y axis (generativity_ylim). gen_q_outliers toggles the
+## outlier points of the quantile boxplots.
+gen_q_p        <- c(0.5, 0.75, 0.99)
+gen_q_outliers <- TRUE
+gen_unc_h      <- 1.8   # TODO: final printed height
+gen_unc_box_w  <- 1.1
+gen_unc_qf_w   <- 2.4
+gen_unc_q_w    <- (6.5 - gen_unc_box_w - gen_unc_qf_w) / length(gen_q_p)
+gen_cond_col_w <- 6.5 / 5   # per-stratum column: 5 quintile strata span 6.5 in
+
+## Median-score replicate of each box of an evaluate_generativity_strata()
+## result (run with keep_draws = TRUE): the ceiling(n / 2)-th smallest of the
+## box's S * R scores. Returns one row per box: group (box index), ref (box
+## name), split, rep, log_norm and label (always 1; kept as the file-name
+## suffix). Mark them on the boxplot with
+## plot_generativity_strata(highlight = ex_df[, c("group", "log_norm")] ...).
+select_gen_strata_examples <- function(gen_strata) {
+  do.call(rbind, lapply(seq_along(gen_strata$gen), function(g) {
+    res <- gen_strata$gen[[g]]
+    sc  <- do.call(rbind, lapply(seq_along(res$splits), function(s) {
+      data.frame(split = s, rep = seq_along(res$splits[[s]]$log_norm),
+                 log_norm = res$splits[[s]]$log_norm)
+    }))
+    sc <- sc[order(sc$log_norm), ]
+    data.frame(group = g, ref = names(gen_strata$gen)[g],
+               sc[ceiling(nrow(sc) / 2), ], label = 1)
+  }))
+}
+
+## Rows 2 and 3 for select_gen_strata_examples() rows: the QF panel
+## (plot_gen_replicate, qf_w x qf_h, text at 0.8x, no z-rot / c views) and the
+## row-3 quantile panels (plot_gen_replicate_quantiles at gen_q_p, q_w x q_h
+## each; q_w defaults to qf_w / 3). Files are gen-ex_{tag}.png and
+## gen-ex_{tag}_quantiles/gen-ex_{tag}_p-{p}.png in dir_out, with
+## tag = {tag_prefix}_{tolower(ref)}_{label}. y_list_sub: the y_list passed to
+## the evaluation; idx_full: rows of the full data behind y_list_sub.
+## The QF panel's random curve draw order is seeded per example (seed), so
+## every png is identical however the script is run. Returns (invisibly) the
+## paths of the pngs for assemble_gen_strata_figure(): qf (row 2, one per box;
+## the plain version when highlight_outliers includes FALSE) and q (row 3, a
+## vector of gen_q_p panels per box).
+plot_gen_strata_examples <- function(gen_strata, ex_df, y_list_sub, idx_full,
+                                     dir_out, tag_prefix, qf_w, qf_h, q_h,
+                                     q_w = qf_w / length(gen_q_p),
+                                     highlight_outliers = FALSE,
+                                     seed = gen_seed_) {
+  if (!dir.exists(dir_out)) dir.create(dir_out, recursive = TRUE)
+  sfx_qf  <- if (is.null(gen_outlier_w2) || FALSE %in% highlight_outliers) "" else "_outliers"
+  paths_qf <- character(0)
+  paths_q  <- list()
+  for (j in seq_len(nrow(ex_df))) {
+    set.seed(seed)
+    e  <- ex_df[j, ]
+    ex <- generativity_replicate(gen_strata$gen[[e$ref]], pipeline, y_list_sub,
+                                 s = e$split, r = e$rep)
+    main_gen <- bquote(tilde(G) == .(sprintf("%.2f", ex$log_norm)))
+    tag_ex <- str_glue('{tag_prefix}_{tolower(e$ref)}_{e$label}')
+    plot_gen_replicate(ex, main_gen, dir_out, tag = tag_ex,
+                       idx_full = idx_full[ex$idx_val],
+                       highlight_outliers = highlight_outliers,
+                       qf_w = qf_w, qf_h = qf_h,
+                       qf_text_scale = 0.8, embeddings = FALSE)
+    dir_q <- file.path(dir_out, str_glue('gen-ex_{tag_ex}_quantiles'))
+    plot_gen_replicate_quantiles(
+      ex,
+      dir_out  = dir_q,
+      tag      = tag_ex,
+      p_show   = gen_q_p,
+      w        = q_w,
+      h        = q_h,
+      outliers = gen_q_outliers
+    )
+    paths_qf <- c(paths_qf, file.path(dir_out, str_glue('gen-ex_{tag_ex}{sfx_qf}.png')))
+    paths_q[[j]] <- file.path(dir_q, str_glue('gen-ex_{tag_ex}_p-{gen_q_p}.png'))
+  }
+  invisible(list(qf = paths_qf, q = paths_q))
+}
+
+## The assembled three-row figure, for previews and slides (the paper builds
+## the same layout in LaTeX from the separate pngs): row 1 the boxplot png
+## (path_box), row 2 the QF panels and row 3 the quantile panels in box order
+## (panels: the return value of plot_gen_strata_examples), stacked in one png
+## at path_out. Every png is rendered at its printed size and resolution, so
+## the rows line up as they do in LaTeX.
+assemble_gen_strata_figure <- function(path_box, panels, path_out) {
+  rd   <- magick::image_read
+  rows <- c(rd(path_box),
+            magick::image_append(rd(panels$qf)),
+            magick::image_append(rd(unlist(panels$q))))
+  magick::image_write(magick::image_append(rows, stack = TRUE), path_out)
+  invisible(path_out)
+}
+
+## Split select_gen_strata_examples() rows into the unconditional ("All") row
+## and the conditional rows, the latter with group renumbered to count strata
+## only (for plot_generativity_strata(include_all = FALSE, highlight = ...)).
+split_gen_strata_examples <- function(ex_df) {
+  cond <- ex_df[ex_df$ref != "All", , drop = FALSE]
+  cond$group <- cond$group - 1
+  list(uncond = ex_df[ex_df$ref == "All", , drop = FALSE], cond = cond)
+}
+
+## Unconditional figure of an evaluate_generativity_strata() result gs (see
+## "Strata generativity figures"): the "All" boxplot (median replicate marked,
+## y range ylim) to path_box, the median replicate's QF and quantile panels to
+## dir_ex (plot_gen_strata_examples, tag {tag_prefix}_all_1), and the
+## assembled row to path_assembled. y_list_sub / idx_full as for
+## plot_gen_strata_examples.
+plot_gen_unconditional <- function(gs, ex_uncond, ylim, y_list_sub, idx_full,
+                                   path_box, dir_ex, tag_prefix,
+                                   path_assembled) {
+  fig_png(path_box, gen_unc_box_w, gen_unc_h)
+  fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
+          cex_axis = fig_cex_axis)
+  plot_generativity_boxes(
+    groups          = "All",
+    scores          = list(lapply(gs$gen$All$splits, `[[`, "log_norm")),
+    group_sublabels = list(bquote("(" * N == .(gs$n[["All"]]) * ")")),
+    hline           = 0,
+    ylab            = "Relative generativity",
+    collapse        = TRUE,
+    ylim            = ylim,
+    highlight       = data.frame(group = 1, value = ex_uncond$log_norm)
+  )
+  dev.off()
+  panels <- plot_gen_strata_examples(
+    list(gen = gs$gen["All"]), ex_uncond,
+    y_list_sub = y_list_sub, idx_full = idx_full,
+    dir_out = dir_ex, tag_prefix = tag_prefix,
+    qf_w = gen_unc_qf_w, qf_h = gen_unc_h,
+    q_w = gen_unc_q_w, q_h = gen_unc_h
+  )
+  rd <- magick::image_read
+  magick::image_write(
+    magick::image_append(c(rd(path_box), rd(panels$qf), rd(unlist(panels$q)))),
+    path_assembled
+  )
+  invisible(path_assembled)
+}
+
+for (j in seq_len(nrow(gen_ex))) {
+  ex <- generativity_replicate(gen_res, pipeline, y_list,
+                               s = gen_ex$split[j], r = gen_ex$rep[j])
+  main_gen <- bquote(.(paste0("(", j, ")")) ~~ tilde(G) == .(sprintf("%.2f", ex$log_norm)))
+  plot_gen_replicate(ex, main_gen, dir_gen_ex, tag = j)
 }
 
 
@@ -936,51 +1197,20 @@ get_plot_name_for_cov <- function(cov, other_cov = FALSE) {
   name_map[[cov]]
 }
 
+## Legend label with group sample size, e.g. "M (n = 4,012)"
+fmt_n <- function(n) format(n, big.mark = ',', scientific = FALSE)
+label_with_n <- function(label, n) str_glue('{label} (n = {fmt_n(n)})')
 
-############## Temporary ####################
-
-# B <- 100
-
-# ## Male - female contrast of mean QFs, computed directly on the smooth EQFs on
-# ## the common grid (Q_ctx). Joint (sup-t over p) bands from a nonparametric
-# ## bootstrap that resamples subjects with replacement within each sex.
-# Q_mat <- do.call(rbind, Q_ctx$payload)
-# idx_m <- which(df_cov$male == 1)
-# idx_f <- which(df_cov$male == 0)
-
-# Q_diff_hat <- colMeans(Q_mat[idx_m, ]) - colMeans(Q_mat[idx_f, ])
-
-# set.seed(1234)
-# Q_diff_boot <- t(replicate(B, {
-#   colMeans(Q_mat[sample(idx_m, replace = TRUE), ]) -
-#     colMeans(Q_mat[sample(idx_f, replace = TRUE), ])
-# }))
-# Q_diff_band <- .draws_band(Q_diff_boot, Q_diff_hat, alpha = 0.05,
-#                            band_type = "joint")
-
-# ## Plot
-# fig_png(file.path(dir_eda, 'eda_Q-mean-contrast_male_boot.png'), 3.25, 2.15)   # TODO: final printed size
-# fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
-#         cex_axis = fig_cex_axis)
-# plot(
-#   NULL,
-#   xlim = range(p_grid),
-#   ylim = range(c(Q_diff_band$lo, Q_diff_band$hi, 0)),
-#   xlab = "p",
-#   ylab = "Q(p) Contrast (M - F)"
-# )
-# draw_band(p_grid, Q_diff_band$lo, Q_diff_band$hi)
-# abline(h = 0, col = "red", lty = 3)
-# lines(p_grid, Q_diff_hat, lwd = 1.5)
-# dev.off()
-
-#############################################
 
 ## Plot QFs color-coded by covariate level
 for (bin_pred in c('old', 'male', 'low_income')) {
 
-  k_from <- 1
-  k_to <- 2
+  ## Legend labels with per-group sample sizes (non-missing subjects only)
+  x_bin <- df_cov[[bin_pred]][!is.na(df_cov[[bin_pred]])]
+  bin_labels <- c(
+    label_with_n(get_plot_name_for_cov(bin_pred, TRUE),  sum(x_bin == 0)),
+    label_with_n(get_plot_name_for_cov(bin_pred, FALSE), sum(x_bin == 1))
+  )
 
   ## Plot: QF
   set.seed(1234)
@@ -988,9 +1218,11 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     dir_eda,
     str_glue('eda_Qi_{bin_pred}.png')
   )
-  fig_png(path_plot, 3.25, 3.25)   # TODO: final printed size
-  col_0 <- rgb(0, 0, 0, alpha = 0.25)
-  col_1 <- rgb(1, 0, 0, alpha = 0.25)
+  fig_png(path_plot, 2.15, 2.15)   # TODO: final printed size
+  col_0 <- rgb(0, 0, 0, alpha = 0.05)
+  col_1 <- rgb(1, 0, 0, alpha = 0.05)
+  col_0_leg <- rgb(0, 0, 0)   # opaque legend keys; curves stay translucent
+  col_1_leg <- rgb(1, 0, 0)
   mask <- !is.na(df_cov[bin_pred])
   idx <- sample(1:sum(mask))
   Q_to_plot <- Q_ctx$payload[mask]
@@ -1004,13 +1236,10 @@ for (bin_pred in c('old', 'male', 'low_income')) {
   widths <- rep(1, length(fun_list))
   types <- rep(1, length(fun_list))
   color_width_type_labels <- data.frame(
-    color = c(col_0, col_1),
+    color = c(col_0_leg, col_1_leg),
     width = c(2.5, 2.5),
     type  = c(1, 1),
-    label = c(
-      get_plot_name_for_cov(bin_pred, TRUE), 
-      get_plot_name_for_cov(bin_pred, FALSE)
-    )
+    label = bin_labels
   )
   plot_funs(
     fun_list = fun_list[idx],
@@ -1033,12 +1262,12 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     dir_eda,
     str_glue('eda_z-rot_{bin_pred}.png')
   )
-  fig_png(path_plot, 4.5, 4.5)   # TODO: final printed size
+  fig_png(path_plot, w_emb, w_emb)
   col_0 <- rgb(0, 0, 0, alpha = 0.25)
   col_1 <- rgb(1, 0, 0, alpha = 0.25)
   mask <- !is.na(df_cov[bin_pred])
   idx <- sample(1:sum(mask))
-  Z_plot <- do.call(rbind, z_rot_ctx$payload)[mask,k_from:k_to]
+  Z_plot <- do.call(rbind, z_rot_ctx$payload)[mask, ks_plot, drop = FALSE]
   df_cov_to_plot <- df_cov[mask,]
   colors = rep(col_0, length.out = nrow(Z_plot))
   colors[df_cov_to_plot[bin_pred] == 1] <- col_1
@@ -1052,10 +1281,7 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     color = c(col_0, col_1),
     shape = c(16, 16),
     size = c(0.5, 0.5),
-    label = c(
-      get_plot_name_for_cov(bin_pred, TRUE), 
-      get_plot_name_for_cov(bin_pred, FALSE)
-    )
+    label = bin_labels
   )
   plot_embeddings(
     Z_plot, 
@@ -1068,7 +1294,8 @@ for (bin_pred in c('old', 'male', 'low_income')) {
     cex_lab = fig_cex_lab,
     cex = fig_cex,
     cex_axis = fig_cex_axis,
-    legend_cex = fig_cex_legend
+    legend_cex = fig_cex_legend,
+    ks = ks_plot
   )
   dev.off()
 
@@ -1085,10 +1312,10 @@ for (cont_pred in names(cont_cov_labels)) {
     dir_eda,
     str_glue('eda_Qi_{cont_pred}.png')
   )
-  fig_png(path_plot, 3.25, 2.15)   # TODO: final printed size
+  fig_png(path_plot, 2.15, 2.15)   # TODO: final printed size
   pal <- colorRampPalette(c("blue", "gray60", "red"))(101)
   val_to_col <- function(v, rng) {
-    adjustcolor(pal[round((v - rng[1]) / diff(rng) * 100) + 1], alpha.f = 0.25)
+    adjustcolor(pal[round((v - rng[1]) / diff(rng) * 100) + 1], alpha.f = 0.05)
   }
   mask <- !is.na(df_cov[[cont_pred]])
   idx <- sample(1:sum(mask))
@@ -1115,8 +1342,10 @@ for (cont_pred in names(cont_cov_labels)) {
     cex = fig_cex,
     cex_axis = fig_cex_axis,
     after_plot = function() {
-      draw_colorbar(pal, rng, ticks, title = cont_cov_labels[[cont_pred]],
-                    cex = fig_cex_legend)
+      draw_colorbar(pal, rng, ticks,
+                    title = label_with_n(cont_cov_labels[[cont_pred]],
+                                         length(vals)),
+                    cex = fig_cex_legend, vals = vals)
     }
   )
   dev.off()
@@ -1229,8 +1458,8 @@ for (k_star in 1:K) {
 ## ========== Group Comparison ========== ##
 
 ## Set binary predictor
-bin_pred <- 'old'
-run_latent_diagnostics <- FALSE
+bin_pred <- 'male'
+run_latent_diagnostics <- TRUE
 run_generativity_diagnostics <- TRUE
 
 ## Covariate names for plotting
@@ -1258,87 +1487,118 @@ model <- fit_binary(Z, x)
 
 ## Latent diagnostics
 if (run_latent_diagnostics) {
-  binary_diagnostics(model, dir_gc, col_train)
+  dir_diag_gc <- file.path(dir_gc, 'latent-diagnostics')
+  if (!dir.exists(dir_diag_gc)) dir.create(dir_diag_gc, recursive = TRUE)
+  binary_diagnostics(
+    model, dir_diag_gc,
+    open_png  = fig_png,
+    col_train = col_train,
+    gp_names  = c(gp0_name, gp1_name),
+    pairs_width_in = 6.5,
+    width_in  = 4.5,
+    fig_args  = list(cex_main = fig_cex_main, cex_lab = fig_cex_lab,
+                     cex = fig_cex, cex_axis = fig_cex_axis),
+    cell_cex  = fig_cex_axis
+  )
 }
 
 
-## Generativity diagnostics
+## Generativity diagnostics: covariate-aware scores, unconditional (all
+## subjects) and conditional on each group, on shared axes. Scored against the
+## full validation sets; keep_draws = TRUE so the examples below are the exact
+## datasets behind boxplot points (same presentation as "Check generativity").
+## The evaluation is cached in dir_gc; delete gen_res_{bin_pred}.rds to
+## recompute after refitting the pipeline or changing the settings below.
 if (run_generativity_diagnostics) {
   S <- 5
   R <- 20
   X <- matrix(x, ncol = 1)
-  gen_scores <- list()
-  for (v in c(0, 1)) {
-    y_mask <- x == v
-    start <- Sys.time()
-    gen_scores[[v + 1]] <- evaluate_generativity(
-      pipeline = pipeline,
-      y_list = y_list[!is.na(df_cov[bin_pred])],
-      X = X,
-      y_mask = y_mask,
-      fit_fun = fit_binary,
-      sample_fun = sample_binary,
-      S = S,
-      R = R,
-      val_subsample_n = 500,
-      n_cores = 1
+  gc_labels <- c("0" = get_plot_name_for_cov(bin_pred, TRUE),
+                 "1" = get_plot_name_for_cov(bin_pred, FALSE))
+  path_gen_gc <- file.path(dir_gc, str_glue('gen_res_{bin_pred}.rds'))
+  if (file.exists(path_gen_gc)) {
+    gen_gc <- readRDS(path_gen_gc)
+  } else {
+    gen_gc <- evaluate_generativity_strata(
+      pipeline        = pipeline,
+      y_list          = y_list[mask],
+      X               = X,
+      strata          = x,
+      fit_fun         = fit_binary,
+      sample_fun      = sample_binary,
+      S               = S,
+      R               = R,
+      val_subsample_n = NULL,
+      n_cores         = 1,
+      keep_draws      = TRUE
     )
-    stop <- Sys.time()
-    print(stop - start)
+    saveRDS(gen_gc, path_gen_gc)
   }
-  ## Half-width paper figure (fig_* text sizes; no title, short y label)
-  fig_png(file.path(dir_gc, str_glue('gen_{bin_pred}.png')),
-          3.25, 2.15)   # TODO: final printed height
+
+  ## Examples: the median-score replicate of each box, marked on the boxplots
+  gen_ex_gc <- split_gen_strata_examples(select_gen_strata_examples(gen_gc))
+  ylim_gc   <- generativity_ylim(gen_gc)   # shared by both figures
+  dir_gen_ex_gc <- file.path(dir_gc, 'gen-examples')
+
+  ## Unconditional figure (one row; see "Strata generativity figures"):
+  ## gen_{bin_pred}_uncond.png, gen-examples/gen-ex_{bin_pred}_all_1*, and the
+  ## assembled gen_{bin_pred}_uncond_assembled.png
+  plot_gen_unconditional(
+    gen_gc, gen_ex_gc$uncond, ylim_gc,
+    y_list_sub     = y_list[mask],
+    idx_full       = which(mask),   # rows of the full data behind y_list[mask]
+    path_box       = file.path(dir_gc, str_glue('gen_{bin_pred}_uncond.png')),
+    dir_ex         = dir_gen_ex_gc,
+    tag_prefix     = bin_pred,
+    path_assembled = file.path(dir_gc, str_glue('gen_{bin_pred}_uncond_assembled.png'))
+  )
+
+  ## Conditional figure (three rows): one gen_cond_col_w column per stratum
+  ## (boxplot gc_fig_w = n_strata columns wide), each stratum's QF panel one
+  ## column and its quantile panels a third of that, so each stratum's panels
+  ## stack below it in LaTeX (every png rendered at its printed size).
+  ## gc_highlight_outliers toggles the QF panel versions: FALSE plain, TRUE
+  ## outliers highlighted (*_outliers.png), c(FALSE, TRUE) both.
+  n_strata   <- length(gen_gc$levels)
+  gc_ex_w    <- gen_cond_col_w
+  gc_fig_w   <- n_strata * gc_ex_w
+  gc_box_h   <- 1.8   # TODO: final printed height
+  gc_ex_h    <- 1.4   # TODO: final printed height
+  gc_q_h     <- 1.2   # TODO: final printed height
+  gc_highlight_outliers <- FALSE
+
+  path_gen_box_gc <- file.path(dir_gc, str_glue('gen_{bin_pred}_cond.png'))
+  fig_png(path_gen_box_gc, gc_fig_w, gc_box_h)
   fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
           cex_axis = fig_cex_axis)
-  plot_generativity_boxes(
-    groups      = c(gp0_name, gp1_name),
-    scores      = list(
-      lapply(gen_scores[[1]]$splits, `[[`, "log_norm"),
-      lapply(gen_scores[[2]]$splits, `[[`, "log_norm")
-    ),
-    Ks          = NULL,
-    vline_group = NULL,
-    hline       = 0,
-    # ylab        = "Log Normalized Conditional Generativity Scores",
-    ylab        = "Log norm. generativity",
-    main        = "",
-    collapse    = TRUE
+  plot_generativity_strata(
+    gen_gc,
+    labels        = gc_labels,
+    include_all   = FALSE,   # strata only; "All" is its own figure
+    ylim          = ylim_gc,
+    highlight     = gen_ex_gc$cond[, c("group", "log_norm")] |>
+      setNames(c("group", "value")),   # marker only, no label
+    align_columns = TRUE   # boxes centered over their example columns
   )
   dev.off()
 
-  ## Generativity examples: for each group, n_gen_examples single splits (same
-  ## recipe as evaluate_generativity above) comparing that group's validation
-  ## QFs (black) to a synthetic draw for the same group (teal), titled with
-  ## G~ = log(T_sv / T_tv) as in the box plot. Half-width paper figures.
-  n_gen_examples <- 3
-  dir_gen_ex <- file.path(dir_gc, 'gen-examples')
-  if (!dir.exists(dir_gen_ex)) dir.create(dir_gen_ex, recursive = TRUE)
-  gp_names <- c(gp0_name, gp1_name)
-  for (v in c(0, 1)) {
-    for (i in seq_len(n_gen_examples)) {
-      ex <- generativity_example(
-        pipeline = pipeline,
-        y_list = y_list[!is.na(df_cov[bin_pred])],
-        X = X,
-        y_mask = x == v,
-        fit_fun = fit_binary,
-        sample_fun = sample_binary,
-        val_subsample_n = 500,
-        seed = 1000 * (v + 1) + i
-      )
-      fig_png(file.path(dir_gen_ex, str_glue('gen-ex_{bin_pred}_{v}_{i}.png')),
-              3.25, 2.15)   # TODO: final printed height
-      fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
-              cex_axis = fig_cex_axis)
-      plot_generativity_example(
-        ex,
-        main = bquote(.(gp_names[v + 1]) * "," ~ tilde(G) == .(sprintf("%.2f", ex$log_norm))),
-        legend_cex = fig_cex_legend
-      )
-      dev.off()
-    }
-  }
+  ## Rows 2-3: files gen-ex_{bin_pred}_{0|1}_1.png and
+  ## gen-ex_{bin_pred}_{0|1}_1_quantiles/ in gen-examples/
+  panels_gc <- plot_gen_strata_examples(
+    gen_gc, gen_ex_gc$cond,
+    y_list_sub = y_list[mask],
+    idx_full   = which(mask),
+    dir_out    = dir_gen_ex_gc,
+    tag_prefix = bin_pred,
+    qf_w = gc_ex_w, qf_h = gc_ex_h, q_h = gc_q_h,
+    highlight_outliers = gc_highlight_outliers
+  )
+
+  ## Assembled three-row figure: gen_{bin_pred}_cond_assembled.png
+  assemble_gen_strata_figure(
+    path_gen_box_gc, panels_gc,
+    file.path(dir_gc, str_glue('gen_{bin_pred}_cond_assembled.png'))
+  )
 
 }
 
@@ -1368,8 +1628,8 @@ path_plot <- file.path(
   dir_gc,
   str_glue('roy-bose_{bin_pred}.png')
 )
-xlim_rb <- if (latent == 'z_rot') c(-1.2, 1.2) else NULL
-fig_png(path_plot, 2.15, 2.87)   # TODO: final printed height
+xlim_rb <- if (latent == 'z_rot') c(-0.5, 0.5) else NULL
+fig_png(path_plot, 2.15, 2.15)   # top-left panel of the 2x3 traversal figure
 fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
         cex_axis = fig_cex_axis)
 par(mgp = c(1.9, 0.5, 0))   # keep the hat on beta_k clear of the tick labels
@@ -1898,8 +2158,8 @@ print(stop - start)
 
 ## ---------- Diagnostics ----------
 
-run_latent_diagnostics <- FALSE
-run_generativity_diagnostics <- FALSE
+run_latent_diagnostics <- TRUE
+run_generativity_diagnostics <- TRUE
 
 ## Create directory
 dir_amm_diags <- file.path(dir_amm, 'diagnostics')
@@ -1907,11 +2167,19 @@ if (!dir.exists(dir_amm_diags)) dir.create(dir_amm_diags)
 
 ## ----- Latent Diagnostics
 
+## Latent residual diagnostics, styled as the group comparison's
+## (latent-diagnostics/): residual Q-Q and pairwise scatter plots, and the
+## residual covariance. Residuals R (N x K): R_i = Z_i - X_i beta_hat -
+## W_i U_hat (amm$R_mat), over the AMM's fitted (complete-case) subjects.
 if (run_latent_diagnostics) {
 
-  K_amm <- ncol(Z_amm)
+  dir_amm_latent <- file.path(dir_amm_diags, 'latent-diagnostics')
+  if (!dir.exists(dir_amm_latent)) dir.create(dir_amm_latent, recursive = TRUE)
+  fig_args_diag <- list(cex_main = fig_cex_main, cex_lab = fig_cex_lab,
+                        cex = fig_cex, cex_axis = fig_cex_axis)
+  R_amm <- amm$R_mat
 
-  ## (1) Per-column summary table
+  ## Per-column summary table (not a plot)
   summary_tbl <- amm_summary(amm)
   print(summary_tbl)
   write.csv(
@@ -1920,45 +2188,19 @@ if (run_latent_diagnostics) {
     row.names = FALSE
   )
 
-  ## Paper figures: same text sizes as the interpretation plots (fig_*
-  ## settings); half-width (3.25 in) or full-width (6.5 in) as below
-  diag_png <- function(path, width, height) {
-    fig_png(path, width, height)   # TODO: final printed heights
-    fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
-            cex_axis = fig_cex_axis)
-  }
-
-  ## (2) Smoothing-parameter plot (half width)
-  diag_png(file.path(dir_amm_diags, 'amm_lambda.png'), 3.25, 2.15)
-  amm_plot_lambda(amm, main = "", lwd = 1.5, legend_cex = fig_cex_legend)
+  ## (1) Residual Q-Q (diagonal) and pairwise scatter plots (lower triangle);
+  ## full width, square
+  fig_png(file.path(dir_amm_latent, 'resid-pairs.png'), 6.5, 6.5)
+  plot_resid_pairs(R_amm, col_pt = col_train, point_cex = 0.5,
+                   fig_args = fig_args_diag)
   dev.off()
 
-  ## (3) Residual Q-Q panels (full-width strip, one panel per k)
-  diag_png(file.path(dir_amm_diags, 'amm_resid_qq.png'), 6.5, 1.5)
-  amm_plot_resid_qq(amm, col_train = col_train, ncol = K_amm, cex = fig_cex,
-                    mar = c(1.8, 3.2, 2.2, 0.5), point_cex = 0.5,
-                    xlab = "", ylab = "")
-  dev.off()
-
-  ## (4) Residual covariance heatmap (Sigma_E; half width)
-  diag_png(file.path(dir_amm_diags, 'amm_sigma_e.png'), 3.25, 3)
-  amm_plot_sigma_e(amm, cell_cex = fig_cex_axis)
-  dev.off()
-
-  ## (5) Random-effect covariance heatmaps (full width: heatmap + variances)
-  diag_png(file.path(dir_amm_diags, 'amm_sigma_u_age.png'), 6.5, 2.6)
-  amm_plot_re_cov(
-    amm$U_age_hat, K_amm,
-    expression(hat(Sigma)[U]^"(age)"),
-    cell_cex = fig_cex_axis
-  )
-  dev.off()
-  diag_png(file.path(dir_amm_diags, 'amm_sigma_u_pir.png'), 6.5, 2.6)
-  amm_plot_re_cov(
-    amm$U_pir_hat, K_amm,
-    expression(hat(Sigma)[U]^"(pir)"),
-    cell_cex = fig_cex_axis
-  )
+  ## (2) Residual covariance Sigma_E_hat = R^T R / N, at the per-panel size of
+  ## the group comparison's two-panel figure (4.5 in for 2 heatmaps + bar)
+  Sigma_E_hat <- crossprod(R_amm) / nrow(R_amm)
+  fig_png(file.path(dir_amm_latent, 'cov-heatmap.png'), 4.5 * 5 / 9, 2.3)
+  plot_cov_heatmaps(list(Sigma_E_hat), list(expression(hat(Sigma)[E])),
+                    cell_cex = fig_cex_axis, fig_args = fig_args_diag)
   dev.off()
 
 }
@@ -1966,12 +2208,29 @@ if (run_latent_diagnostics) {
 
 ## ----- Generativity Diagnostics 
 
+## Covariate-aware generativity of the AMM, as in the group comparison: scores
+## unconditional ("All") and conditional on strata of each AMM covariate --
+## male (F / M) and the quantile strata of age and of pir (amm_gen_n_quantiles
+## equal-probability strata, Q1, Q2, ..., labeled by their observed ranges) --
+## scored against the full validation sets, keep_draws =
+## TRUE so the examples are the exact datasets behind boxplot points.
+## NOTE: Differences from the group comparison setting
+##  - AMM fitting and sampling is aware of all covariates (male, age, pir),
+##    whatever the stratifying variable
+##  - complete-case sample, so the AMM sample size < group comparison's
+## Speed: every evaluation uses the same sample, splits and seed, so each
+## split's AMM is fit once and shared through amm_fit_cache (5 fits in total),
+## and the unconditional "All" result is computed once and shown once, in its
+## own figure (see "Strata generativity figures"). Results are cached in
+## dir_amm_gen via
+## cached_rds(), which
+## recomputes when any setting in amm_gen_settings (or a quantile break, e.g.
+## after changing amm_gen_n_quantiles) changes; delete the rds files to force a
+## recompute after refitting the pipeline.
 if (run_generativity_diagnostics) {
 
-  ## --- Replicate group comparison diagnostics
-  ## NOTE: Two differences from group comparison setting
-  ##  - AMM fitting and sampling is aware of all covariates
-  ##  - AMM sample size < group comparison sample size
+  dir_amm_gen <- file.path(dir_amm_diags, 'generativity')
+  if (!dir.exists(dir_amm_gen)) dir.create(dir_amm_gen, recursive = TRUE)
 
   ## fit_fun for evaluate_generativity()
   fit_amm_nhanes <- function(Z, X) {
@@ -1982,54 +2241,154 @@ if (run_generativity_diagnostics) {
   mask_gen     <- complete.cases(covariates_amm)
   y_list_gen   <- y_list[mask_gen]
   X_gen        <- covariates_amm[mask_gen, , drop = FALSE]
+  idx_gen      <- which(mask_gen)   # rows of the full data behind y_list_gen
 
-  S <- 5
-  R <- 20
-  for (bin_pred in c('male', 'low_income', 'old')) {
+  amm_gen_S    <- 5
+  amm_gen_R    <- 20
+  amm_gen_seed <- 12345
+  amm_gen_examples <- TRUE   # rows 2-3 of the figures (redrawn every run)
+  amm_gen_settings <- list(
+    S = amm_gen_S, R = amm_gen_R, seed = amm_gen_seed, frac_train = 0.5,
+    val_subsample_n = NULL, keep_draws = TRUE,
+    n_knots_age = n_knots_age, n_knots_pir = n_knots_pir,
+    latent = latent, dir_art = dir_art, N = length(y_list_gen)
+  )
 
-    gp1_name <- get_plot_name_for_cov(bin_pred, FALSE)
-    gp0_name <- get_plot_name_for_cov(bin_pred, TRUE)
-    x <- df_cov[mask_gen, bin_pred]
+  ## Strata of each covariate. Continuous covariates: k equal-probability
+  ## strata (k = amm_gen_n_quantiles; 5 = quintiles) over the complete-case
+  ## sample (levels Q1-Qk, displayed as each stratum's observed range). Ties
+  ## (integer age, pir top-coded at 5) make the strata only roughly equal in
+  ## size; the boxplot sublabels give the actual sizes.
+  amm_gen_n_quantiles <- 5
+  quantile_strata <- function(x, k, digits) {
+    br <- quantile(x, probs = seq(0, 1, length.out = k + 1), names = FALSE)
+    if (anyDuplicated(br)) stop("Tied quantile breaks: ", toString(br))
+    f  <- cut(x, br, include.lowest = TRUE, labels = paste0('Q', seq_len(k)))
+    lab <- vapply(levels(f), function(l) {
+      paste(formatC(range(x[f == l]), format = 'f', digits = digits),
+            collapse = '–')
+    }, character(1))
+    list(strata = f, labels = lab, breaks = br)
+  }
+  amm_gen_strata <- list(
+    male = list(
+      strata = X_gen$male,
+      labels = c("0" = get_plot_name_for_cov('male', TRUE),
+                 "1" = get_plot_name_for_cov('male', FALSE)),
+      breaks = NULL
+    ),
+    age = quantile_strata(X_gen$age, amm_gen_n_quantiles, digits = 0),
+    pir = quantile_strata(X_gen$pir, amm_gen_n_quantiles, digits = 2)
+  )
 
-    gen_scores <- list()
-    for (v in c(0, 1)) {
-      y_mask <- x == v
-      start <- Sys.time()
-      gen_scores[[v + 1]] <- evaluate_generativity(
-        pipeline = pipeline,
-        y_list = y_list_gen,
-        X = X_gen,
-        y_mask = y_mask,
-        fit_fun = fit_amm_nhanes,
-        sample_fun = sample_amm,
-        S = S,
-        R = R,
-        val_subsample_n = 500,
-        n_cores = 1
+  ## Unconditional result, shared by every stratifying variable
+  amm_fit_cache <- new.env()
+  gen_amm_all <- cached_rds(
+    file.path(dir_amm_gen, 'gen_res_all.rds'), amm_gen_settings,
+    function() evaluate_generativity(
+      pipeline, y_list_gen,
+      X = X_gen, fit_fun = fit_amm_nhanes, sample_fun = sample_amm,
+      ref_mask = NULL,
+      S = amm_gen_S, R = amm_gen_R, seed = amm_gen_seed,
+      val_subsample_n = NULL, n_cores = 1, keep_draws = TRUE,
+      fit_cache = amm_fit_cache
+    )
+  )
+
+  ## Conditional results, one per stratifying variable (all sharing "All")
+  gen_amm_res <- lapply(setNames(nm = names(amm_gen_strata)), function(gen_var) {
+    st <- amm_gen_strata[[gen_var]]
+    cached_rds(
+      file.path(dir_amm_gen, str_glue('gen_res_{gen_var}.rds')),
+      c(amm_gen_settings, list(breaks = st$breaks)),
+      function() evaluate_generativity_strata(
+        pipeline        = pipeline,
+        y_list          = y_list_gen,
+        X               = X_gen,
+        strata          = st$strata,
+        fit_fun         = fit_amm_nhanes,
+        sample_fun      = sample_amm,
+        S               = amm_gen_S,
+        R               = amm_gen_R,
+        seed            = amm_gen_seed,
+        val_subsample_n = NULL,
+        n_cores         = 1,
+        keep_draws      = TRUE,
+        fit_cache       = amm_fit_cache,
+        res_all         = gen_amm_all
       )
-      stop <- Sys.time()
-      print(stop - start)
-    }
-    ## Half-width paper figure (fig_* text sizes; no title, short y label)
-    fig_png(file.path(dir_amm_diags, str_glue('amm_gen_{bin_pred}.png')),
-            3.25, 2.15)   # TODO: final printed height
+    )
+  })
+
+  ## One y axis for the unconditional and all conditional boxplots
+  ylim_amm <- do.call(generativity_ylim, unname(gen_amm_res))
+  dir_gen_ex_amm <- file.path(dir_amm_gen, 'gen-examples')
+
+  ## Unconditional figure (one row; see "Strata generativity figures"), once
+  ## for all variables: amm_gen_uncond.png, gen-examples/gen-ex_uncond_all_1*,
+  ## and the assembled amm_gen_uncond_assembled.png
+  if (amm_gen_examples) {
+    plot_gen_unconditional(
+      gen_amm_res[[1]],
+      split_gen_strata_examples(select_gen_strata_examples(gen_amm_res[[1]]))$uncond,
+      ylim_amm,
+      y_list_sub     = y_list_gen,
+      idx_full       = idx_gen,
+      path_box       = file.path(dir_amm_gen, 'amm_gen_uncond.png'),
+      dir_ex         = dir_gen_ex_amm,
+      tag_prefix     = 'uncond',
+      path_assembled = file.path(dir_amm_gen, 'amm_gen_uncond_assembled.png')
+    )
+  }
+
+  ## Conditional figures (three rows, as in the group comparison): one
+  ## gen_cond_col_w column per stratum (boxplot n_strata columns wide), each
+  ## stratum's QF panel one column, its quantile panels a third of that
+  amm_gen_box_h <- 1.8   # TODO: final printed height
+  amm_gen_ex_h  <- 1.4   # TODO: final printed height
+  amm_gen_q_h   <- 1.2   # TODO: final printed height
+
+  for (gen_var in names(amm_gen_strata)) {
+    st         <- amm_gen_strata[[gen_var]]
+    gen_amm    <- gen_amm_res[[gen_var]]
+    gen_ex_amm <- split_gen_strata_examples(select_gen_strata_examples(gen_amm))$cond
+    n_strata   <- length(gen_amm$levels)
+    amm_gen_fig_w <- n_strata * gen_cond_col_w
+
+    path_gen_box_amm <- file.path(dir_amm_gen, str_glue('amm_gen_{gen_var}.png'))
+    fig_png(path_gen_box_amm, amm_gen_fig_w, amm_gen_box_h)
     fig_par(cex_main = fig_cex_main, cex_lab = fig_cex_lab, cex = fig_cex,
             cex_axis = fig_cex_axis)
-    plot_generativity_boxes(
-      groups      = c(gp0_name, gp1_name),
-      scores      = list(
-        lapply(gen_scores[[1]]$splits, `[[`, "log_norm"),
-        lapply(gen_scores[[2]]$splits, `[[`, "log_norm")
-      ),
-      Ks          = NULL,
-      vline_group = NULL,
-      hline       = 0,
-      # ylab        = "Log Normalized Conditional Generativity Scores",
-      ylab        = "Log norm. generativity",
-      main        = "",
-      collapse    = TRUE
+    plot_generativity_strata(
+      gen_amm,
+      labels        = st$labels,
+      include_all   = FALSE,   # strata only; "All" is its own figure
+      ylim          = ylim_amm,
+      highlight     = gen_ex_amm[, c("group", "log_norm")] |>
+        setNames(c("group", "value")),   # marker only, no label
+      align_columns = TRUE   # boxes centered over their example columns
     )
     dev.off()
+
+    ## Rows 2-3: files gen-ex_{gen_var}_{level}_1.png and
+    ## gen-ex_{gen_var}_{level}_1_quantiles/ in gen-examples/
+    if (amm_gen_examples) {
+      panels_amm <- plot_gen_strata_examples(
+        gen_amm, gen_ex_amm,
+        y_list_sub = y_list_gen,
+        idx_full   = idx_gen,
+        dir_out    = dir_gen_ex_amm,
+        tag_prefix = gen_var,
+        qf_w = gen_cond_col_w, qf_h = amm_gen_ex_h,
+        q_h  = amm_gen_q_h
+      )
+
+      ## Assembled three-row figure: amm_gen_{gen_var}_assembled.png
+      assemble_gen_strata_figure(
+        path_gen_box_amm, panels_amm,
+        file.path(dir_amm_gen, str_glue('amm_gen_{gen_var}_assembled.png'))
+      )
+    }
   }
 
 }
@@ -2207,7 +2566,8 @@ amm_boots <- amm_boot_interpret(
 
 ## Interpret continuous covariates
 cov_to_plot <- c('age', 'pir') # c('age', 'pir')
-fam_to_plot <- c('latent', 'quantile')#, 'qf', 'cdf', 'survival', 'moment', 'threshold', 'quantile')
+# fam_to_plot <- c('latent', 'qf', 'survival')#, 'qf', 'cdf', 'survival', 'moment', 'threshold', 'quantile')
+fam_to_plot <- c('quantile', 'threshold', 'moment')
 
 ## Paper figures: same sizes and styling as the group comparison (gc_*
 ## settings above). Overlaid QF / CDF / survival plots (and their contrasts)
@@ -2492,7 +2852,7 @@ gp0_name <- get_plot_name_for_cov('male', TRUE)
 
 ## Set reference values
 amm_male_age_ref <- 40
-amm_male_pir_ref <- 1
+amm_male_pir_ref <- 2
 amm_male_alpha   <- 0.05
 cv_male_0 <- list(male = 0, age = amm_male_age_ref, pir = amm_male_pir_ref)
 cv_male_1 <- list(male = 1, age = amm_male_age_ref, pir = amm_male_pir_ref)

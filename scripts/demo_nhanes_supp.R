@@ -219,7 +219,7 @@ cat(sprintf('\n%d of %d synthetic draws (%.3f%%) are unrealistic (W2 >= %g): %.2
 cat(sprintf('Unrealistic draws beyond the 90th / 99th / 99.9th percentile of the latent Gaussian: %.1f%% / %.1f%% / %.1f%%\n',
             100 * mean(dd$tail[dd$unreal] < 0.1), 100 * mean(dd$tail[dd$unreal] < 0.01),
             100 * mean(dd$tail[dd$unreal] < 0.001)))
-cat(sprintf('Log norm. generativity, all draws: median %.3f, 90th pct %.3f; unrealistic draws removed: median %.3f, 90th pct %.3f\n',
+cat(sprintf('Relative generativity, all draws: median %.3f, 90th pct %.3f; unrealistic draws removed: median %.3f, 90th pct %.3f\n',
             median(reps$log_norm), quantile(reps$log_norm, 0.9),
             median(reps$log_norm_trim), quantile(reps$log_norm_trim, 0.9)))
 
@@ -231,7 +231,7 @@ plot_generativity_boxes(
   groups   = c("All draws", "Unrealistic removed"),
   scores   = list(split(reps$log_norm, reps$split), split(reps$log_norm_trim, reps$split)),
   hline    = 0,
-  ylab     = "Log norm. generativity",
+  ylab     = "Relative generativity",
   collapse = TRUE
 )
 dev.off()

@@ -1319,3 +1319,76 @@ plot_decoded_conditional_moment_diff <- function(
   .panel_row_title(main, cex)
   invisible(NULL)
 }
+
+
+## ==================== Latent residual diagnostics ====================
+
+## Residual Q-Q and pairwise scatter plots of an N x K residual matrix R, on
+## the active device, as a lower-triangular K x K grid: Q-Q plots on the
+## diagonal (titled "k = j", reference line in line_col) and, in row i,
+## column j < i, the scatter of R[, j] (y) against R[, i] (x); the upper
+## triangle is left empty. fig_args (a list for fig_par, e.g. the paper text
+## sizes) is applied after the grid is set up, so mfrow's automatic text
+## shrink does not apply. Points: pch 16 in col_pt at point_cex.
+plot_resid_pairs <- function(R, col_pt = rgb(0, 0, 0, 0.05), point_cex = 0.5,
+                             line_col = "black", fig_args = list()) {
+  K <- ncol(R)
+  old_par <- par(mfrow = c(K, K))
+  on.exit(par(old_par), add = TRUE)
+  do.call(fig_par, fig_args)
+  for (i in seq_len(K)) {
+    for (j in seq_len(K)) {
+      if (j == i) {
+        qqnorm(R[, i], main = paste0("k = ", i),
+               xlab = "Theoretical Quantiles", ylab = "Sample Quantiles",
+               pch = 16, cex = point_cex, col = col_pt)
+        qqline(R[, i], col = line_col)
+      } else if (j < i) {
+        plot(R[, i], R[, j], xlab = paste0("k = ", i), ylab = paste0("k = ", j),
+             pch = 16, cex = point_cex, col = col_pt)
+      } else {
+        plot.new()
+      }
+    }
+  }
+  invisible(NULL)
+}
+
+## Covariance heatmaps of one or more K x K matrices (mats, a list) side by
+## side on the active device, titled by titles, on one symmetric color scale
+## (blue = -max|entry|, white = 0, red = +max|entry|, over all matrices) with a
+## vertical color bar on the right. Rows 1..K run top to bottom; the lower
+## triangle (with the diagonal) is annotated with the values at cell_cex.
+## fig_args (a list for fig_par) sets the text sizes.
+plot_cov_heatmaps <- function(mats, titles, cell_cex = 0.8, fig_args = list(),
+                              pal_ends = c("#0000FF", "#FF0000")) {
+  K       <- nrow(mats[[1]])
+  zmax    <- max(abs(unlist(mats)))
+  breaks  <- seq(-zmax, zmax, length.out = 101)
+  col_pal <- colorRampPalette(c(pal_ends[1], "white", pal_ends[2]))(100)
+  n       <- length(mats)
+
+  do.call(fig_par, fig_args)
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par), add = TRUE)
+  layout(matrix(seq_len(n + 1), nrow = 1), widths = c(rep(4, n), 1))
+  for (m in seq_len(n)) {
+    M <- mats[[m]]
+    par(mar = c(2, 2, 2.5, 0.5))
+    image(1:K, 1:K, t(M)[, K:1], zlim = c(-zmax, zmax), col = col_pal,
+          breaks = breaks, axes = FALSE, xlab = "", ylab = "", main = titles[[m]])
+    axis(1, at = 1:K, labels = 1:K, las = 1, tick = FALSE)
+    axis(2, at = 1:K, labels = K:1, las = 1, tick = FALSE)
+    for (i in 1:K) for (j in 1:K) if (i >= j) {
+      text(j, K - i + 1, sprintf("%.2f", M[i, j]), cex = cell_cex)
+    }
+  }
+  ## Color bar
+  par(mar = c(2, 0.5, 2.5, 2.5))
+  levels <- seq(-zmax, zmax, length.out = 100)
+  image(1, levels, t(matrix(levels, ncol = 1)), col = col_pal, breaks = breaks,
+        axes = FALSE, xlab = "", ylab = "")
+  axis(4, las = 1)
+  box()
+  invisible(NULL)
+}
